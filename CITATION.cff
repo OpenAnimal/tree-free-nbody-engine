@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Tree-Free N-Body Engine: Octree-Free, Lock-Free O(N) Spatial Field & Multipole Mechanics"
+authors:
+  - name: "OpenAnimal"
+url: "https://github.com/OpenAnimal/tree-free-nbody-engine"
+repository-code: "https://github.com/OpenAnimal/tree-free-nbody-engine"
+license: "MIT"
+keywords:
+  - "n-body-simulation"
+  - "tree-free-nbody-engine"
+  - "fast-multipole-method"
+  - "spatial-hashing"
+  - "open-addressing"
+  - "lock-free"
+  - "simd"
+  - "gpu-acceleration"
+  - "spatial-physics"
+  - "spatial-attention"
+  - "vector-database"
+date-released: 2026-08-15

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tree-free-nbody-engine"
+version = "1.0.0"
+description = "Tree-Free Fast Multipole Method (FMM) & Non-Reordering Elastic Spatial Computing Engine"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "OpenAnimal Team" }
+]
+keywords = [
+    "fmm",
+    "fast-multipole-method",
+    "n-body",
+    "spatial-hashing",
+    "transformers",
+    "attention",
+    "gnn",
+    "bioinformatics",
+    "molecular-dynamics",
+    "physics-simulation"
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0"
+]
+
+[project.optional-dependencies]
+neural = [
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0"
+]
+bio = [
+    "numpy>=1.24.0"
+]
+physics = [
+    "numpy>=1.24.0"
+]
+manifold = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0"
+]
+gpu = [
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+    "torch>=2.0.0",
+    "triton>=2.1.0"
+]
+media = [
+    "Pillow>=9.0.0"
+]
+all = [
+    "tree-free-nbody-engine[neural,bio,physics,manifold,gpu,media]"
+]
+
+[project.urls]
+Homepage = "https://github.com/OpenAnimal/tree-free-nbody-engine"
+Repository = "https://github.com/OpenAnimal/tree-free-nbody-engine"
+
+[tool.setuptools.packages.find]
+include = ["core*", "apps*", "algorithm_theory*", "neural_ops*", "bioinformatics*", "physics_simulation*", "quantized_bitpacked_optimization*", "video_streaming_codecs*", "game_mechanics_spatial*", "graphics_rendering*"]
