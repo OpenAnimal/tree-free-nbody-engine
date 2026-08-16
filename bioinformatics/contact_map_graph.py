@@ -7,8 +7,14 @@ from __future__ import annotations
 import numpy as np
 import time
 from typing import Tuple, Dict, List, Optional, Set
-from .pdb_loader import MolecularSystem
-from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+try:
+    from .pdb_loader import MolecularSystem
+    from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from bioinformatics.pdb_loader import MolecularSystem
+    from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
 
 
 class ContactMapGraphBuilder:

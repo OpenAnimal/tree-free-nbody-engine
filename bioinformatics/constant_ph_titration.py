@@ -8,8 +8,14 @@ from __future__ import annotations
 import numpy as np
 import time
 from typing import Tuple, Dict, List, Optional
-from .pdb_loader import MolecularSystem, RESIDUE_PROPERTIES
-from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
+try:
+    from .pdb_loader import MolecularSystem, RESIDUE_PROPERTIES
+    from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from bioinformatics.pdb_loader import MolecularSystem, RESIDUE_PROPERTIES
+    from bioinformatics.core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
 
 
 KB_T_300K: float = 0.0019872041 * 300.0  # kcal/mol at 300 K (~0.596 kcal/mol)
@@ -123,7 +129,10 @@ class ConstantPHTitrationEngine:
             delta_g_total = delta_g_elec + delta_g_ref
 
             # Metropolis Acceptance Criterion
-            if delta_g_total <= 0.0 or rng.uniform(0, 1) < np.exp(-delta_g_total / self.kb_t):
+            # Clip the Metropolis exponent to avoid overflow for strongly
+            # unfavorable protonation moves while preserving its probability.
+            acceptance_prob = np.exp(np.clip(-delta_g_total / self.kb_t, -745.0, 0.0))
+            if delta_g_total <= 0.0 or rng.uniform(0, 1) < acceptance_prob:
                 # Accept transition
                 site["is_protonated"] = target_state
                 current_charges[atom_idx] += dq_per_atom
@@ -192,3 +201,33 @@ class ConstantPHTitrationEngine:
             "site_titration_curves": site_curves,
             "elapsed_seconds": elapsed,
         }
+
+    def predict_pka_shifts(self) -> Dict[str, Any]:
+        """
+        Fast electrostatic pKa shift prediction from initial continuum potential field:
+        Delta pKa = -Delta G_elec / (ln(10) * k_B * T).
+        """
+        if len(self.titratable_sites) == 0:
+            return {"titratable_residues": [], "pka_shifts": {}}
+
+        potentials, _, _ = self.fmm.evaluate(coords=self.system.coords, charges=self.system.charges)
+        pka_shifts = {}
+        for site in self.titratable_sites:
+            skey = f"{site['res_name']}_{site['res_id']}"
+            local_phi = float(np.mean(potentials[site["atom_indices"]]))
+            # Acidic residues: negative potential raises pKa (favors neutral/protonated form)
+            # Basic residues: positive potential lowers pKa (destabilizes cationic form)
+            sign = -1.0 if site["res_name"] in ["ASP", "GLU"] else +1.0
+            delta_pka = float(sign * local_phi / max(1e-3, self.ln10_kb_t))
+            pka_shifts[skey] = {
+                "pka_model": site["pka_model"],
+                "predicted_pka": float(site["pka_model"] + delta_pka),
+                "delta_pka": delta_pka,
+                "local_electrostatic_potential": local_phi
+            }
+
+        return {
+            "titratable_residues": [f"{s['res_name']}_{s['res_id']}" for s in self.titratable_sites],
+            "pka_shifts": pka_shifts
+        }
+

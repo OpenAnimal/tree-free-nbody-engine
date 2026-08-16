@@ -8,8 +8,14 @@ from __future__ import annotations
 import numpy as np
 import time
 from typing import Tuple, Dict, List, Optional
-from .pdb_loader import MolecularSystem
-from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType
+try:
+    from .pdb_loader import MolecularSystem
+    from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from bioinformatics.pdb_loader import MolecularSystem
+    from bioinformatics.core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType
 
 
 # Boltzmann constant in kcal / (mol * K)

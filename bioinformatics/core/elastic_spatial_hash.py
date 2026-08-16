@@ -126,10 +126,6 @@ class ElasticSpatialHash3D:
                 if self.keys[pos] == key:
                     return self.values[pos]
 
-        for pos in range(self.total_size):
-            if self.occupied[pos] and self.keys[pos] == key:
-                return self.values[pos]
-
         return None
 
     def build_from_coords(self, coords: np.ndarray, origin: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

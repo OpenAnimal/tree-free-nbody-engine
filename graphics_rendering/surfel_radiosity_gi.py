@@ -59,7 +59,16 @@ class SurfelRadiosityGI:
         """
         self.cell_surfel_map.clear()
         self.cell_multipoles.clear()
+        
+        positions = np.asarray(positions, dtype=np.float32)
+        normals = np.asarray(normals, dtype=np.float32)
+        albedos = np.asarray(albedos, dtype=np.float32)
+        areas = np.asarray(areas, dtype=np.float32).ravel()
+        emissions = np.asarray(emissions, dtype=np.float32)
+        
         n_surfels = len(positions)
+        if n_surfels == 0:
+            return
 
         # 1. Bucket surfels into spatial cells
         for i in range(n_surfels):
@@ -101,7 +110,23 @@ class SurfelRadiosityGI:
         Returns accumulated indirect radiance and execution performance metrics.
         """
         t0 = time.perf_counter()
+        positions = np.asarray(positions, dtype=np.float32)
+        normals = np.asarray(normals, dtype=np.float32)
+        albedos = np.asarray(albedos, dtype=np.float32)
+        areas = np.asarray(areas, dtype=np.float32).ravel()
+        direct_radiance = np.asarray(direct_radiance, dtype=np.float32)
+
         n_surfels = len(positions)
+        if n_surfels == 0:
+            return {
+                "num_surfels": 0,
+                "num_clusters": 0,
+                "latency_ms": 0.0,
+                "fps_capacity": 1000.0,
+                "indirect_radiance": np.empty((0, 3), dtype=np.float32),
+                "total_radiance": np.empty((0, 3), dtype=np.float32)
+            }
+
         current_radiance = direct_radiance.copy()
         accum_indirect = np.zeros_like(direct_radiance)
 

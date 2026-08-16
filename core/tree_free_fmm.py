@@ -115,6 +115,22 @@ class TreeFreeFMM:
 
     def build_hash_octree(self, positions: np.ndarray, charges: np.ndarray):
         """Indexes all particles into leaf boxes and stores multipoles in the Elastic Hash Table."""
+        positions = np.asarray(positions, dtype=np.float64)
+        charges = np.asarray(charges, dtype=np.float64)
+        if positions.ndim != 2 or positions.shape[1] != 2:
+            raise ValueError("positions must have shape (N, 2)")
+        if charges.ndim != 1 or len(charges) != len(positions):
+            raise ValueError("charges must have shape (N,) matching positions")
+
+        # Rebuilding an engine must replace the previous spatial state. Without
+        # clearing these containers, repeated evaluations mix old particles and
+        # accumulate stale local expansions.
+        self.hash_table = ElasticHashTable(
+            capacity=(1 << (2 * self.depth)) * 2,
+            delta=0.05,
+        )
+        self.boxes.clear()
+
         N = len(positions)
         # Step 1: Assign particles to spatial leaf buckets
         box_particle_map = {}
@@ -151,6 +167,23 @@ class TreeFreeFMM:
 
     def compute_far_and_near_field(self, positions: np.ndarray, charges: np.ndarray) -> np.ndarray:
         """Evaluates potentials using M2L for far boxes and direct P2P for neighbors."""
+        positions = np.asarray(positions, dtype=np.float64)
+        charges = np.asarray(charges, dtype=np.float64)
+        if positions.ndim != 2 or positions.shape[1] != 2:
+            raise ValueError("positions must have shape (N, 2)")
+        if charges.ndim != 1 or len(charges) != len(positions):
+            raise ValueError("charges must have shape (N,) matching positions")
+        if len(positions) == 0:
+            return np.empty(0, dtype=np.float64)
+        # Re-index on every evaluation so positions/charges cannot diverge from
+        # the cached box membership supplied by a prior call.
+        self.build_hash_octree(positions, charges)
+
+        # Local expansions are per-evaluation state; never accumulate them when
+        # the same engine is evaluated repeatedly.
+        for box in self.boxes.values():
+            box['l_coeffs'].fill(0.0)
+
         N = len(positions)
         potentials = np.zeros(N)
         grid_res = 1 << self.depth

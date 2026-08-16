@@ -8,16 +8,18 @@ Mathematical Foundation:
     E(p, n) = C0 * L_0(p) + C1 * (n · L_1(p))
 - Elastic Spatial Hash assigns probes dynamically to active game volumes.
 - Continuous multipole query evaluates SH coefficients at dynamic actor vertices in O(1).
+- GPU-Structured float4 layouts matching HLSL/GLSL StructuredBuffer<DynamicSHProbe>.
 """
 
 import numpy as np
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.elastic_hash import ElasticHashTable
+from graphics_rendering.gpu_hardware_interop import pack_sh_probes_gpu_layout
 
 class DynamicIrradianceCache:
     """
@@ -67,10 +69,39 @@ class DynamicIrradianceCache:
                 self.hash_table.insert(k, len(self.cell_probe_map))
             self.cell_probe_map[k].append(i)
 
-    def query_actor_irradiance(self, vertex_positions: np.ndarray, vertex_normals: np.ndarray, 
-                               chunk_size: int = 2048) -> Dict:
+    def export_gpu_probe_buffer(self) -> np.ndarray:
+        """
+        Exports Spherical Harmonic probes into 16-byte aligned float4 array format
+        matching HLSL/GLSL StructuredBuffer<DynamicSHProbe>:
+            struct DynamicSHProbe {
+                float4 pos_radius; // (x, y, z, cell_radius)
+                float4 L0_pad;     // (L0_r, L0_g, L0_b, 0.0)
+                float4 L1_R_pad;   // (L1_rx, L1_ry, L1_rz, 0.0)
+                float4 L1_G_pad;   // (L1_gx, L1_gy, L1_gz, 0.0)
+                float4 L1_B_pad;   // (L1_bx, L1_by, L1_bz, 0.0)
+            };
+        Returns:
+            np.ndarray: float32 array of shape (N_probes, 5, 4) (80 bytes per probe)
+        """
+        if self.probe_positions is None or len(self.probe_positions) == 0:
+            return np.empty((0, 5, 4), dtype=np.float32)
+        return pack_sh_probes_gpu_layout(
+            self.probe_positions,
+            self.probe_l0,
+            self.probe_l1,
+            probe_radius=self.cell_size
+        )
+
+    def query_actor_irradiance(
+        self,
+        vertex_positions: np.ndarray,
+        vertex_normals: np.ndarray,
+        chunk_size: int = 2048,
+        use_gpu: bool = False
+    ) -> Dict[str, Any]:
         """
         Evaluates dynamic irradiance for thousands of character / mesh vertices in O(1) per vertex.
+        Supports automatic GPU acceleration when PyTorch/CuPy is installed with CUDA.
         Returns RGB irradiance values and query performance metrics.
         """
         if self.probe_positions is None or self.probe_l0 is None or self.probe_l1 is None or len(self.probe_positions) == 0:
@@ -83,12 +114,85 @@ class DynamicIrradianceCache:
             raise ValueError("vertex_normals must have the same shape as vertex_positions")
         t0 = time.perf_counter()
         n_verts = len(vertex_positions)
+
+        if n_verts == 0:
+            return {
+                "num_vertices": 0,
+                "num_probes": len(self.probe_positions),
+                "latency_ms": 0.0,
+                "fps_capacity": 1000.0,
+                "mean_irradiance": 0.0,
+                "irradiance": np.empty((0, 3), dtype=np.float32),
+                "backend_used": "EMPTY"
+            }
         
         # Spherical Harmonic constants
         c0 = 0.282095 # 1 / (2*sqrt(pi))
         c1 = 0.488603 # sqrt(3) / (2*sqrt(pi))
 
+        backend_used = "CPU_NUMPY"
+        if use_gpu:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    with torch.no_grad():
+                        d_vpos = torch.as_tensor(vertex_positions, device='cuda', dtype=torch.float32)
+                        d_vnorm = torch.as_tensor(vertex_normals, device='cuda', dtype=torch.float32)
+                        d_ppos = torch.as_tensor(self.probe_positions, device='cuda', dtype=torch.float32)
+                        d_l0 = torch.as_tensor(self.probe_l0, device='cuda', dtype=torch.float32)
+                        d_l1 = torch.as_tensor(self.probe_l1, device='cuda', dtype=torch.float32)
+
+                        irr_chunks = []
+                        two_cell_sq = 2.0 * (self.cell_size ** 2)
+                        for s in range(0, n_verts, chunk_size):
+                            e = min(n_verts, s + chunk_size)
+                            vp_sub = d_vpos[s:e]
+                            vn_sub = d_vnorm[s:e]
+
+                            diff = d_ppos.unsqueeze(0) - vp_sub.unsqueeze(1) # (C, P, 3)
+                            dist_sq = torch.sum(diff**2, dim=-1) + 1e-3
+                            weights = torch.exp(-dist_sq / two_cell_sq)
+                            norm_w = weights / torch.clamp(torch.sum(weights, dim=-1, keepdim=True), min=1e-5)
+
+                            l0_sub = torch.matmul(norm_w, d_l0) # (C, 3)
+                            l1_sub = torch.einsum('cp,pkd->ckd', norm_w, d_l1) # (C, 3, 3)
+                            dir_sub = torch.einsum('cd,ckd->ck', vn_sub, l1_sub) # (C, 3)
+
+                            chunk_irr = torch.clamp(c0 * l0_sub + c1 * dir_sub, min=0.0)
+                            irr_chunks.append(chunk_irr)
+
+                        irradiance = torch.cat(irr_chunks, dim=0).cpu().numpy()
+                        backend_used = "CUDA_TORCH"
+                else:
+                    irradiance = self._query_actor_irradiance_cpu(vertex_positions, vertex_normals, c0, c1, chunk_size)
+            except Exception:
+                irradiance = self._query_actor_irradiance_cpu(vertex_positions, vertex_normals, c0, c1, chunk_size)
+        else:
+            irradiance = self._query_actor_irradiance_cpu(vertex_positions, vertex_normals, c0, c1, chunk_size)
+
+        t_eval = (time.perf_counter() - t0) * 1000.0
+
+        return {
+            "num_vertices": n_verts,
+            "num_probes": len(self.probe_positions),
+            "latency_ms": t_eval,
+            "fps_capacity": 1000.0 / max(1e-3, t_eval),
+            "mean_irradiance": float(np.mean(irradiance)),
+            "irradiance": irradiance,
+            "backend_used": backend_used
+        }
+
+    def _query_actor_irradiance_cpu(
+        self,
+        vertex_positions: np.ndarray,
+        vertex_normals: np.ndarray,
+        c0: float,
+        c1: float,
+        chunk_size: int
+    ) -> np.ndarray:
+        n_verts = len(vertex_positions)
         irradiance = np.zeros((n_verts, 3), dtype=np.float32)
+        two_cell_sq = 2.0 * (self.cell_size**2)
         
         # Chunked vectorized evaluation over active spatial probes
         for start_idx in range(0, n_verts, chunk_size):
@@ -100,7 +204,7 @@ class DynamicIrradianceCache:
             dist_sq = np.sum(diff**2, axis=-1) + 1e-3 # (C, P)
             
             # Distance Gaussian Kernel
-            weights = np.exp(-dist_sq / (2.0 * (self.cell_size**2))) # (C, P)
+            weights = np.exp(-dist_sq / two_cell_sq) # (C, P)
             # Normalize weights
             sum_w = np.sum(weights, axis=-1, keepdims=True)
             norm_w = weights / np.maximum(1e-5, sum_w)
@@ -117,16 +221,7 @@ class DynamicIrradianceCache:
             chunk_irr = np.maximum(0.0, c0 * l0_interp + c1 * dir_term)
             irradiance[start_idx:end_idx] = chunk_irr
 
-        t_eval = (time.perf_counter() - t0) * 1000.0
-
-        return {
-            "num_vertices": n_verts,
-            "num_probes": len(self.probe_positions),
-            "latency_ms": t_eval,
-            "fps_capacity": 1000.0 / max(1e-3, t_eval),
-            "mean_irradiance": float(np.mean(irradiance)),
-            "irradiance": irradiance
-        }
+        return irradiance
 
 def run_irradiance_cache_demo():
     print("==================================================================")
@@ -157,6 +252,9 @@ def run_irradiance_cache_demo():
     print(f"[-] Query Latency:            {sample_res['latency_ms']:.2f} ms")
     print(f"[-] Query Frame Rate:         {sample_res['fps_capacity']:.1f} FPS")
     print(f"[-] Mean Surface Irradiance:  {sample_res['mean_irradiance']:.4f} W/m^2")
+
+    gpu_probes = cache.export_gpu_probe_buffer()
+    print(f"[-] Exported GPU Probe Array: {gpu_probes.shape} ({gpu_probes.nbytes / 1024:.2f} KB, 5x float4 / 80B per probe)")
     print("==================================================================")
 
 if __name__ == '__main__':

@@ -10,6 +10,7 @@ Demonstrates the core intuitive concept:
 
 import sys
 import os
+from typing import Any, Tuple, Dict, List, Optional
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
@@ -47,8 +48,6 @@ def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: in
     Multi-Table Locality Sensitive Hashing (LSH) + Elastic Non-Reordering Table.
     """
     N, D = points.shape
-    if coo_matrix is None:
-        raise ImportError("app8 requires scipy for sparse Laplacian construction")
     if N == 0 or k_neighbors < 1:
         raise ValueError("points must be non-empty and k_neighbors must be positive")
     edge_weights = {}
@@ -86,31 +85,69 @@ def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: in
                         edge = (min(i, neighbor_idx), max(i, neighbor_idx))
                         edge_weights[edge] = max(edge_weights.get(edge, 0.0), w)
 
-    if not edge_weights:
-        return coo_matrix((N, N), dtype=np.float32).tocsr()
-    rows = []
-    cols = []
-    data = []
-    for (i, j), weight in edge_weights.items():
-        rows.extend((i, j))
-        cols.extend((j, i))
-        data.extend((weight, weight))
-    return coo_matrix((data, (rows, cols)), shape=(N, N), dtype=np.float32).tocsr()
+    if coo_matrix is not None:
+        if not edge_weights:
+            return coo_matrix((N, N), dtype=np.float32).tocsr()
+        rows, cols, data = [], [], []
+        for (i, j), weight in edge_weights.items():
+            rows.extend((i, j))
+            cols.extend((j, i))
+            data.extend((weight, weight))
+        return coo_matrix((data, (rows, cols)), shape=(N, N), dtype=np.float32).tocsr()
+    else:
+        # Pure NumPy sparse dictionary representation
+        return {"N": N, "edges": edge_weights}
 
-def compute_laplacian_eigenmap_2d(adj_matrix: np.ndarray) -> np.ndarray:
+def compute_laplacian_eigenmap_2d(adj_matrix: Any) -> np.ndarray:
     """Unfolds manifold to 2D via Graph Laplacian eigenvectors."""
-    if eigsh is None or not hasattr(adj_matrix, "tocsr"):
-        raise TypeError("adj_matrix must be a SciPy sparse matrix")
-    n = adj_matrix.shape[0]
-    if n < 3:
-        raise ValueError("at least three nodes are required for a 2D eigenmap")
-    degrees = np.asarray(adj_matrix.sum(axis=1)).ravel()
-    inv_sqrt = 1.0 / np.sqrt(np.maximum(degrees, 1e-6))
-    normalized = diags(inv_sqrt) @ adj_matrix @ diags(inv_sqrt)
-    laplacian = sparse_eye(n, format="csr") - normalized
-    # Compute only the three smallest eigenvectors instead of a dense O(N^2) eigendecomposition.
-    _, eigvecs = eigsh(laplacian, k=3, which="SM")
-    return eigvecs[:, 1:3]
+    if isinstance(adj_matrix, dict) and "edges" in adj_matrix:
+        # Pure NumPy matrix-free normalized Laplacian power/Lanczos eigensolver
+        N = adj_matrix["N"]
+        if N < 3:
+            raise ValueError("at least three nodes are required for a 2D eigenmap")
+        
+        degrees = np.zeros(N, dtype=np.float64)
+        for (i, j), w in adj_matrix["edges"].items():
+            degrees[i] += w
+            degrees[j] += w
+            
+        inv_sqrt_d = 1.0 / np.sqrt(np.maximum(degrees, 1e-6))
+        
+        # Matrix-free normalized operator: M(v) = D^-1/2 A D^-1/2 v
+        def M_matvec(v: np.ndarray) -> np.ndarray:
+            u = v * inv_sqrt_d
+            Au = np.zeros(N, dtype=np.float64)
+            for (i, j), w in adj_matrix["edges"].items():
+                Au[i] += w * u[j]
+                Au[j] += w * u[i]
+            return Au * inv_sqrt_d
+
+        # Find top 3 eigenvectors of M (corresponding to smallest 3 eigenvectors of L_sym)
+        # Power iteration with Gram-Schmidt orthogonalization
+        rng = np.random.RandomState(42)
+        k_vecs = 3
+        V = rng.randn(k_vecs, N).astype(np.float64)
+        for it in range(35):
+            for k in range(k_vecs):
+                V[k] = M_matvec(V[k])
+                for prev in range(k):
+                    V[k] -= np.dot(V[k], V[prev]) * V[prev]
+                V[k] /= (np.linalg.norm(V[k]) + 1e-12)
+                
+        # Return eigenvectors 1 and 2 (ignoring trivial stationary eigenvector 0)
+        return V[1:3].T
+    else:
+        if eigsh is None or not hasattr(adj_matrix, "tocsr"):
+            raise TypeError("adj_matrix must be a SciPy sparse matrix or NumPy sparse dict")
+        n = adj_matrix.shape[0]
+        if n < 3:
+            raise ValueError("at least three nodes are required for a 2D eigenmap")
+        degrees = np.asarray(adj_matrix.sum(axis=1)).ravel()
+        inv_sqrt = 1.0 / np.sqrt(np.maximum(degrees, 1e-6))
+        normalized = diags(inv_sqrt) @ adj_matrix @ diags(inv_sqrt)
+        laplacian = sparse_eye(n, format="csr") - normalized
+        _, eigvecs = eigsh(laplacian, k=3, which="SM")
+        return eigvecs[:, 1:3]
 
 def run_dimension_reduction_demo():
     print("==================================================================")

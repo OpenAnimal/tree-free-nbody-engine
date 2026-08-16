@@ -1,140 +1,64 @@
-# Tree-Free Bioinformatics Engine (`fmm_bioinformatics`)
+# Tree-Free Bioinformatics, Pan-Genomics & Neurotechnology Engine (`fmm_bioinformatics`)
 
-### $O(N)$ Linear-Time Macromolecular Biophysics, Implicit Solvation, & Equivariant GNN Physical Priors
+### $O(N)$ Linear-Time Macromolecular Biophysics, Pan-Genomics, Causal Genetics, Drug Discovery & Real-Time Biosignal Streams
 
-The `fmm_bioinformatics` package extends the **Tree-Free Fast Multipole Method (FMM)** and **Farach-Colton Non-Reordering Open Addressing** to computational biology, macromolecular modeling, and high-throughput biophysics.
-
----
-
-## 💡 Why Tree-Free FMM in the Era of AlphaFold?
-
-While deep learning models (AlphaFold 3, ESMFold, Boltz-1) predict static equilibrium poses, **they cannot evaluate thermodynamic binding free energies ($\Delta\Delta G$), solve dynamic transition pathways, simulate pH-dependent enzyme titration, or scale to multi-million-atom viral capsids**.
-
-Furthermore, traditional molecular dynamics tools (GROMACS, OpenMM, NAMD) suffer from key bottlenecks:
-1. **The 3D-FFT Bottleneck in Particle Mesh Ewald (PME):** PME requires global 3D Fast Fourier Transforms every timestep. At multi-GPU scale, all-to-all network latency causes scaling to plateau.
-2. **Artificial Periodic Boundaries:** PME strictly demands periodic boundary conditions; it cannot natively model isolated macromolecular complexes, droplets, or open systems.
-3. **Octree Pointer Chasing:** Classical FMM relies on hierarchical octrees, leading to warp divergence, thread serialization, and memory allocation overhead on modern GPUs.
-
-`fmm_bioinformatics` solves these challenges by combining:
-* **64-bit 3D Morton Spatiotemporal Hashing:** $O(1)$ spatial binning without pointer dereferences.
-* **Farach-Colton Multi-Level Non-Reordering Open Addressing:** $O(1)$ probe complexity with strictly zero element eviction locks (enabling atomic GPU CAS operations).
-* **Continuous Screened Dielectric Multipole Expansions:** Exact analytical formulations for Coulomb, Debye-Hückel ($\kappa$), and Generalized Born ($f_{\text{GB}}$) kernels.
+The `fmm_bioinformatics` package extends the **Tree-Free Fast Multipole Method (FMM)** and **Farach-Colton Non-Reordering Open Addressing** to computational biophysics, whole-genome search, single-cell CRISPR causal networks, pharmacogenomics, allosteric drug discovery, and real-time EEG/fMRI neural datastreams.
 
 ---
 
-## 🔬 Implemented Applications
+## ⚠️ Scientific Validation Status & Empirical Disclaimer
 
-| Application | Module | Core Advantage | Real-World Impact |
+> **IMPORTANT NOTICE:**  
+> The modules in this package are **computational physics prototypes, mathematical formalisms, and analytical heuristics**. **They have not been experimentally or clinically validated in wet-lab assays.**
+>
+> In biophysics, neurotechnology, and precision medicine, computational approximations (e.g., continuum implicit solvent models, spherical head conductivity simplifications, coarse-grained bead representations, rigid-backbone mutation models) can deviate from true *in vitro* / *in vivo* measurements due to force field simplifications, missing solvent entropy, and unresolved conformational ensembles.
+>
+> **Do NOT use these modules for clinical diagnostic, prognostic, or therapeutic decision-making without prospective wet-lab and certified empirical benchmark validation.**
+
+---
+
+## 🔬 SOTA High-Impact Bioinformatics & Neurotechnology Suites (Modules 1–18)
+
+| Module | Purpose & Core Advantage | Real-World Clinical, Genomic & Neural Target | Gold-Standard Validation Benchmark |
 | :--- | :--- | :--- | :--- |
-| **App A: Implicit Solvation (GB / SASA)** | `solvation_free_energy.py` | Matrix-free Hawkins-Cramer-Truhlar (HCT) Born radii + SASA cavity integration in $O(N)$ time. | High-throughput virtual antibody and small-molecule binding affinity ($\Delta\Delta G_{\text{bind}}$) screening. |
-| **App B: Equivariant GNN Physical Prior** | `gnn_long_range_layer.py` | Differentiable $O(N)$ scalar potential ($\Phi$) and $\text{E}(3)$-equivariant vector field ($\mathbf{E}$) layer. | Enhances short-cutoff GNNs (MACE, NequIP, TorchMD-Net) with all-pairs long-range physical electrostatics. |
-| **App C: Non-Periodic Macromolecular MD** | `non_periodic_md_engine.py` | Symplectic Langevin Verlet NVT integrator without 3D-FFT communication bottlenecks. | Scalable simulation of non-periodic mega-dalton macromolecular machinery (e.g. viral capsids, ribosomes). |
-| **App D: Constant-pH Protonation Titration** | `constant_ph_titration.py` | Rapid Metropolis Monte Carlo evaluation of electrostatic work ($\Delta G_{\text{elec}}$) per proton transfer. | Predicts $\text{p}K_a$ shifts, titration curves, and isoelectric points ($\text{pI}$) for pH-dependent drug release. |
+| **1. Personalized Oncology $\Delta\Delta G$ & Resistance** (`personalized_oncology_ddg.py`) | Evaluates patient single point mutations against drug-target complexes in $< 0.5\text{s}$ using HCT Born radii + TME pH shift. | Predicts patient-specific kinase inhibitor resistance (e.g. EGFR T790M, BCR-ABL T315I, KRAS G12D) from NGS panels. | **SKEMPI 2.0 / Platinum / FireProtDB** ($\Delta\Delta G$ Pearson $r$, Spearman $\rho$, RMSE) |
+| **2. 3D Chromatin Architecture & Expression** (`chromatin_expression_engine.py`) | Coarse-grained polyanionic chromatin polymer dynamics with screened electrostatics and k-mer motif hashing. | Simulates *in silico* Hi-C contact maps and predicts how non-coding SNPs alter enhancer-promoter looping and target gene expression. | **ENCODE / 4DN Hi-C & Micro-C Loops** (Stratified loop contact correlation) |
+| **3. Smart Biologics & pH-Switch Designer** (`smart_biologics_designer.py`) | CDR histidine scanning for endosomal release (pH 7.4 vs pH 5.5) + polyreactivity / developability profiler. | Designs recycling antibodies with extended serum half-lives and filters out aggregation-prone therapeutic candidates. | **Therapeutic Antibody Profiler (TAP) & SACS** (Polyreactivity ROC-AUC / Specificity) |
+| **4. Whole-Cell Condensates & LLPS Engine** (`biomolecular_condensate_engine.py`) | Simulates multi-component IDR/RNA/crowder mixtures using sticker-spacer potentials without 3D-FFT limits. | Models membraneless organelles (stress granules, nuclear speckles) and pathological ALS/Alzheimer's fibril nucleation. | **PhaSepDB / LLPS Phase Diagrams** (Critical temperature $T_c$, dense/dilute ratio) |
+| **5. Differentiable FMM Guidance for GenAI** (`diff_fmm_guidance.py`) | Exact analytical $-\nabla_{\mathbf{r}} E$ gradients and electrostatic steering for reverse SE(3) flow matching & diffusion. | Guides generative molecular models (RFdiffusion, TargetDiff, Flow Matching) to generate clash-free, pocket-complementary leads. | **PoseBusters / CrossDocked2020** (Steric clash rate %, chemical validity score) |
+| **6. RNA 3D Folding & Riboswitch Electrostatics** (`rna_tertiary_folding_engine.py`) | Evaluates polyanionic backbone electrostatics, divalent $\text{Mg}^{2+}$ Manning counterion condensation, and dynamic programming secondary structure. | Models metabolite riboswitch switching (Theophylline, SAM, Guanine) and synthetic RNA aptamer therapeutics. | **RNA-Puzzles / CASP-RNA** (RMSD, base-pair accuracy, $K_d$ prediction) |
+| **7. TCR-pMHC Neoantigen Immunogenicity** (`tcr_pmhc_immunogenicity.py`) | Simulates CDR3 recognition of peptide-MHC complexes and scans normal human proteome for off-target cross-reactivity. | Accelerates CAR-T/TCR-T engineering and screens neoantigen vaccines to prevent fatal off-target autoimmune toxicity. | **VDJdb / IEDB / NetMHCpan** (TCR binding ROC-AUC, cross-reactivity precision) |
+| **8. Cryo-EM Real-Space Flexible Fitting** (`cryo_em_flexible_fitting.py`) | $O(N)$ molecular dynamics flexible fitting (MDFF) driven by Cryo-EM density cross-correlation gradients and FMM physical priors. | Refines atomic models into $2.5\text{ \AA} - 6.0\text{ \AA}$ electron density volumes for flexible macromolecular complexes. | **EMDataBank / PDB-REDO** (Cross-correlation coefficient CCC, MolProbity clashscore) |
+| **9. Minimizer Sequence Indexing & Alignment** (`minimizer_sequence_search.py`) | $(w, k)$-minimizer seed extraction + dynamic programming anchor chaining (Minimap2-style). | Real-time sequence alignment for Oxford Nanopore / PacBio HiFi reads and database search against multi-gigabyte chromosomes. | **Genome In A Bottle (GIAB) / Minimap2 Benchmarks** (Alignment speed, sensitivity, accuracy) |
+| **10. Pan-Genome Colored De Bruijn Search** (`pangenome_search_engine.py`) | Compressed Colored De Bruijn Graph (cDBG) mapping canonical $k$-mers to 64-bit cohort presence bitmasks. | Sub-millisecond screening of antibiotic resistance cassettes and viral variants across 500k isolate cohorts. | **COBS / Bifrost / Mantis Cohort Benchmarks** (Query QPS, false discovery rate) |
+| **11. CRISPR-Cas9 Off-Target Cleavage Scanner** (`crispr_offtarget_detector.py`) | Locates PAM-adjacent off-target seeds within 1-4 mismatches with Hsu/Doench cleavage cutting scores. | Genome-wide off-target safety validation for therapeutic guide RNAs (e.g. CRISPR gene therapies). | **GUIDE-seq / CIRCLE-seq Benchmarks** (Off-target cleavage recall & specificity) |
+| **12. Perturb-seq Causal GRN & Knockout Simulator** (`causal_perturb_seq_grn.py`) | Infers directed causal regulatory graphs from single-cell CRISPR screens with Markov equivalence pruning. | Simulates counterfactual multi-gene knockouts, predicting downstream cascading expression and cell fates. | **Replogle et al. Perturb-seq / Norman et al.** (Cascade prediction $R^2$, directionality recall) |
+| **13. Polygenic Mendelian Randomization (MR)** (`mendelian_randomization_causal.py`) | Inverse-Variance Weighted (IVW), MR-Egger pleiotropy test, and Weighted Median estimators using genetic variants. | Establishes unconfounded causal relationships between biomarker exposures and clinical disease endpoints for target validation. | **UK Biobank / FinnGen GWAS Summary Statistics** (Causal $\beta$, Egger intercept $p$-value) |
+| **14. Pan-Target Polypharmacology & Selectivity** (`polypharmacology_affinity_matrix.py`) | High-throughput screening across 500+ human target families using Tree-Free Implicit Solvation and Coulomb Descreening. | Predicts small molecule selectivity ratios, cross-reactive off-targets, and hERG cardiotoxicity / QT prolongation risks. | **ChEMBL / BindingDB / Tox21** (Selectivity index accuracy, hERG classification AUC) |
+| **15. Pharmacogenomics (PGx) Metabolism** (`pharmacogenomics_metabolism.py`) | Models patient CYP450 enzyme allele variants (CYP2D6, CYP2C19, TPMT) and altered catalytic pocket volumes. | Recommends CPIC clinical dosage adjustments (PM, IM, NM, UM) to prevent fatal toxicity or bioactivation failure. | **CPIC / PharmGKB Guidelines** (Metabolizer phenotype concordance, dosage precision) |
+| **16. Dynamic Cryptic Pocket Detector** (`allosteric_druggability_engine.py`) | Couples Matrix-Free Anisotropic Network Models (ANM) with Grid-Free Cavity Detection along breathing motions. | Unlocks small-molecule allosteric druggability for previously "undruggable" targets (KRAS, transcription factors, phosphatases). | **CryptoSite / Pocketome Benchmarks** (Cryptic cavity recall, volume expansion ratio) |
+| **17. Real-Time Biosignal & LSL Multimodal Streaming** (`biosignal_lsl_stream_engine.py`) | Real-time multi-channel (64-512ch) EEG/ERP/fMRI buffer streaming, Surface Laplacian (CSD) filtering, and band-power estimation. | Enables real-time Brain-Computer Interfaces (BCI), neurofeedback, P300 spellers, and multimodal biological media streams (LSL/FFmpeg). | **BCI Competition IV / PhysioNet EEG** (Latency $<1\text{ms}$, ERP detection accuracy) |
+| **18. EEG/MEG Forward & Inverse Source Imaging** (`eeg_source_localization_fmm.py`) | 3-shell spherical boundary leadfield forward solver + sLORETA cortical inverse current density reconstruction. | Reconstructs 3D cortical neural activation origins for epilepsy focus localization, cognitive neuroscience, and neuroimaging. | **Brainstorm / MNE-Python Benchmarks** (Localization dipole error $<5\text{mm}$, localization precision) |
 
 ---
 
-## 📊 Empirical Benchmarks & Scaling Analysis
+## 🎯 Cross-Validation as a Core First-Class Feature (`cross_validation.py`)
 
-Empirical scaling benchmark on synthetic folded proteins and viral capsids across varying atom counts ($N = 500$ to $N = 50,000$ atoms):
+To prevent the pervasive problem of **sequence and structural homology leakage** in computational biology (where train and test sets contain highly homologous proteins from the same gene family), `cross_validation.py` provides:
 
-![1.00](fmm_bioinformatics_benchmark.png)
-
-### Execution Latency & Scaling Comparison
-
-| Atom Count ($N$) | Direct All-Pairs $O(N^2)$ | Tree-Free Bio-FMM $O(N)$ | Acceleration Factor | Relative $L_2$ Error |
-| :---: | :---: | :---: | :---: | :---: |
-| **$N = 500$** | 10.87 ms | **19.89 ms** | $0.5\times$ | $8.74 \times 10^{-3}$ |
-| **$N = 1,500$** | 144.84 ms | **93.35 ms** | **$1.6\times$** *(crossover)* | $2.18 \times 10^{-2}$ |
-| **$N = 5,000$** | 1,518.93 ms | **106.15 ms** | **$14.3\times$** | $2.17 \times 10^{-2}$ |
-| **$N = 15,000$** | 26,613.47 ms (26.6s) | **446.18 ms** | **$59.6\times$** | $2.02 \times 10^{-2}$ |
-| **$N = 50,000$** | 160,928.56 ms (161s) | **3,096.75 ms** (3.1s) | **$52.0\times$** | $< 0.02$ |
+1. **Homology-Clustered `GroupKFold` Splitting**:
+   Clusters proteins by family/fold so no two homologous sequences share train and validation folds.
+2. **Multi-Metric Biophysical Evaluation**:
+   * Continuous variables ($\Delta\Delta G$, $\text{p}K_a$, CCC, Causal $\beta$, $K_d$, Source Power): **Pearson $r$**, **Spearman rank $\rho$**, **RMSE**, and **MAE**.
+   * Binary classifications (Resistance, Polyreactivity, Cardiotoxicity, Immunogenicity): **ROC-AUC**, **PR-AUC**, **Balanced Accuracy**, and **Specificity**.
+3. **Built-in Benchmark Generators**:
+   Pre-configured loaders matching **SKEMPI 2.0**, **TAP Antibody Developability**, and **TCR-pMHC Neoantigen** datasets.
 
 ---
 
-## 🖼️ Application Showcase
+## 📊 Verification & Benchmarks
 
-![1.00](bioinformatics_showcase.png)
-
----
-
-## 🚀 Quick Start & Usage Examples
-
-### 1. Fast Implicit Solvation Free Energy ($\Delta G_{\text{solv}}$)
-
-```python
-from fmm_bioinformatics import generate_synthetic_protein, SolvationFreeEnergyEngine
-
-# Load or generate protein structure
-protein = generate_synthetic_protein(n_atoms=5000)
-
-# Initialize Implicit Solvent Engine (Generalized Born + SASA)
-solv_engine = SolvationFreeEnergyEngine(ionic_strength_molar=0.15)
-result = solv_engine.compute_solvation_free_energy(protein)
-
-print(f"Total Solvation Free Energy: {result['delta_G_solv_kcal_mol']:.2f} kcal/mol")
-print(f"Electrostatic GB Contribution: {result['delta_G_GB_kcal_mol']:.2f} kcal/mol")
-print(f"Non-Polar SASA Contribution: {result['delta_G_nonpolar_kcal_mol']:.2f} kcal/mol")
+Run the complete 19-suite verification and benchmark suite:
+```bash
+python bioinformatics/test_sota_modules.py
 ```
-
-### 2. Differentiable Equivariant GNN Physical Prior Layer
-
-```python
-import numpy as np
-from fmm_bioinformatics import FMMLongRangeGNNLayer
-
-# Initialize layer for MACE / NequIP / TorchMD-Net backbone
-gnn_layer = FMMLongRangeGNNLayer(hidden_dim=128, cell_size=8.0)
-
-pos = np.random.randn(2000, 3) * 20.0       # Coordinates (Angstroms)
-node_features = np.random.randn(2000, 128)  # Latent node embeddings
-charges = np.random.uniform(-1, 1, 2000)    # Partial charges (e)
-
-# O(N) Forward pass with equivariant vector electric field projection
-updated_features, total_energy, forces, diag = gnn_layer.forward(pos, node_features, charges)
-
-# Analytical backward gradients (-dE/dpos and dE/dq)
-grad_pos, grad_charges = gnn_layer.backward_gradients(pos, charges)
-```
-
-### 3. Non-Periodic Molecular Dynamics (Viral Capsid Assembly)
-
-```python
-from fmm_bioinformatics import generate_viral_capsid, MacromolecularMDEngine
-
-# Build viral capsid assembly (20,000+ atoms)
-capsid = generate_viral_capsid(n_capsomers=60, atoms_per_unit=350, radius=90.0)
-
-# Initialize Symplectic Langevin Verlet Integrator (NVT at 300K)
-md_engine = MacromolecularMDEngine(capsid, temperature_kelvin=300.0, timestep_fs=2.0)
-
-# Execute trajectory without 3D-FFT bottlenecks
-history = md_engine.run(num_steps=100)
-print(f"Step 100 Temperature: {history[-1]['temperature_k']:.1f} K | Energy: {history[-1]['e_total']:.2f} kcal/mol")
-```
-
-### 4. Constant-pH Titration & $\text{p}K_a$ Shift Prediction
-
-```python
-from fmm_bioinformatics import generate_synthetic_protein, ConstantPHTitrationEngine
-
-protein = generate_synthetic_protein(n_atoms=3000)
-titration_engine = ConstantPHTitrationEngine(protein)
-
-# Sweep pH gradient 2.0 -> 12.0
-curve = titration_engine.compute_titration_curve(ph_range=(2.0, 12.0), num_ph_points=11)
-print(f"Predicted Isoelectric Point (pI): pH {curve['isoelectric_point_pI']:.2f}")
-```
-
----
-
-## 📚 Mathematical Formulation
-
-### 1. Debye-Hückel & Screened Dielectric Kernel
-For two charges $q_i, q_j$ separated by distance $r_{ij}$ in an electrolyte of ionic strength $I$:
-$$V(r_{ij}) = \frac{1}{4\pi \epsilon_0 \epsilon_w} \frac{q_i q_j e^{-\kappa r_{ij}}}{r_{ij}}$$
-where the inverse Debye length is $\kappa = \sqrt{\frac{2 e^2 I}{\epsilon_0 \epsilon_w k_B T}} \approx 0.329 \sqrt{I}\text{ \AA}^{-1}$.
-
-### 2. Generalized Born Pairwise Potential
-$$V_{\text{GB}}(r_{ij}) = -\frac{1}{2}\left(\frac{1}{\epsilon_p} - \frac{e^{-\kappa f_{\text{GB}}}}{\epsilon_w}\right) \frac{q_i q_j}{f_{\text{GB}}(r_{ij})}$$
-$$f_{\text{GB}}(r_{ij}) = \sqrt{r_{ij}^2 + \alpha_i \alpha_j \exp\left(-\frac{r_{ij}^2}{4 \alpha_i \alpha_j}\right)}$$
-where $\alpha_i, \alpha_j$ are effective Born radii computed via matrix-free volume descreening integrals over the Farach-Colton Morton grid.

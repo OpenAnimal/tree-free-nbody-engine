@@ -22,6 +22,10 @@ from .tree_free_fmm import (
 from .fast_vectorized_fmm import (
     FastVectorizedFMM,
 )
+from .bitboard_morton_avx import (
+    BitboardMorton3D,
+    morton_encode_3d_64bit,
+)
 from .zig_backend import (
     is_zig_available,
     get_zig_version,
@@ -75,6 +79,8 @@ __all__ = [
     "get_box_center_2d",
     "TreeFreeFMM",
     "FastVectorizedFMM",
+    "BitboardMorton3D",
+    "morton_encode_3d_64bit",
     "is_zig_available",
     "get_zig_version",
     "zig_simd_p2p_potentials",

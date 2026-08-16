@@ -7,8 +7,14 @@ Provides an O(N) Far-Field Electrostatic Inductive Bias for Equivariant Graph Ne
 from __future__ import annotations
 import numpy as np
 from typing import Tuple, Dict, Optional, Any
-from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
-from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d
+try:
+    from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
+    from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from bioinformatics.core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL
+    from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d
 
 
 class FMMLongRangeGNNLayer:

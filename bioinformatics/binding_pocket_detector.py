@@ -8,8 +8,14 @@ from __future__ import annotations
 import numpy as np
 import time
 from typing import Tuple, Dict, List, Optional, Any
-from .pdb_loader import MolecularSystem
-from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+try:
+    from .pdb_loader import MolecularSystem
+    from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from bioinformatics.pdb_loader import MolecularSystem
+    from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
 
 
 class BindingPocketDetector:
@@ -56,9 +62,15 @@ class BindingPocketDetector:
         _, unique_keys, inverse = atom_hash.build_from_coords(coords, origin=origin)
         K = len(unique_keys)
 
+        # Precompute cell-to-atoms list to avoid O(N) np.where calls inside probe loop
+        cell_to_atom_indices = [np.where(inverse == c_i)[0] for c_i in range(K)]
+
+        # Precompute key-to-atoms dictionary for O(1) integer dict lookups
+        cell_key_to_atoms = {int(unique_keys[c_i]): cell_to_atom_indices[c_i] for c_i in range(K)}
+
         # 2. Fast Surface Shell Point Generation
         # Generate candidate probe points around a representative subsample of atoms
-        stride = max(1, N // 400)
+        stride = max(1, N // 150)
         sample_indices = np.arange(0, N, stride)
         sample_coords = coords[sample_indices]
         sample_radii = vdw[sample_indices]
@@ -83,20 +95,25 @@ class BindingPocketDetector:
             px_i, py_i, pz_i = int(p_ix[p_idx]), int(p_iy[p_idx]), int(p_iz[p_idx])
             local_atom_list = []
             for dx in (-1, 0, 1):
+                nx = px_i + dx
+                if nx < 0:
+                    continue
                 for dy in (-1, 0, 1):
+                    ny = py_i + dy
+                    if ny < 0:
+                        continue
                     for dz in (-1, 0, 1):
-                        nx, ny, nz = px_i + dx, py_i + dy, pz_i + dz
-                        if nx < 0 or ny < 0 or nz < 0:
+                        nz = pz_i + dz
+                        if nz < 0:
                             continue
                         k_n = int(morton_encode_3d(np.array([nx]), np.array([ny]), np.array([nz]))[0])
-                        c_idx = atom_hash.lookup(k_n)
-                        if c_idx is not None:
-                            local_atom_list.extend(np.where(inverse == c_idx)[0])
+                        if k_n in cell_key_to_atoms:
+                            local_atom_list.append(cell_key_to_atoms[k_n])
 
             if not local_atom_list:
                 continue
 
-            local_atoms = np.unique(local_atom_list)
+            local_atoms = np.concatenate(local_atom_list)
 
             # Check distance to local atoms
             d_local = np.linalg.norm(coords[local_atoms] - pt, axis=1)

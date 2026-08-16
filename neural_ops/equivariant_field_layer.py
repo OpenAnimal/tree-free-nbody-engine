@@ -11,7 +11,13 @@ Molecular Foundation Models (MACE, NequIP, AlphaFold), Robotics World Models, an
 
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List
-from .multipole_attention import ElasticSpatialHash, morton_encode_3d
+
+try:
+    from .multipole_attention import ElasticSpatialHash, morton_encode_3d
+except (ImportError, ValueError):
+    import os, sys
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from neural_ops.multipole_attention import ElasticSpatialHash, morton_encode_3d
 
 
 class EquivariantMultipoleLayer:

@@ -8,8 +8,13 @@ and Non-FMM Elastic Hashing tools (k-mer Genomic Counting, Pocket Detection, Con
 from __future__ import annotations
 import time
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
+
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
 from bioinformatics.pdb_loader import generate_synthetic_protein, generate_viral_capsid, MolecularSystem, COULOMB_CONSTANT_KCAL
 from bioinformatics.core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType
