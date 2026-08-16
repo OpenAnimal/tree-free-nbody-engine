@@ -46,7 +46,7 @@ def generate_banner():
     ax.scatter([center_x], [center_y], c='#FFFFFF', s=70, edgecolors='#00F0FF', lw=2.0, zorder=5)
 
     # Typography
-    x_pos = 0.55
+    x_pos = 0.35
     # Extra thick, rich dark stroke backdrop (linewidth=16.0) for crystal clear readability
     stroke_bg = [patheffects.withStroke(linewidth=16.0, foreground='#080C15')]
     
