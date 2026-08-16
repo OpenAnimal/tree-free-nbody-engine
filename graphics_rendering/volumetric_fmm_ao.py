@@ -381,16 +381,33 @@ class VolumetricFMMAmbientOcclusion:
         radii = np.array([self.macro_clusters[k]["eff_radius"] for k in cluster_keys], dtype=np.float32)
 
         backend_used = "CPU_NUMPY"
-        # Optional GPU dispatch hook (PyTorch / CuPy fallback)
+        # Optional GPU dispatch hook (AMD ROCm / DirectML / NVIDIA CUDA / MPS / CPU)
         if use_gpu:
             try:
                 import torch
+                dev_target = None
+                backend_name = "CUDA_TORCH"
+                
                 if torch.cuda.is_available():
+                    is_hip = hasattr(torch.version, "hip") and torch.version.hip is not None
+                    dev_target = torch.device('cuda')
+                    backend_name = "ROCM_TORCH" if is_hip else "CUDA_TORCH"
+                else:
+                    try:
+                        import torch_directml
+                        dev_target = torch_directml.device()
+                        backend_name = "DIRECTML_TORCH"
+                    except ImportError:
+                        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                            dev_target = torch.device('mps')
+                            backend_name = "MPS_TORCH"
+
+                if dev_target is not None:
                     with torch.no_grad():
-                        d_q = torch.as_tensor(query_points, device='cuda', dtype=torch.float32)
-                        d_c = torch.as_tensor(centers, device='cuda', dtype=torch.float32)
-                        d_m = torch.as_tensor(masses, device='cuda', dtype=torch.float32)
-                        d_r = torch.as_tensor(radii, device='cuda', dtype=torch.float32)
+                        d_q = torch.as_tensor(query_points, device=dev_target, dtype=torch.float32)
+                        d_c = torch.as_tensor(centers, device=dev_target, dtype=torch.float32)
+                        d_m = torch.as_tensor(masses, device=dev_target, dtype=torch.float32)
+                        d_r = torch.as_tensor(radii, device=dev_target, dtype=torch.float32)
 
                         ao_tensors = []
                         for s in range(0, n_queries, chunk_size):
@@ -404,7 +421,7 @@ class VolumetricFMMAmbientOcclusion:
                             ao_tensors.append(ao_sub)
 
                         ao_values = torch.cat(ao_tensors, dim=0).cpu().numpy()
-                        backend_used = "CUDA_TORCH"
+                        backend_used = backend_name
                 else:
                     ao_values = self._evaluate_ao_cpu(query_points, centers, masses, radii, chunk_size)
             except Exception:

@@ -134,13 +134,30 @@ class DynamicIrradianceCache:
         if use_gpu:
             try:
                 import torch
+                dev_target = None
+                backend_name = "CUDA_TORCH"
+                
                 if torch.cuda.is_available():
+                    is_hip = hasattr(torch.version, "hip") and torch.version.hip is not None
+                    dev_target = torch.device('cuda')
+                    backend_name = "ROCM_TORCH" if is_hip else "CUDA_TORCH"
+                else:
+                    try:
+                        import torch_directml
+                        dev_target = torch_directml.device()
+                        backend_name = "DIRECTML_TORCH"
+                    except ImportError:
+                        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                            dev_target = torch.device('mps')
+                            backend_name = "MPS_TORCH"
+
+                if dev_target is not None:
                     with torch.no_grad():
-                        d_vpos = torch.as_tensor(vertex_positions, device='cuda', dtype=torch.float32)
-                        d_vnorm = torch.as_tensor(vertex_normals, device='cuda', dtype=torch.float32)
-                        d_ppos = torch.as_tensor(self.probe_positions, device='cuda', dtype=torch.float32)
-                        d_l0 = torch.as_tensor(self.probe_l0, device='cuda', dtype=torch.float32)
-                        d_l1 = torch.as_tensor(self.probe_l1, device='cuda', dtype=torch.float32)
+                        d_vpos = torch.as_tensor(vertex_positions, device=dev_target, dtype=torch.float32)
+                        d_vnorm = torch.as_tensor(vertex_normals, device=dev_target, dtype=torch.float32)
+                        d_ppos = torch.as_tensor(self.probe_positions, device=dev_target, dtype=torch.float32)
+                        d_l0 = torch.as_tensor(self.probe_l0, device=dev_target, dtype=torch.float32)
+                        d_l1 = torch.as_tensor(self.probe_l1, device=dev_target, dtype=torch.float32)
 
                         irr_chunks = []
                         two_cell_sq = 2.0 * (self.cell_size ** 2)
@@ -162,7 +179,7 @@ class DynamicIrradianceCache:
                             irr_chunks.append(chunk_irr)
 
                         irradiance = torch.cat(irr_chunks, dim=0).cpu().numpy()
-                        backend_used = "CUDA_TORCH"
+                        backend_used = backend_name
                 else:
                     irradiance = self._query_actor_irradiance_cpu(vertex_positions, vertex_normals, c0, c1, chunk_size)
             except Exception:

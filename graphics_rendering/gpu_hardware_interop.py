@@ -26,8 +26,13 @@ from typing import Tuple, Dict, List, Optional, Any, Union
 class GPUBackendAPI(str, Enum):
     """Supported hardware compute & graphics backends."""
     CUDA = "CUDA"
+    ROCM_HIP = "ROCM_HIP"
+    DIRECTML = "DIRECTML"
+    OPENCL = "OPENCL"
     VULKAN = "VULKAN"
     DIRECTX12 = "DIRECTX12"
+    AMF = "AMF"
+    METAL = "METAL"
     HOST_SHARED = "HOST_SHARED"
 
 
@@ -41,7 +46,7 @@ class BufferAccessFlag(str, Enum):
 
 @dataclass
 class GPUBufferDescriptor:
-    """Hardware buffer descriptor matching Vulkan VkBuffer / DX12 ID3D12Resource."""
+    """Hardware buffer descriptor matching Vulkan VkBuffer / DX12 ID3D12Resource / AMD ROCm HIP buffers."""
     buffer_name: str
     backend: GPUBackendAPI
     capacity_bytes: int
@@ -50,6 +55,7 @@ class GPUBufferDescriptor:
     alignment_bytes: int
     is_host_visible: bool
     is_device_coherent: bool
+    has_sam_rebar: bool = False
     memory_handle: Optional[int] = None
 
 

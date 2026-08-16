@@ -82,7 +82,7 @@ class FFmpegInteropBridge:
             recommended_preset="medium", ffmpeg_codec_flag="libx264"
         )
 
-        # Hardware encoders (NVIDIA NVENC, Intel QSV, Apple VideoToolbox)
+        # NVIDIA Hardware Encoders (NVENC)
         self.available_encoders["av1_nvenc"] = HardwareEncoderProfile(
             name="NVIDIA AV1 NVENC", codec_name="av1", is_hardware_accelerated=True,
             recommended_preset="p4", ffmpeg_codec_flag="av1_nvenc"
@@ -96,6 +96,34 @@ class FFmpegInteropBridge:
             recommended_preset="p4", ffmpeg_codec_flag="h264_nvenc"
         )
 
+        # AMD / ATI Radeon Hardware Encoders (AMF - Advanced Media Framework)
+        self.available_encoders["av1_amf"] = HardwareEncoderProfile(
+            name="AMD Radeon AV1 AMF", codec_name="av1", is_hardware_accelerated=True,
+            recommended_preset="quality", ffmpeg_codec_flag="av1_amf"
+        )
+        self.available_encoders["hevc_amf"] = HardwareEncoderProfile(
+            name="AMD Radeon HEVC AMF", codec_name="hevc", is_hardware_accelerated=True,
+            recommended_preset="quality", ffmpeg_codec_flag="hevc_amf"
+        )
+        self.available_encoders["h264_amf"] = HardwareEncoderProfile(
+            name="AMD Radeon H.264 AMF", codec_name="h264", is_hardware_accelerated=True,
+            recommended_preset="quality", ffmpeg_codec_flag="h264_amf"
+        )
+
+        # Linux / Mesa AMD & Intel VAAPI Hardware Encoders
+        self.available_encoders["av1_vaapi"] = HardwareEncoderProfile(
+            name="VAAPI AV1 (Mesa/AMD)", codec_name="av1", is_hardware_accelerated=True,
+            recommended_preset="default", ffmpeg_codec_flag="av1_vaapi"
+        )
+        self.available_encoders["hevc_vaapi"] = HardwareEncoderProfile(
+            name="VAAPI HEVC (Mesa/AMD)", codec_name="hevc", is_hardware_accelerated=True,
+            recommended_preset="default", ffmpeg_codec_flag="hevc_vaapi"
+        )
+        self.available_encoders["h264_vaapi"] = HardwareEncoderProfile(
+            name="VAAPI H.264 (Mesa/AMD)", codec_name="h264", is_hardware_accelerated=True,
+            recommended_preset="default", ffmpeg_codec_flag="h264_vaapi"
+        )
+
     def generate_encoding_plan(
         self,
         input_spec: str,
@@ -107,11 +135,13 @@ class FFmpegInteropBridge:
         crf: int = 24,
         keyframe_timestamps: Optional[List[float]] = None,
         qp_file: Optional[str] = None,
-        prefer_hardware: bool = True
+        prefer_hardware: bool = True,
+        prefer_amd: bool = False
     ) -> EncodingPipelinePlan:
         """
         Synthesizes an optimal FFmpeg encoding execution plan incorporating pre-computed
         scene-cut boundaries and perceptual rate control parameters.
+        Supports AMD AMF, NVIDIA NVENC, VAAPI, and software codecs.
         """
         # Select best encoder profile
         width = int(width)
@@ -126,9 +156,25 @@ class FFmpegInteropBridge:
         codec_lower = codec.lower()
         selected_prof: HardwareEncoderProfile
         
-        if prefer_hardware and f"{codec_lower}_nvenc" in self.available_encoders:
-            selected_prof = self.available_encoders[f"{codec_lower}_nvenc"]
-            est_speedup = 5.8
+        if prefer_hardware:
+            if prefer_amd and f"{codec_lower}_amf" in self.available_encoders:
+                selected_prof = self.available_encoders[f"{codec_lower}_amf"]
+                est_speedup = 5.5
+            elif f"{codec_lower}_nvenc" in self.available_encoders:
+                selected_prof = self.available_encoders[f"{codec_lower}_nvenc"]
+                est_speedup = 5.8
+            elif f"{codec_lower}_amf" in self.available_encoders:
+                selected_prof = self.available_encoders[f"{codec_lower}_amf"]
+                est_speedup = 5.5
+            elif f"{codec_lower}_vaapi" in self.available_encoders:
+                selected_prof = self.available_encoders[f"{codec_lower}_vaapi"]
+                est_speedup = 4.8
+            elif f"{codec_lower}_cpu" in self.available_encoders:
+                selected_prof = self.available_encoders[f"{codec_lower}_cpu"]
+                est_speedup = 1.0
+            else:
+                selected_prof = self.available_encoders["h264_cpu"]
+                est_speedup = 1.0
         elif f"{codec_lower}_cpu" in self.available_encoders:
             selected_prof = self.available_encoders[f"{codec_lower}_cpu"]
             est_speedup = 1.0
@@ -150,7 +196,15 @@ class FFmpegInteropBridge:
 
         # Rate control & Quality flags
         if selected_prof.is_hardware_accelerated:
-            cli.extend(["-cq", str(crf), "-preset", selected_prof.recommended_preset])
+            if "amf" in selected_prof.ffmpeg_codec_flag:
+                # AMD AMF optimal flags: CQP mode with high quality preset
+                cli.extend(["-quality", selected_prof.recommended_preset, "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)])
+            elif "nvenc" in selected_prof.ffmpeg_codec_flag:
+                cli.extend(["-cq", str(crf), "-preset", selected_prof.recommended_preset])
+            elif "vaapi" in selected_prof.ffmpeg_codec_flag:
+                cli.extend(["-qp", str(crf)])
+            else:
+                cli.extend(["-cq", str(crf), "-preset", selected_prof.recommended_preset])
         else:
             if selected_prof.codec_name == "av1":
                 cli.extend(["-crf", str(crf), "-preset", "6", "-svtav1-params", "tune=0:enable-restoration=1"])

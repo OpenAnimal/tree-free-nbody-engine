@@ -95,7 +95,9 @@ if HAS_TRITON:
         """
         PyTorch entrypoint for Triton GPU N-Body solver.
         """
-        assert coords.is_cuda and charges.is_cuda, "Inputs must be on CUDA GPU device"
+        assert (coords.is_cuda and charges.is_cuda) or (coords.device.type in ('cuda', 'hip') and charges.device.type in ('cuda', 'hip')), (
+            "Inputs must be on a CUDA or AMD ROCm/HIP GPU device"
+        )
         N = coords.shape[0]
         out_pot = torch.empty(N, device=coords.device, dtype=torch.float32)
         out_forces = torch.empty((N, 3), device=coords.device, dtype=torch.float32)

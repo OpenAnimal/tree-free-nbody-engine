@@ -1,19 +1,27 @@
 /**
- * Ultra-Fast Tree-Free Fast Multipole Method (FMM) CUDA C++ Kernel
- * ================================================================
+ * Ultra-Fast Tree-Free Fast Multipole Method (FMM) CUDA/HIP C++ Kernel
+ * ====================================================================
  * Combines Lock-Free Non-Reordering Open Addressing Hash Table (Farach-Colton et al. 2025)
  * with Warp-Level Multipole Expansions (P2M) and Fused Shared-Memory P2P Interaction Tiles.
  *
- * Target Architectures: NVIDIA Ampere (sm_80), Ada Lovelace (sm_89), Hopper (sm_90), Blackwell (sm_100)
+ * Target Architectures:
+ *  - NVIDIA Ampere (sm_80), Ada Lovelace (sm_89), Hopper (sm_90), Blackwell (sm_100)
+ *  - AMD RDNA 2/3/4 (gfx1030/gfx1100/gfx1200) and CDNA 1/2/3 via HIP compilation
  */
 
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_runtime.h>
+#define WARP_SIZE 64
+#else
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <math_constants.h>
+#define WARP_SIZE 32
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 
-#define WARP_SIZE 32
 #define BLOCK_SIZE 256
 #define MAX_LEVELS 4
 #define ORDER 4

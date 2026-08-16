@@ -26,6 +26,24 @@ from .bitboard_morton_avx import (
     BitboardMorton3D,
     morton_encode_3d_64bit,
 )
+from .device_runtime import (
+    DeviceRuntime,
+    AcceleratorVendor,
+    ComputeBackend,
+    DeviceDescriptor,
+)
+from .opencl_kernels import (
+    is_opencl_available,
+    opencl_tree_free_nbody,
+    opencl_morton_encode_3d,
+)
+from .hip_kernels import (
+    get_hip_kernel_source,
+)
+from .webgpu_kernels import (
+    get_wgsl_source,
+    is_webgpu_available,
+)
 from .zig_backend import (
     is_zig_available,
     get_zig_version,
@@ -95,6 +113,16 @@ __all__ = [
     "zig_3d_m2p",
     "zig_3d_m2l",
     "zig_3d_l2p",
+    "DeviceRuntime",
+    "AcceleratorVendor",
+    "ComputeBackend",
+    "DeviceDescriptor",
+    "is_opencl_available",
+    "opencl_tree_free_nbody",
+    "opencl_morton_encode_3d",
+    "get_hip_kernel_source",
+    "get_wgsl_source",
+    "is_webgpu_available",
     "p2m",
     "m2l",
     "eval_local",
