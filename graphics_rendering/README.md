@@ -108,15 +108,7 @@ python graphics_rendering/benchmark_graphics_rendering.py
 
 ## 🔬 Theoretical Citations
 
-1. **Optimal Bounds for Open Addressing Without Reordering**  
-   *Martín Farach-Colton, Andrew Krapivin, William Kuszmaul* (2025).  
-   *IEEE Symposium on Foundations of Computer Science (FOCS 2024)*. [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
-2. **A Fast Algorithm for Particle Simulations**  
-   *Leslie Greengard, Vladimir Rokhlin* (1987).  
-   *Journal of Computational Physics*, 73(2), 325-348.
-3. **Point-Based Global Illumination for Movie Production**  
-   *Per H. Christensen* (2008).  
-   *ACM SIGGRAPH 2008 Classes*, Article 10.
-4. **An Efficient Representation for Irradiance Environment Maps**  
-   *Ravi Ramamoorthi, Pat Hanrahan* (2001).  
-   *ACM SIGGRAPH 2001 Proceedings*, 497-500.
+1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+2. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
+3. **Point-Based Global Illumination for Movie Production.** Christensen (2008). *ACM SIGGRAPH Classes*, Article 10.
+4. **An Efficient Representation for Irradiance Environment Maps.** Ramamoorthi, Hanrahan (2001). *ACM SIGGRAPH Proceedings*, 497–500.

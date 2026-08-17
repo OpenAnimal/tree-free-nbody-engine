@@ -31,17 +31,16 @@ dependencies = [
 
 [project.optional-dependencies]
 neural = [
-    "numpy>=1.24.0",
-    "matplotlib>=3.7.0"
+    "torch>=2.0.0",
+    "scipy>=1.10.0"
 ]
 bio = [
-    "numpy>=1.24.0"
+    "scipy>=1.10.0"
 ]
 physics = [
-    "numpy>=1.24.0"
+    "scipy>=1.10.0"
 ]
 manifold = [
-    "numpy>=1.24.0",
     "scipy>=1.10.0"
 ]
 gpu = [
@@ -50,11 +49,17 @@ gpu = [
     "torch>=2.0.0",
     "triton>=2.1.0"
 ]
+opencl = [
+    "pyopencl>=2022.1"
+]
+webgpu = [
+    "wgpu>=0.14.0"
+]
 media = [
     "Pillow>=9.0.0"
 ]
 all = [
-    "tree-free-nbody-engine[neural,bio,physics,manifold,gpu,media]"
+    "tree-free-nbody-engine[neural,bio,physics,manifold,gpu,opencl,webgpu,media]"
 ]
 
 [project.urls]

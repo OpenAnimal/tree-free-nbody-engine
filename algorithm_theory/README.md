@@ -197,50 +197,15 @@ algorithm_theory/
 
 ## 🔬 Theoretical Citations
 
-1. **Continuous Fast Multipole Method for Large Scale Gaussian Based Quantum Chemistry**  
-   *C. A. White, B. G. Johnson, P. M. W. Gill, M. Head-Gordon* (1994, 1996).  
-   *Chemical Physics Letters 253(3-4)*.
-
-2. **Co-Optimal Transport**  
-   *Ievgen Redko, Nicolas Courty, Remi Flamary, Devis Tuia* (2020).  
-   *Advances in Neural Information Processing Systems (NeurIPS)*.
-
-3. **Co-clustering Documents and Words Using Bipartite Spectral Graph Partitioning**  
-   *Inderjit S. Dhillon* (2001).  
-   *ACM SIGKDD*.
-
-4. **Toward Accurate Dynamic Time Warping in Linear Time and Space**  
-   *Stan Salvador, Philip Chan* (2007).  
-   *Intelligent Data Analysis 11(5)*.
-
-5. **A Data-Driven Approximation of the Koopman Operator: Extending Dynamic Mode Decomposition**  
-   *M. O. Williams, I. G. Kevrekidis, C. W. Rowley* (2015).  
-   *Journal of Nonlinear Science 25(6)*.
-
-6. **Construction of Correlation Functions in Two and Three Dimensions**  
-   *G. Gaspari, S. E. Cohn* (1999).  
-   *Quarterly Journal of the Royal Meteorological Society 125(554)*.
-
-7. **Graph Sparsification by Effective Resistances**  
-   *Daniel A. Spielman, Nikhil Srivastava* (2011).  
-   *SIAM Journal on Computing 40(6)*.
-
-8. **Measuring Statistical Dependence with Hilbert-Schmidt Norms**  
-   *A. Gretton, O. Bousquet, A. Smola, B. Scholkopf* (2005).  
-   *Algorithmic Learning Theory (ALT)*.
-
-9. **GPyTorch: Blackbox Matrix-Matrix Gaussian Process Inference with GPU Acceleration**  
-   *J. Gardner, G. Pleiss, R. Wu, K. Weinberger, A. G. Wilson* (2018).  
-   *Advances in Neural Information Processing Systems (NeurIPS)*.
-
-10. **Global Sensitivity Indices for Nonlinear Mathematical Models and Their Monte Carlo Estimates**  
-    *I. M. Sobol* (2001).  
-    *Mathematics and Computers in Simulation 55(1-3)*.
-
-11. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths**  
-    *Ran Duan, Jiayan Cheng, Xiao Mao, Longhui Yin, Hanrui Ren* (2024/2025).  
-    *ACM Symposium on Theory of Computing (STOC 2025 Best Paper)*. [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
-
-12. **Optimal Bounds for Open Addressing Without Reordering**  
-    *Martín Farach-Colton, Andrew Krapivin, William Kuszmaul* (2025).  
-    *IEEE Symposium on Foundations of Computer Science (FOCS 2024)*. [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+1. **Continuous Fast Multipole Method for Large Scale Gaussian Based Quantum Chemistry.** White, Johnson, Gill, Head-Gordon (1994, 1996). *Chemical Physics Letters*, 253(3-4).
+2. **Co-Optimal Transport.** Redko, Courty, Flamary, Tuia (2020). *NeurIPS*.
+3. **Co-clustering Documents and Words Using Bipartite Spectral Graph Partitioning.** Dhillon (2001). *ACM SIGKDD*.
+4. **Toward Accurate Dynamic Time Warping in Linear Time and Space.** Salvador, Chan (2007). *Intelligent Data Analysis*, 11(5).
+5. **A Data-Driven Approximation of the Koopman Operator: Extending Dynamic Mode Decomposition.** Williams, Kevrekidis, Rowley (2015). *Journal of Nonlinear Science*, 25(6).
+6. **Construction of Correlation Functions in Two and Three Dimensions.** Gaspari, Cohn (1999). *Quarterly Journal of the Royal Meteorological Society*, 125(554).
+7. **Graph Sparsification by Effective Resistances.** Spielman, Srivastava (2011). *SIAM Journal on Computing*, 40(6).
+8. **Measuring Statistical Dependence with Hilbert-Schmidt Norms.** Gretton, Bousquet, Smola, Schölkopf (2005). *Algorithmic Learning Theory (ALT)*.
+9. **GPyTorch: Blackbox Matrix-Matrix Gaussian Process Inference with GPU Acceleration.** Gardner, Pleiss, Wu, Weinberger, Wilson (2018). *NeurIPS*.
+10. **Global Sensitivity Indices for Nonlinear Mathematical Models and Their Monte Carlo Estimates.** Sobol (2001). *Mathematics and Computers in Simulation*, 55(1-3).
+11. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths.** Duan, Cheng, Mao, Yin, Ren (2025). *ACM STOC 2025 Best Paper* / [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
+12. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).

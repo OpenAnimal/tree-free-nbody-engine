@@ -153,12 +153,6 @@ python quantized_bitpacked_optimization/benchmark_ablation.py
 
 ## Academic & Technical Citations
 
-1. **Vercidium (2024)**  
-   *“I Optimised My Game Engine Up To 12000 FPS”*  
-   Voxel engine architecture, discrete coordinate bit-packing, run-length greedy meshing, and outer-loop stride hoisting. [YouTube / Sector's Edge](https://sectorsedge.com).
-2. **Farach-Colton, M., Krapivin, A., & Kuszmaul, W. (2025)**  
-   *“Optimal Bounds for Open Addressing Without Reordering”*  
-   arXiv:2501.02305 / IEEE FOCS 2024.
-3. **Greengard, L., & Rokhlin, V. (1987)**  
-   *“A Fast Algorithm for Particle Simulations”*  
-   *Journal of Computational Physics*, 73(2), 325-348.
+1. **I Optimised My Game Engine Up To 12000 FPS.** Vercidium (2024). *Sector's Edge Systems Architecture* / [YouTube](https://www.youtube.com/watch?v=40JzyaOYJeY).
+2. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+3. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
