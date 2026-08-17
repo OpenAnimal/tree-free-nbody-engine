@@ -320,23 +320,7 @@ python video_streaming_codecs/test_video_streaming.py
 python physics_simulation/ppf_contact_solver_fmm/cloth_shell_simulation.py
 ```
 
----
 
-## Citation
-
-If you use `tree-free-nbody-engine` in your academic research, engineering systems, or software projects, please cite this repository:
-
-```bibtex
-@software{tree_free_nbody_engine2026,
-  author       = {OpenAnimal},
-  title        = {Tree-Free N-Body Engine: Octree-Free, Lock-Free O(N) Spatial Computing & Multipole Mechanics},
-  year         = {2026},
-  publisher    = {GitHub},
-  journal      = {GitHub repository},
-  howpublished = {\url{https://github.com/OpenAnimal/tree-free-nbody-engine}},
-  url          = {https://github.com/OpenAnimal/tree-free-nbody-engine}
-}
-```
 
 ---
 
@@ -367,6 +351,23 @@ If you use `tree-free-nbody-engine` in your academic research, engineering syste
    Minchen Li, Zachary Ferguson, Teseo Schneider, Timothy Langlois, Denis Zorin, Daniele Panozzo (2020).  
    *ACM Transactions on Graphics (SIGGRAPH 2020)*.
 
+
+
 ---
 
-> **Project Status & Support Notice:** Released under the MIT License. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no unpaid support. Please do not open issues asking for personal assistance or feature requests.
+## Citation
+
+If you want to reference `tree-free-nbody-engine`, you can use this citation:
+
+```bibtex
+@software{tree_free_nbody_engine2026,
+  author = {OpenAnimal},
+  title  = {Tree-Free N-Body Engine: Octree-Free, Lock-Free O(N) Spatial Computing \& Multipole Mechanics},
+  year   = {2026},
+  url    = {https://github.com/OpenAnimal/tree-free-nbody-engine}
+}
+```
+
+---
+
+> **Project Status & Support Notice:** Released under the MIT License. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no unpaid support. I am poor as a church mouse and I don't have time for anything. 
