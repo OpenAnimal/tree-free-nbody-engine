@@ -70,6 +70,27 @@
             background: linear-gradient(135deg, #00FF88, #0088FF);
         }
 
+        .badge-warning {
+            background: linear-gradient(135deg, #FFA500, #FF4444);
+            color: #fff;
+        }
+
+        #hwAccelWarning {
+            display: none;
+            background: rgba(255, 165, 0, 0.12);
+            border: 1px solid rgba(255, 165, 0, 0.45);
+            border-radius: 6px;
+            padding: 10px 12px;
+            font-size: 0.74rem;
+            line-height: 1.4;
+            color: #FFA500;
+        }
+
+        #hwAccelWarning a {
+            color: var(--accent-cyan);
+            text-decoration: underline;
+        }
+
         .subtitle {
             font-size: 0.75rem;
             color: var(--text-dim);
@@ -227,6 +248,19 @@
         <div>
             <h1>Tree-Free N-Body <span id="gpuBadge" class="badge badge-gpu">GPU COMPUTE</span></h1>
             <p class="subtitle">Optimal Non-Reordering Hash (Farach-Colton et al. 2025)</p>
+        </div>
+
+        <div id="hwAccelWarning">
+            <strong>⚠️ Hardware Acceleration is OFF in Browser</strong><br>
+            The simulation is running on CPU software emulation (Microsoft Basic Render Driver).<br>
+            <div style="margin-top:5px; font-size:0.71rem; color:var(--text-main);">
+                To unlock 60–120+ FPS on your dedicated GPU:
+                <ol style="margin-left: 16px; margin-top: 3px;">
+                    <li>Open <code>chrome://settings/system</code> (or <code>edge://settings/system</code>)</li>
+                    <li>Turn ON <strong>"Use graphics acceleration when available"</strong></li>
+                    <li>Relaunch your browser</li>
+                </ol>
+            </div>
         </div>
 
         <div class="section-title">Scale Presets</div>
@@ -919,10 +953,12 @@
         let frameCount = 0;
 
         function formatWebGLRenderer(raw) {
-            if (!raw) return 'WebGL 2.0 Accelerated GPU';
+            if (!raw) return { name: 'WebGL 2.0 Accelerated GPU', isSoftware: false };
+            const isSoftware = /Basic Render Driver|Software|llvmpipe|SwiftShader|GDI Generic/i.test(raw);
+            let cleanName = raw;
             const match = raw.match(/ANGLE\s*\([^,]+,\s*([^,]+?)(?:\s+Direct3D|\s+D3D|\s+vulkan|\s+gl|\s+\(|$)/i);
             if (match && match[1]) {
-                let cleanName = match[1].trim();
+                cleanName = match[1].trim();
                 if (raw.includes('Direct3D12') || raw.includes('D3D12')) {
                     cleanName += ' (Direct3D 12)';
                 } else if (raw.includes('Direct3D11') || raw.includes('D3D11')) {
@@ -930,12 +966,11 @@
                 } else if (raw.includes('Vulkan')) {
                     cleanName += ' (Vulkan)';
                 }
-                return cleanName;
             }
-            if (raw.includes('Basic Render Driver') || raw.includes('Software')) {
-                return 'Microsoft Basic Render Driver (Software Fallback)';
+            if (isSoftware) {
+                cleanName = 'Microsoft Basic Render Driver (Software Rasterizer)';
             }
-            return raw;
+            return { name: cleanName, isSoftware: isSoftware };
         }
 
         async function initEngine() {
@@ -1070,6 +1105,7 @@
                         });
 
                         activeBackend = 'WEBGPU';
+                        document.getElementById('hwAccelWarning').style.display = 'none';
                         document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGPU WGSL Compute (Zero-Copy)';
                         document.getElementById('gpuName').innerText = gpuDescription;
                         document.getElementById('vramMode').innerText = '100% On-Chip GPU VRAM';
@@ -1102,7 +1138,7 @@
 
             const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
             const rawRenderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'WebGL 2.0 Accelerated GPU';
-            const gpuRenderer = formatWebGLRenderer(rawRenderer);
+            const rendererInfo = formatWebGLRenderer(rawRenderer);
 
             // Shaders
             const vs = gl.createShader(gl.VERTEX_SHADER);
@@ -1144,9 +1180,20 @@
             glTF = gl.createTransformFeedback();
 
             activeBackend = 'WEBGL2_TF';
-            document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGL 2.0 Transform Feedback GPU';
-            document.getElementById('gpuName').innerText = gpuRenderer;
-            document.getElementById('vramMode').innerText = 'GPU Transform Feedback Buffers';
+            document.getElementById('gpuName').innerText = rendererInfo.name;
+
+            if (rendererInfo.isSoftware) {
+                document.getElementById('hwAccelWarning').style.display = 'block';
+                const gpuBadge = document.getElementById('gpuBadge');
+                gpuBadge.innerText = 'SOFTWARE FALLBACK';
+                gpuBadge.className = 'badge badge-warning';
+                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator" style="background-color:#FFA500; box-shadow:0 0 8px #FFA500;"></span>WebGL 2.0 (Software Emulation)';
+                document.getElementById('vramMode').innerText = 'Emulated CPU Memory (Low Perf)';
+            } else {
+                document.getElementById('hwAccelWarning').style.display = 'none';
+                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGL 2.0 Transform Feedback GPU';
+                document.getElementById('vramMode').innerText = 'GPU Transform Feedback Buffers';
+            }
         }
 
         // ====================================================================
