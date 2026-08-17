@@ -353,8 +353,8 @@
         const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            core1 = { x: 0.25, y: 0.44, vx: 0.028, vy: 0.014, mass: 1.0 };
-            core2 = { x: 0.75, y: 0.56, vx: -0.028, vy: -0.014, mass: 1.0 };
+            core1 = { x: 0.22, y: 0.42, vx: 0.030, vy: 0.012, mass: 1.0 };
+            core2 = { x: 0.78, y: 0.58, vx: -0.030, vy: -0.012, mass: 1.0 };
 
             for (let i = 0; i < N; i++) {
                 let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
@@ -380,41 +380,41 @@
                     px = cx + dx;
                     py = cy + dy;
 
-                    // Softer multi-scale potential circular velocity (Core GM=0.007, eps=0.045 + Halo GM=0.004, eps=0.100)
+                    // Exact centrifugal potential circular orbital velocity (Core GM=0.0050, eps=0.050 + Halo GM=0.0030, eps=0.120)
                     const rSq = r * r;
-                    const vOrbCoreSq = (0.007 * rSq) / Math.pow(rSq + 0.002025, 1.5);
-                    const vOrbHaloSq = (0.004 * rSq) / Math.pow(rSq + 0.010000, 1.5);
+                    const vOrbCoreSq = (0.0050 * rSq) / Math.pow(rSq + 0.002500, 1.5);
+                    const vOrbHaloSq = (0.0030 * rSq) / Math.pow(rSq + 0.014400, 1.5);
                     const vOrb = Math.sqrt(vOrbCoreSq + vOrbHaloSq);
 
                     const dir = isG1 ? 1.0 : -1.0;
-                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.003;
-                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt) + (Math.random() - 0.5) * 0.003;
+                    vx = cVx - dir * vOrb * Math.sin(th);
+                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt);
                     grp = isG1 ? 0.0 : 1.0;
                     state = 0.0;
                 } else if (scenario === 'boids') {
                     scenarioId = 1;
                     // 3 Distinct Swarm Archetypes with unique aerodynamic traits
                     const swarmIdx = i % 3;
-                    grp = swarmIdx; // 0.0: Alpha (Fast Starlings), 1.0: Beta (Heavy Cruisers), 2.0: Gamma (Chaotic Swallows)
+                    grp = swarmIdx; // 0.0: Alpha (Strong Coupling Cyan), 1.0: Beta (Heavy Cruiser Emerald), 2.0: Gamma (Active Avoidance Purple)
 
-                    let scx = 0.30, scy = 0.42, sRadius = 0.11, sAngle = Math.random() * Math.PI * 2;
-                    let baseVx = 0.050, baseVy = -0.025;
+                    let scx = 0.28, scy = 0.40, sRadius = 0.10, sAngle = Math.random() * Math.PI * 2;
+                    let baseVx = 0.045, baseVy = -0.020;
 
                     if (swarmIdx === 1) {
-                        scx = 0.70; scy = 0.58; sRadius = 0.16;
-                        baseVx = -0.032; baseVy = 0.018;
+                        scx = 0.72; scy = 0.60; sRadius = 0.18;
+                        baseVx = -0.028; baseVy = 0.015;
                     } else if (swarmIdx === 2) {
-                        scx = 0.50; scy = 0.28; sRadius = 0.14;
-                        baseVx = 0.038; baseVy = 0.038;
+                        scx = 0.50; scy = 0.25; sRadius = 0.15;
+                        baseVx = 0.035; baseVy = 0.035;
                     }
 
                     const r = Math.sqrt(Math.random()) * sRadius;
                     px = scx + r * Math.cos(sAngle);
                     py = scy + r * Math.sin(sAngle);
 
-                    const sOrb = (swarmIdx === 0) ? 0.030 : ((swarmIdx === 1) ? 0.015 : 0.024);
-                    vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.006;
-                    vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.006;
+                    const sOrb = (swarmIdx === 0) ? 0.035 : ((swarmIdx === 1) ? 0.012 : 0.025);
+                    vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.004;
+                    vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.004;
                     state = 0.0;
                 } else if (scenario === 'vortex') {
                     scenarioId = 2;
@@ -522,9 +522,9 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Multi-Scale Galactic Potential (Plummer Core GM=0.020, eps=0.042 + Halo GM=0.015, eps=0.090)
-                let epsCoreSq: f32 = 0.001764; // 0.042^2
-                let epsHaloSq: f32 = 0.008100; // 0.090^2
+                // Multi-Scale Galactic Potential (Core GM=0.0050, eps=0.050 + Halo GM=0.0030, eps=0.120)
+                let epsCoreSq: f32 = 0.002500; // 0.050^2
+                let epsHaloSq: f32 = 0.014400; // 0.120^2
 
                 // Core 1 Attraction
                 let d1x = params.g1x - px;
@@ -532,7 +532,7 @@
                 let r1_sq = d1x * d1x + d1y * d1y;
                 let inv_r1_c = inverseSqrt(r1_sq + epsCoreSq);
                 let inv_r1_h = inverseSqrt(r1_sq + epsHaloSq);
-                let f1 = (0.020 * inv_r1_c * inv_r1_c * inv_r1_c) + (0.015 * inv_r1_h * inv_r1_h * inv_r1_h);
+                let f1 = (0.0050 * inv_r1_c * inv_r1_c * inv_r1_c) + (0.0030 * inv_r1_h * inv_r1_h * inv_r1_h);
                 fx += d1x * f1; fy += d1y * f1;
 
                 // Core 2 Attraction
@@ -541,37 +541,37 @@
                 let r2_sq = d2x * d2x + d2y * d2y;
                 let inv_r2_c = inverseSqrt(r2_sq + epsCoreSq);
                 let inv_r2_h = inverseSqrt(r2_sq + epsHaloSq);
-                let f2 = (0.020 * inv_r2_c * inv_r2_c * inv_r2_c) + (0.015 * inv_r2_h * inv_r2_h * inv_r2_h);
+                let f2 = (0.0050 * inv_r2_c * inv_r2_c * inv_r2_c) + (0.0030 * inv_r2_h * inv_r2_h * inv_r2_h);
                 fx += d2x * f2; fy += d2y * f2;
 
-                farMultipoleIntensity += (inv_r1_c + inv_r2_c) * 0.06;
+                farMultipoleIntensity += (inv_r1_c + inv_r2_c) * 0.05;
                 nearP2PIntensity += max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 8.0);
 
             } else if (params.scenario == 1u) {
                 // Multi-Flock Aerodynamic Personalities
                 if (grp < 0.5) {
-                    // Alpha Swarm (Cyan): Agile High-Speed Starlings (Fast vortex draft, tight cohesion)
-                    let draftX = (0.5 - py) * 0.055;
-                    let draftY = (px - 0.5) * 0.055;
-                    fx += draftX + (0.35 - px) * 0.040;
-                    fy += draftY + (0.45 - py) * 0.040;
-                    farMultipoleIntensity += 0.6;
+                    // Alpha Swarm (Cyan): Ultra-Strong Coupling & Tight Cohesion (Fast Starling Murmuration)
+                    let draftX = (0.5 - py) * 0.060;
+                    let draftY = (px - 0.5) * 0.060;
+                    fx += draftX + (0.35 - px) * 0.065;
+                    fy += draftY + (0.45 - py) * 0.065;
+                    farMultipoleIntensity += 0.9;
                 } else if (grp < 1.5) {
                     // Beta Swarm (Emerald): Heavy Migratory Cruisers (Steady orbital circulation)
-                    let cruiseAngle = params.simTime * 0.7;
-                    let targetX = 0.50 + cos(cruiseAngle) * 0.22;
-                    let targetY = 0.50 + sin(cruiseAngle) * 0.16;
-                    fx += (targetX - px) * 0.028;
-                    fy += (targetY - py) * 0.028;
+                    let cruiseAngle = params.simTime * 0.6;
+                    let targetX = 0.50 + cos(cruiseAngle) * 0.24;
+                    let targetY = 0.50 + sin(cruiseAngle) * 0.18;
+                    fx += (targetX - px) * 0.025;
+                    fy += (targetY - py) * 0.025;
                     farMultipoleIntensity += 0.4;
                 } else {
-                    // Gamma Swarm (Purple): Chaotic Sweeping Swallows (Dynamic flutter, cross-cutting)
-                    let flutter = sin(px * 18.0 + params.simTime * 3.0) * 0.035;
-                    let loopX = (0.50 - py) * 0.075 + flutter;
-                    let loopY = (px - 0.50) * 0.075 + cos(py * 18.0 + params.simTime * 3.0) * 0.035;
-                    fx += loopX + (0.50 - px) * 0.025;
-                    fy += loopY + (0.35 - py) * 0.025;
-                    farMultipoleIntensity += 0.8;
+                    // Gamma Swarm (Purple): Chaotic Sweeping Swallows (Active Avoidance of Other Flocks)
+                    let flutter = sin(px * 16.0 + params.simTime * 3.5) * 0.040;
+                    let loopX = (0.50 - py) * 0.070 + flutter;
+                    let loopY = (px - 0.50) * 0.070 + cos(py * 16.0 + params.simTime * 3.5) * 0.040;
+                    fx += loopX + (0.50 - px) * 0.020;
+                    fy += loopY + (0.30 - py) * 0.020;
+                    farMultipoleIntensity += 0.7;
                 }
 
             } else if (params.scenario == 2u) {
@@ -662,24 +662,39 @@
                         let other_grp = extras[other_idx].group;
                         let isSameFlock = abs(grp - other_grp) < 0.5;
                         if (r2 < 0.0012) {
-                            let sepForce = select(0.035, 0.055, grp < 0.5);
+                            let sepForce = select(0.040, 0.065, grp < 0.5);
                             let inv_r = inverseSqrt(r2);
                             fx += diffX * inv_r * sepForce;
                             fy += diffY * inv_r * sepForce;
                             nearP2PIntensity += 0.4;
                         }
-                        if (r2 < 0.0050) {
+                        if (r2 < 0.0080) {
                             if (isSameFlock) {
-                                let alignWeight = select(0.025, 0.050, grp < 0.5);
+                                // Intra-flock: Alpha has much stronger alignment and attraction coupling!
+                                var alignWeight: f32 = 0.030;
+                                var cohWeight: f32 = 0.015;
+                                if (grp < 0.5) {
+                                    alignWeight = 0.080; // Alpha: strong coupling
+                                    cohWeight = 0.045;   // Alpha: strong mutual attraction
+                                } else if (grp > 1.5) {
+                                    alignWeight = 0.020; // Gamma: loose flutter
+                                    cohWeight = 0.010;
+                                }
                                 fx += (other.vel.x - vx) * alignWeight;
                                 fy += (other.vel.y - vy) * alignWeight;
-                                fx -= diffX * 0.012;
-                                fy -= diffY * 0.012;
+                                fx -= diffX * cohWeight;
+                                fy -= diffY * cohWeight;
                             } else {
-                                fx += diffX * 0.015;
-                                fy += diffY * 0.015;
+                                // Inter-flock avoidance: Alpha & Beta repel other flocks; Gamma actively avoids/scatters away!
+                                var avoidWeight: f32 = 0.035;
+                                if (grp > 1.5 || other_grp > 1.5) {
+                                    avoidWeight = 0.075; // Gamma strongly flees from other flocks
+                                }
+                                let inv_r = inverseSqrt(r2);
+                                fx += diffX * inv_r * avoidWeight;
+                                fy += diffY * inv_r * avoidWeight;
                             }
-                            farMultipoleIntensity += 0.2;
+                            farMultipoleIntensity += 0.3;
                         }
                     } else if (params.scenario == 2u) {
                         // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing
@@ -928,39 +943,39 @@
             float farM2L = 0.0;
 
             if (u_scenario == 0) {
-                // Multi-Scale Galactic Potential (Core GM=0.007, eps=0.045 + Halo GM=0.004, eps=0.100)
-                float epsCoreSq = 0.002025;
-                float epsHaloSq = 0.010000;
+                // Multi-Scale Galactic Potential (Core GM=0.0050, eps=0.050 + Halo GM=0.0030, eps=0.120)
+                float epsCoreSq = 0.002500;
+                float epsHaloSq = 0.014400;
 
                 vec2 d1 = u_g1 - pos;
                 float r1_sq = dot(d1, d1);
-                float f1 = (0.007 / pow(r1_sq + epsCoreSq, 1.5)) + (0.004 / pow(r1_sq + epsHaloSq, 1.5));
+                float f1 = (0.0050 / pow(r1_sq + epsCoreSq, 1.5)) + (0.0030 / pow(r1_sq + epsHaloSq, 1.5));
                 fx += d1 * f1;
 
                 vec2 d2 = u_g2 - pos;
                 float r2_sq = dot(d2, d2);
-                float f2 = (0.007 / pow(r2_sq + epsCoreSq, 1.5)) + (0.004 / pow(r2_sq + epsHaloSq, 1.5));
+                float f2 = (0.0050 / pow(r2_sq + epsCoreSq, 1.5)) + (0.0030 / pow(r2_sq + epsHaloSq, 1.5));
                 fx += d2 * f2;
 
-                farM2L = 0.6;
+                farM2L = 0.5;
                 nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 8.0);
             } else if (u_scenario == 1) {
-                // Multi-Flock Aerodynamic Personalities
+                // Multi-Flock Aerodynamic Personalities (Alpha: Strong Coupling, Beta: Cruise, Gamma: Avoidance)
                 if (a_group < 0.5) {
-                    float draftX = (0.5 - pos.y) * 0.055;
-                    float draftY = (pos.x - 0.5) * 0.055;
-                    fx += vec2(draftX, draftY) + (vec2(0.35, 0.45) - pos) * 0.040;
-                    farM2L = 0.6;
+                    float draftX = (0.5 - pos.y) * 0.060;
+                    float draftY = (pos.x - 0.5) * 0.060;
+                    fx += vec2(draftX, draftY) + (vec2(0.35, 0.45) - pos) * 0.065;
+                    farM2L = 0.9;
                 } else if (a_group < 1.5) {
-                    float cruiseAngle = u_simTime * 0.7;
-                    vec2 target = vec2(0.50 + cos(cruiseAngle) * 0.22, 0.50 + sin(cruiseAngle) * 0.16);
-                    fx += (target - pos) * 0.028;
+                    float cruiseAngle = u_simTime * 0.6;
+                    vec2 target = vec2(0.50 + cos(cruiseAngle) * 0.24, 0.50 + sin(cruiseAngle) * 0.18);
+                    fx += (target - pos) * 0.025;
                     farM2L = 0.4;
                 } else {
-                    float flutter = sin(pos.x * 18.0 + u_simTime * 3.0) * 0.035;
-                    vec2 loopVec = vec2((0.50 - pos.y) * 0.075 + flutter, (pos.x - 0.50) * 0.075 + cos(pos.y * 18.0 + u_simTime * 3.0) * 0.035);
-                    fx += loopVec + (vec2(0.50, 0.35) - pos) * 0.025;
-                    farM2L = 0.8;
+                    float flutter = sin(pos.x * 16.0 + u_simTime * 3.5) * 0.040;
+                    vec2 loopVec = vec2((0.50 - pos.y) * 0.070 + flutter, (pos.x - 0.50) * 0.070 + cos(pos.y * 16.0 + u_simTime * 3.5) * 0.040);
+                    fx += loopVec + (vec2(0.50, 0.30) - pos) * 0.020;
+                    farM2L = 0.7;
                 }
             } else if (u_scenario == 2) {
                 // Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
@@ -1401,11 +1416,11 @@
             if (scenario !== 'galaxy') return;
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
-            const epsSq = 0.0035; // Softening between the two supermassive cores
+            const epsSq = 0.0060; // Softening between the two supermassive cores
             const r_sq = dx * dx + dy * dy + epsSq;
             const inv_r = 1.0 / Math.sqrt(r_sq);
             const inv_r3 = inv_r * inv_r * inv_r;
-            const G = 0.0032;
+            const G = 0.0016; // Gentle, smooth gravitational interaction
 
             const f12x = dx * (G * core2.mass * inv_r3);
             const f12y = dy * (G * core2.mass * inv_r3);
@@ -1423,12 +1438,12 @@
             // Smooth harmonic orbital anchor keeps the continuous collision dance in center viewport
             const c1DistX = core1.x - 0.5;
             const c1DistY = core1.y - 0.5;
-            core1.vx -= c1DistX * 0.012 * dt * simSpeed;
-            core1.vy -= c1DistY * 0.012 * dt * simSpeed;
+            core1.vx -= c1DistX * 0.008 * dt * simSpeed;
+            core1.vy -= c1DistY * 0.008 * dt * simSpeed;
             const c2DistX = core2.x - 0.5;
             const c2DistY = core2.y - 0.5;
-            core2.vx -= c2DistX * 0.012 * dt * simSpeed;
-            core2.vy -= c2DistY * 0.012 * dt * simSpeed;
+            core2.vx -= c2DistX * 0.008 * dt * simSpeed;
+            core2.vy -= c2DistY * 0.008 * dt * simSpeed;
         }
 
         // ====================================================================
@@ -1467,9 +1482,9 @@
                 title = `${sName} — Scenario Clusters`;
                 if (scenario === 'boids') {
                     items = [
-                        { color: 'var(--accent-cyan)', label: 'Alpha Swarm (Cyan Flock)' },
-                        { color: 'var(--accent-green)', label: 'Beta Swarm (Emerald Flock)' },
-                        { color: 'var(--accent-purple)', label: 'Gamma Swarm (Amethyst Flock)' }
+                        { color: 'var(--accent-cyan)', label: 'Alpha: Starling Murmuration (High Coupling)' },
+                        { color: 'var(--accent-green)', label: 'Beta: Heavy Cruisers (Independent Orbit)' },
+                        { color: 'var(--accent-purple)', label: 'Gamma: Sweeping Swallows (Active Avoidance)' }
                     ];
                 } else if (scenario === 'galaxy') {
                     items = [
