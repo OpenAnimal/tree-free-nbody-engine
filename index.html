@@ -265,10 +265,10 @@
 
         <div class="section-title">Scale Presets</div>
         <div class="btn-grid">
-            <button id="btnPreset15k">15k (Ultra High)</button>
-            <button id="btnPreset35k">35k (Balanced)</button>
-            <button id="btnPreset70k">70k (Heavy)</button>
-            <button id="btnPreset120k" class="active">120k (Extreme)</button>
+            <button id="btnPreset15k">15k (Light)</button>
+            <button id="btnPreset120k" class="active">120k (Balanced)</button>
+            <button id="btnPreset500k">500k (Heavy)</button>
+            <button id="btnPreset5M">5M (Extreme)</button>
         </div>
 
         <div class="section-title">Particle Count & Dynamics</div>
@@ -1680,9 +1680,9 @@
         };
 
         document.getElementById('btnPreset15k').addEventListener('click', (e) => setPreset(15000, e.target));
-        document.getElementById('btnPreset35k').addEventListener('click', (e) => setPreset(35000, e.target));
-        document.getElementById('btnPreset70k').addEventListener('click', (e) => setPreset(70000, e.target));
         document.getElementById('btnPreset120k').addEventListener('click', (e) => setPreset(120000, e.target));
+        document.getElementById('btnPreset500k').addEventListener('click', (e) => setPreset(500000, e.target));
+        document.getElementById('btnPreset5M').addEventListener('click', (e) => setPreset(5000000, e.target));
 
         // Custom Count Apply Button & Enter Key
         const applyCustomCount = () => {
