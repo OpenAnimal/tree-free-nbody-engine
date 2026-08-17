@@ -138,19 +138,8 @@ Generates the 4-panel benchmark figure: `fmm_contact_benchmark.png`.
 
 ## Academic & Technical Citations
 
-1. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics**  
-   *Minchen Li, Zachary Ferguson, Teseo Schneider, Timothy Langlois, Denis Zorin, Daniele Panozzo* (2020).  
-   *ACM Transactions on Graphics (SIGGRAPH 2020)*, 39(4), Article 49. [DOI: 10.1145/3386569.3392425](https://doi.org/10.1145/3386569.3392425)
-
-2. **ZOZO's Contact Solver (PPF): A Contact Solver for Physics-Based Simulations**  
-   *ZOZO, Inc.* (2024–2026).  
-   [st-tech/ppf-contact-solver](https://github.com/st-tech/ppf-contact-solver)
-
-3. **Discrete Shells**  
-   *Eitan Grinspun, Anil N. Hirani, Mathieu Desbrun, Peter Schröder* (2003).  
-   *ACM SIGGRAPH / Eurographics Symposium on Computer Animation (SCA 2003)*, 62–67.
-
-4. **Optimal Bounds for Open Addressing Without Reordering**  
-   *Martín Farach-Colton, Andrew Krapivin, William Kuszmaul* (2025).  
-   *IEEE Symposium on Foundations of Computer Science (FOCS 2024)*. [arXiv:2501.02305](https://arxiv.org/abs/2501.02305)
+1. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH)*, 39(4), Article 49.
+2. **ZOZO's Contact Solver (PPF): A Contact Solver for Physics-Based Simulations.** ZOZO, Inc. (2024–2026). [st-tech/ppf-contact-solver](https://github.com/st-tech/ppf-contact-solver).
+3. **Discrete Shells.** Grinspun, Hirani, Desbrun, Schröder (2003). *ACM SIGGRAPH / Eurographics SCA*, 62–67.
+4. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
 

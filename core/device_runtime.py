@@ -49,6 +49,7 @@ class ComputeBackend(str, Enum):
     CUDA = "CUDA"               # NVIDIA CUDA Toolkit
     OPENCL = "OPENCL"           # OpenCL 1.2 / 2.0 / 3.0 (Cross-platform AMD/NVIDIA/Intel)
     VULKAN = "VULKAN"           # Vulkan Compute Shaders / SPIR-V
+    WEBGPU = "WEBGPU"           # WebGPU WGSL Compute Shaders (Vulkan / D3D12 / Metal)
     METAL = "METAL"             # Apple Metal Performance Shaders (MPS)
     CPU_SIMD = "CPU_SIMD"       # CPU Vectorized SIMD (AVX2, AVX-512, ARM Neon)
 
@@ -101,14 +102,21 @@ class DeviceRuntime:
         # 1. Probe PyTorch Subsystem (handles CUDA, ROCm/HIP, DirectML, Apple MPS)
         devices.extend(cls._probe_pytorch_devices())
 
-        # 2. Probe OpenCL Subsystem (Crucial for AMD Radeon on Windows & Linux without ROCm)
+        # 2. Probe JAX Subsystem (handles CUDA, ROCm, TPU)
+        if not any(d.backend in (ComputeBackend.CUDA, ComputeBackend.ROCM_HIP) for d in devices):
+            devices.extend(cls._probe_jax_devices())
+
+        # 3. Probe WebGPU Subsystem (handles Vulkan, Direct3D 12, Metal via wgpu-py)
+        devices.extend(cls._probe_webgpu_devices())
+
+        # 4. Probe OpenCL Subsystem (Crucial for AMD Radeon on Windows & Linux without ROCm)
         devices.extend(cls._probe_opencl_devices())
 
-        # 3. Probe Vulkan / System CLI Subsystem (rocm-smi, clinfo, vulkaninfo)
-        if not any(d.vendor == AcceleratorVendor.AMD for d in devices):
-            devices.extend(cls._probe_amd_system_cli())
+        # 5. Probe Vulkan / System CLI Subsystem (rocm-smi, nvidia-smi, clinfo, vulkaninfo, win32)
+        if not any(d.backend in (ComputeBackend.CUDA, ComputeBackend.ROCM_HIP) for d in devices):
+            devices.extend(cls._probe_system_cli_devices())
 
-        # 4. Fallback to CPU SIMD device if no accelerators found
+        # 6. Fallback to CPU SIMD device if no accelerators found
         if not devices:
             devices.append(cls._get_cpu_device_descriptor())
 
@@ -279,10 +287,115 @@ class DeviceRuntime:
         return devices
 
     @classmethod
-    def _probe_amd_system_cli(cls) -> List[DeviceDescriptor]:
-        """Probes system commands for AMD Radeon / ROCm hardware when Python wrappers are uninstalled."""
+    def _probe_jax_devices(cls) -> List[DeviceDescriptor]:
+        """Probes JAX platform accelerators without preallocating full VRAM."""
         devices = []
-        # Try rocm-smi on Linux / Windows ROCm
+        try:
+            # Respect project JAX VRAM memory allocation rule
+            os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+            os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.10")
+            import jax
+            jax_devs = jax.devices()
+            for idx, dev in enumerate(jax_devs):
+                platform_name = dev.platform.lower()
+                if platform_name in ("gpu", "cuda", "rocm"):
+                    dev_kind = getattr(dev, "device_kind", "GPU")
+                    is_amd = "AMD" in dev_kind.upper() or "ROCM" in dev_kind.upper()
+                    vendor = AcceleratorVendor.AMD if is_amd else AcceleratorVendor.NVIDIA
+                    backend = ComputeBackend.ROCM_HIP if is_amd else ComputeBackend.CUDA
+                    desc = DeviceDescriptor(
+                        name=f"JAX {dev_kind}",
+                        vendor=vendor,
+                        backend=backend,
+                        device_index=idx,
+                        total_memory_bytes=8 * 1024 * 1024 * 1024,
+                        compute_units=32,
+                        wavefront_size=32,
+                        supports_fp16=True,
+                        supports_fp64=True,
+                        driver_version=f"JAX {jax.__version__}",
+                        extra_metadata={"jax_device": str(dev)}
+                    )
+                    devices.append(desc)
+        except Exception:
+            pass
+        return devices
+
+    @classmethod
+    def _probe_webgpu_devices(cls) -> List[DeviceDescriptor]:
+        """Probes WebGPU hardware adapters (Vulkan / DX12 / Metal) via wgpu-py."""
+        devices = []
+        try:
+            import wgpu
+            adapter = wgpu.gpu.request_adapter_sync()
+            if adapter is not None:
+                summary = getattr(adapter, "summary", "WebGPU Hardware Adapter")
+                summary_upper = summary.upper()
+
+                if "AMD" in summary_upper or "RADEON" in summary_upper:
+                    vendor = AcceleratorVendor.AMD
+                elif "NVIDIA" in summary_upper or "GEFORCE" in summary_upper or "RTX" in summary_upper:
+                    vendor = AcceleratorVendor.NVIDIA
+                elif "INTEL" in summary_upper or "ARC" in summary_upper:
+                    vendor = AcceleratorVendor.INTEL
+                elif "APPLE" in summary_upper or "M1" in summary_upper or "M2" in summary_upper or "M3" in summary_upper:
+                    vendor = AcceleratorVendor.APPLE
+                else:
+                    vendor = AcceleratorVendor.UNKNOWN
+
+                backend_type = getattr(adapter, "backend_type", "WebGPU")
+                desc = DeviceDescriptor(
+                    name=f"WebGPU: {summary}",
+                    vendor=vendor,
+                    backend=ComputeBackend.WEBGPU,
+                    device_index=0,
+                    total_memory_bytes=8 * 1024 * 1024 * 1024,
+                    compute_units=32,
+                    wavefront_size=32,
+                    supports_fp16=True,
+                    supports_fp64=False,
+                    supports_atomic_cas=True,
+                    has_sam_rebar=vendor == AcceleratorVendor.AMD,
+                    driver_version=f"WebGPU ({backend_type})",
+                    extra_metadata={"summary": summary, "backend_type": backend_type}
+                )
+                devices.append(desc)
+        except Exception:
+            pass
+        return devices
+
+    @classmethod
+    def _probe_system_cli_devices(cls) -> List[DeviceDescriptor]:
+        """Probes system tools (nvidia-smi, rocm-smi, clinfo) for hardware GPUs."""
+        devices = []
+        # Check NVIDIA GPU via nvidia-smi
+        nvidia_smi = shutil.which("nvidia-smi")
+        if nvidia_smi:
+            try:
+                res = subprocess.run([nvidia_smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"],
+                                     capture_output=True, text=True, timeout=2)
+                if res.returncode == 0 and res.stdout.strip():
+                    for idx, line in enumerate(res.stdout.strip().splitlines()):
+                        parts = [p.strip() for p in line.split(",")]
+                        gpu_name = parts[0] if len(parts) > 0 else "NVIDIA GPU"
+                        mem_mb = float(parts[1]) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else 8192
+                        driver = parts[2] if len(parts) > 2 else "NVIDIA Driver"
+                        desc = DeviceDescriptor(
+                            name=f"{gpu_name} (Host CLI Detected)",
+                            vendor=AcceleratorVendor.NVIDIA,
+                            backend=ComputeBackend.CUDA,
+                            device_index=idx,
+                            total_memory_bytes=int(mem_mb * 1024 * 1024),
+                            compute_units=48,
+                            wavefront_size=32,
+                            has_sam_rebar=True,
+                            driver_version=driver
+                        )
+                        devices.append(desc)
+            except Exception:
+                pass
+
+        # Check AMD GPU via rocm-smi
         rocm_smi = shutil.which("rocm-smi")
         if rocm_smi:
             try:
@@ -302,7 +415,13 @@ class DeviceRuntime:
                     devices.append(desc)
             except Exception:
                 pass
+
         return devices
+
+    @classmethod
+    def _probe_amd_system_cli(cls) -> List[DeviceDescriptor]:
+        """Probes system commands for AMD Radeon / ROCm hardware (alias for backward compatibility)."""
+        return cls._probe_system_cli_devices()
 
     @classmethod
     def _get_cpu_device_descriptor(cls) -> DeviceDescriptor:
@@ -354,12 +473,15 @@ class DeviceRuntime:
                 if dev.vendor == AcceleratorVendor.AMD:
                     return dev
 
-        # Standard priority: ROCm/HIP or CUDA -> DirectML -> OpenCL Discrete -> Metal -> CPU
+        # Standard priority: ROCm/HIP or CUDA -> DirectML -> WebGPU/Vulkan -> OpenCL Discrete -> Metal -> CPU
         for dev in devices:
             if dev.backend in (ComputeBackend.ROCM_HIP, ComputeBackend.CUDA):
                 return dev
         for dev in devices:
             if dev.backend == ComputeBackend.DIRECTML:
+                return dev
+        for dev in devices:
+            if dev.backend in (ComputeBackend.WEBGPU, ComputeBackend.VULKAN):
                 return dev
         for dev in devices:
             if dev.backend == ComputeBackend.METAL:

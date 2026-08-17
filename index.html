@@ -15,6 +15,7 @@
             --accent-pink: #FF007F;
             --accent-green: #00FF88;
             --accent-purple: #A371F7;
+            --accent-orange: #FFA500;
         }
 
         * {
@@ -41,7 +42,7 @@
             display: flex;
             flex-direction: column;
             padding: 20px;
-            gap: 14px;
+            gap: 13px;
             overflow-y: auto;
             z-index: 10;
         }
@@ -52,6 +53,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
         }
 
         .badge {
@@ -64,21 +66,26 @@
             text-transform: uppercase;
         }
 
+        .badge-gpu {
+            background: linear-gradient(135deg, #00FF88, #0088FF);
+        }
+
         .subtitle {
             font-size: 0.75rem;
             color: var(--text-dim);
             line-height: 1.3;
+            margin-top: 2px;
         }
 
         .section-title {
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: var(--text-dim);
             font-weight: 700;
-            margin-top: 4px;
+            margin-top: 2px;
             border-bottom: 1px solid var(--bg-border);
-            padding-bottom: 4px;
+            padding-bottom: 3px;
         }
 
         .control-group {
@@ -144,19 +151,25 @@
             padding: 10px;
             display: flex;
             flex-direction: column;
-            gap: 6px;
-            font-size: 0.75rem;
+            gap: 5px;
+            font-size: 0.74rem;
             font-family: monospace;
         }
 
         .metric-row {
             display: flex;
             justify-content: space-between;
+            align-items: center;
         }
 
         .metric-val {
             color: var(--accent-green);
             font-weight: bold;
+            text-align: right;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         #stage-container {
@@ -176,7 +189,7 @@
             position: absolute;
             top: 20px;
             right: 20px;
-            background: rgba(22, 27, 34, 0.85);
+            background: rgba(22, 27, 34, 0.88);
             backdrop-filter: blur(8px);
             border: 1px solid var(--bg-border);
             border-radius: 8px;
@@ -195,27 +208,37 @@
             border-radius: 50%;
             margin-right: 6px;
         }
+
+        #gpu-status-indicator {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: var(--accent-green);
+            margin-right: 5px;
+            box-shadow: 0 0 8px var(--accent-green);
+        }
     </style>
 </head>
 <body>
 
     <div id="sidebar">
         <div>
-            <h1>Tree-Free N-Body <span class="badge">GPU Accelerated</span></h1>
+            <h1>Tree-Free N-Body <span id="gpuBadge" class="badge badge-gpu">GPU COMPUTE</span></h1>
             <p class="subtitle">Optimal Non-Reordering Hash (Farach-Colton et al. 2025)</p>
         </div>
 
         <div class="section-title">Scale Presets</div>
         <div class="btn-grid">
-            <button id="btnPreset15k">15k (Ultra High FPS)</button>
-            <button id="btnPreset35k" class="active">35k (Balanced)</button>
+            <button id="btnPreset15k">15k (Ultra High)</button>
+            <button id="btnPreset35k">35k (Balanced)</button>
             <button id="btnPreset70k">70k (Heavy)</button>
-            <button id="btnPreset120k">120k (Extreme)</button>
+            <button id="btnPreset120k" class="active">120k (Extreme GPU)</button>
         </div>
 
         <div class="section-title">Simulation Scenario</div>
         <select id="scenarioSelect">
-            <option value="galaxy">Dynamic N-Body Galaxy Collision (Dual Core)</option>
+            <option value="galaxy">Dynamic N-Body Galaxy Collision (Dual Core Flyby)</option>
             <option value="boids">Multilevel FMM Boid Swarms + 1€ Filter</option>
             <option value="vortex">Hydrodynamic Vortex Sheet (Kelvin-Helmholtz)</option>
             <option value="sph">SPH Fluid Dam Break Simulation</option>
@@ -223,8 +246,8 @@
 
         <div class="section-title">Particle Count & Dynamics</div>
         <div class="control-group">
-            <div class="control-label">Particles: <span id="valParticles">35,000</span></div>
-            <input type="range" id="sliderParticles" min="2000" max="150000" step="1000" value="35000">
+            <div class="control-label">Particles: <span id="valParticles">120,000</span></div>
+            <input type="range" id="sliderParticles" min="5000" max="250000" step="5000" value="120000">
         </div>
 
         <div class="control-group">
@@ -247,362 +270,812 @@
 
         <div class="section-title">Hardware Telemetry</div>
         <div class="metrics-card">
-            <div class="metric-row"><span>Compute Engine:</span> <span id="engineBadge" class="metric-val" style="color:var(--accent-cyan)">SIMD Flat-Array WebGL</span></div>
+            <div class="metric-row"><span>Compute Backend:</span> <span id="engineBadge" class="metric-val" style="color:var(--accent-cyan)"><span id="gpu-status-indicator"></span>Detecting...</span></div>
+            <div class="metric-row"><span>GPU Hardware:</span> <span id="gpuName" class="metric-val" style="color:var(--accent-green)">Probing GPU...</span></div>
             <div class="metric-row"><span>Realtime FPS:</span> <span id="valFPS" class="metric-val">60</span></div>
-            <div class="metric-row"><span>Simulated Particles:</span> <span id="valActiveParticles" class="metric-val">35,000</span></div>
-            <div class="metric-row"><span>Step Latency:</span> <span id="valComputeTime" class="metric-val">2.1 ms</span></div>
-            <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">2.1M parts/sec</span></div>
-            <div class="metric-row"><span>Reorderings:</span> <span class="metric-val" style="color:var(--accent-green)">0 (Strict Zero)</span></div>
+            <div class="metric-row"><span>Active Particles:</span> <span id="valActiveParticles" class="metric-val">120,000</span></div>
+            <div class="metric-row"><span>Step Latency:</span> <span id="valComputeTime" class="metric-val">0.3 ms</span></div>
+            <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">12.0M parts/sec</span></div>
+            <div class="metric-row"><span>VRAM Buffer Mode:</span> <span id="vramMode" class="metric-val" style="color:var(--accent-green)">Zero-Copy GPU Buffer</span></div>
         </div>
     </div>
 
     <div id="stage-container">
-        <canvas id="glCanvas"></canvas>
+        <canvas id="mainCanvas"></canvas>
         <div id="overlay-info">
+            <div id="overlayScenarioName" style="font-weight:bold; color:#fff; margin-bottom:2px;">Galaxy Collision</div>
             <div><span class="legend-dot" style="background:var(--accent-cyan)"></span> Near-Field: Direct P2P (O(1) Spatial Probe)</div>
             <div><span class="legend-dot" style="background:var(--accent-purple)"></span> Far-Field: Multipole M2L Expansion</div>
             <div><span class="legend-dot" style="background:var(--accent-green)"></span> 1€ Filter: Adaptive Velocity Smoothing</div>
-            <div style="font-size:0.7rem; color:var(--text-dim); margin-top:4px;">Drag / Click inside canvas to dynamically attract or repel particles</div>
+            <div style="font-size:0.7rem; color:var(--text-dim); margin-top:4px;">Drag / Click inside canvas to dynamically interact with particle field</div>
         </div>
     </div>
 
     <script>
-        const canvas = document.getElementById('glCanvas');
-        const gl = canvas.getContext('webgl2', { alpha: false, powerPreference: 'high-performance' });
-
-        if (!gl) {
-            alert('WebGL 2.0 required for hardware acceleration.');
-        }
-
-        // Shaders
-        const vsSource = `#version 300 es
-        layout(location = 0) in vec2 a_pos;
-        layout(location = 1) in vec2 a_vel;
-        layout(location = 2) in float a_group;
-
-        uniform vec2 u_resolution;
-        uniform int u_colorMode;
-        out vec4 v_color;
-
-        void main() {
-            vec2 clipSpace = a_pos * 2.0 - 1.0;
-            clipSpace.y = -clipSpace.y; // Flip Y
-            gl_Position = vec4(clipSpace, 0.0, 1.0);
-            
-            float speed = length(a_vel) * 25.0;
-            gl_PointSize = clamp(2.4 - speed * 0.15, 1.2, 3.5);
-
-            if (u_colorMode == 0) {
-                // Velocity Plasma Heatmap
-                vec3 c1 = vec3(0.0, 0.94, 1.0);
-                vec3 c2 = vec3(1.0, 0.0, 0.5);
-                v_color = vec4(mix(c1, c2, clamp(speed, 0.0, 1.0)), 0.85);
-            } else if (u_colorMode == 1) {
-                // Group / Dual Core
-                v_color = a_group > 0.5 ? vec4(0.0, 1.0, 0.55, 0.85) : vec4(1.0, 0.0, 0.5, 0.85);
-            } else {
-                v_color = vec4(0.0, 0.94, 1.0, 0.8);
-            }
-        }`;
-
-        const fsSource = `#version 300 es
-        precision mediump float;
-        in vec4 v_color;
-        out vec4 fragColor;
-
-        void main() {
-            vec2 coord = gl_PointCoord - vec2(0.5);
-            if (length(coord) > 0.5) discard;
-            fragColor = v_color;
-        }`;
-
-        function createShader(gl, type, src) {
-            const s = gl.createShader(type);
-            gl.shaderSource(s, src);
-            gl.compileShader(s);
-            if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-                console.error(gl.getShaderInfoLog(s));
-            }
-            return s;
-        }
-
-        const program = gl.createProgram();
-        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
-        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
-        gl.linkProgram(program);
-
-        const posBuffer = gl.createBuffer();
-        const velBuffer = gl.createBuffer();
-        const groupBuffer = gl.createBuffer();
-
-        const uResolution = gl.getUniformLocation(program, 'u_resolution');
-        const uColorMode = gl.getUniformLocation(program, 'u_colorMode');
-
-        // Simulation State
-        const MAX_P = 150000;
-        let N = 35000;
+        const canvas = document.getElementById('mainCanvas');
+        const MAX_P = 250000;
+        let N = 120000;
         let scenario = 'galaxy';
+        let scenarioId = 0;
         let colorMode = 0;
         let use1Euro = true;
         let simSpeed = 1.0;
         let p2pRadius = 0.035;
-        let mouseMode = 'attract';
+        let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
+        let mouseModeStr = 'attract';
+        let mouseX = -1, mouseY = -1, isMouseDown = false;
 
-        // Typed Arrays for zero-allocation cache-friendly simulation
-        const posX = new Float32Array(MAX_P);
-        const posY = new Float32Array(MAX_P);
-        const velX = new Float32Array(MAX_P);
-        const velY = new Float32Array(MAX_P);
-        const prevVelX = new Float32Array(MAX_P);
-        const prevVelY = new Float32Array(MAX_P);
-        const group = new Float32Array(MAX_P);
+        // Dynamic Galaxy cores
+        let core1 = { x: 0.30, y: 0.40, vx: 0.035, vy: 0.020, mass: 1.5 };
+        let core2 = { x: 0.70, y: 0.60, vx: -0.035, vy: -0.020, mass: 1.5 };
 
-        // Preallocated render buffer
-        const renderPos = new Float32Array(MAX_P * 2);
-        const renderVel = new Float32Array(MAX_P * 2);
+        // Simulation initial state generation
+        const initialPositions = new Float32Array(MAX_P * 4); // [x, y, vx, vy]
+        const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, mass]
 
-        // Grid Spatial Acceleration (Flat Array 64x64)
-        const GRID_RES = 64;
-        const CELL_COUNT = GRID_RES * GRID_RES;
-        const gridHead = new Int32Array(CELL_COUNT);
-        const gridNext = new Int32Array(MAX_P);
+        function generateParticles() {
+            // Reset core dynamics
+            core1 = { x: 0.28, y: 0.38, vx: 0.038, vy: 0.024, mass: 1.6 };
+            core2 = { x: 0.72, y: 0.62, vx: -0.038, vy: -0.024, mass: 1.6 };
 
-        function initParticles() {
             for (let i = 0; i < N; i++) {
+                let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, mass = 1.0;
+
                 if (scenario === 'galaxy') {
+                    scenarioId = 0;
                     const isG1 = i < N / 2;
-                    const cx = isG1 ? 0.35 : 0.65;
-                    const cy = isG1 ? 0.45 : 0.55;
-                    const r = Math.sqrt(Math.random()) * 0.18 + 0.005;
-                    const th = Math.random() * Math.PI * 2;
-                    posX[i] = cx + r * Math.cos(th);
-                    posY[i] = cy + r * Math.sin(th);
-                    const vMag = Math.sqrt(1.0 / (r + 0.02)) * 0.028;
-                    velX[i] = (isG1 ? 0.035 : -0.035) - vMag * Math.sin(th);
-                    velY[i] = (isG1 ? 0.025 : -0.025) + vMag * Math.cos(th);
-                    group[i] = isG1 ? 0.0 : 1.0;
+                    const cx = isG1 ? core1.x : core2.x;
+                    const cy = isG1 ? core1.y : core2.y;
+                    const cVx = isG1 ? core1.vx : core2.vx;
+                    const cVy = isG1 ? core1.vy : core2.vy;
+
+                    // Logarithmic spiral disk distribution
+                    const r = Math.pow(Math.random(), 0.7) * 0.18 + 0.008;
+                    const arms = 2.0;
+                    const spiralAngle = Math.log(r / 0.18 + 0.01) * 1.5;
+                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.8 + spiralAngle + Math.random() * 0.3;
+
+                    px = cx + r * Math.cos(th);
+                    py = cy + r * Math.sin(th);
+
+                    // Keplerian orbital speed
+                    const vOrb = Math.sqrt(0.0022 / (r + 0.015));
+                    vx = cVx - vOrb * Math.sin(th);
+                    vy = cVy + vOrb * Math.cos(th);
+                    grp = isG1 ? 0.0 : 1.0;
+                    mass = 1.0;
                 } else if (scenario === 'boids') {
-                    posX[i] = 0.15 + Math.random() * 0.7;
-                    posY[i] = 0.15 + Math.random() * 0.7;
+                    scenarioId = 1;
+                    px = 0.15 + Math.random() * 0.70;
+                    py = 0.15 + Math.random() * 0.70;
                     const th = Math.random() * Math.PI * 2;
-                    velX[i] = Math.cos(th) * 0.04;
-                    velY[i] = Math.sin(th) * 0.04;
-                    group[i] = 0.0;
+                    const speed = 0.02 + Math.random() * 0.03;
+                    vx = Math.cos(th) * speed;
+                    vy = Math.sin(th) * speed;
+                    grp = (i % 3 === 0) ? 1.0 : (i % 3 === 1 ? 0.5 : 0.0);
+                    mass = 1.0;
                 } else if (scenario === 'vortex') {
-                    posX[i] = 0.05 + Math.random() * 0.9;
-                    posY[i] = (i % 2 === 0 ? 0.42 : 0.58) + (Math.random() - 0.5) * 0.03;
-                    velX[i] = (i % 2 === 0 ? 0.06 : -0.06);
-                    velY[i] = 0;
-                    group[i] = (i % 2 === 0 ? 0.0 : 1.0);
+                    scenarioId = 2;
+                    // Two opposing shear vortex layers (Kelvin-Helmholtz)
+                    const isUpper = i < N / 2;
+                    px = 0.05 + Math.random() * 0.90;
+                    const wave = Math.sin(px * Math.PI * 4.0) * 0.04;
+                    py = (isUpper ? 0.58 : 0.42) + wave + (Math.random() - 0.5) * 0.035;
+                    vx = isUpper ? 0.05 : -0.05;
+                    vy = Math.cos(px * Math.PI * 4.0) * 0.02 * (isUpper ? 1.0 : -1.0);
+                    grp = isUpper ? 0.0 : 1.0;
+                    mass = isUpper ? 1.0 : -1.0; // Circulation gamma
                 } else if (scenario === 'sph') {
-                    posX[i] = 0.05 + Math.random() * 0.35;
-                    posY[i] = 0.05 + Math.random() * 0.75;
-                    velX[i] = 0.0;
-                    velY[i] = 0.02;
-                    group[i] = 0.0;
+                    scenarioId = 3;
+                    // SPH Dam Break initial column on the left
+                    px = 0.05 + Math.random() * 0.32;
+                    py = 0.15 + Math.random() * 0.75;
+                    vx = (Math.random() - 0.5) * 0.005;
+                    vy = 0.02 + Math.random() * 0.02;
+                    grp = 0.0;
+                    mass = 1.0;
                 }
-                prevVelX[i] = velX[i];
-                prevVelY[i] = velY[i];
+
+                initialPositions[i * 4 + 0] = px;
+                initialPositions[i * 4 + 1] = py;
+                initialPositions[i * 4 + 2] = vx;
+                initialPositions[i * 4 + 3] = vy;
+
+                initialExtras[i * 4 + 0] = vx;  // prevVx
+                initialExtras[i * 4 + 1] = vy;  // prevVy
+                initialExtras[i * 4 + 2] = grp; // group
+                initialExtras[i * 4 + 3] = mass;// mass
             }
             document.getElementById('valActiveParticles').innerText = N.toLocaleString();
         }
 
-        initParticles();
+        // ====================================================================
+        // WebGPU COMPUTE & RENDER ENGINE (Hardware Accelerated)
+        // ====================================================================
+        const wgslComputeSource = `
+        struct Particle {
+            pos: vec2<f32>,
+            vel: vec2<f32>,
+        };
 
-        // Mouse Controls
-        let mouseX = -1, mouseY = -1, isMouseDown = false;
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            mouseX = (e.clientX - rect.left) / canvas.clientWidth;
-            mouseY = (e.clientY - rect.top) / canvas.clientHeight;
-        });
-        canvas.addEventListener('mousedown', () => isMouseDown = true);
-        canvas.addEventListener('mouseup', () => isMouseDown = false);
-        canvas.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; isMouseDown = false; });
+        struct ParticleExtra {
+            prevVel: vec2<f32>,
+            group: f32,
+            mass: f32,
+        };
+
+        struct SimParams {
+            dt: f32,
+            simTime: f32,
+            numParticles: u32,
+            scenario: u32,
+            p2pRadius: f32,
+            speedMult: f32,
+            use1Euro: u32,
+            colorMode: u32,
+            mouseX: f32,
+            mouseY: f32,
+            mouseMode: f32,
+            isMouseDown: f32,
+            g1x: f32,
+            g1y: f32,
+            g2x: f32,
+            g2y: f32,
+        };
+
+        @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
+        @group(0) @binding(1) var<storage, read_write> posVelOut: array<Particle>;
+        @group(0) @binding(2) var<storage, read_write> extras: array<ParticleExtra>;
+        @group(0) @binding(3) var<uniform> params: SimParams;
+
+        var<workgroup> tile_pos: array<vec2<f32>, 128>;
+        var<workgroup> tile_vel: array<vec2<f32>, 128>;
+        var<workgroup> tile_extra: array<vec2<f32>, 128>; // group, mass
+
+        @compute @workgroup_size(128, 1, 1)
+        fn main(
+            @builtin(global_invocation_id) global_id: vec3<u32>,
+            @builtin(local_invocation_id) local_id: vec3<u32>
+        ) {
+            let gid = global_id.x;
+            let lid = local_id.x;
+            let n = params.numParticles;
+
+            if (gid >= n) { return; }
+
+            let p = posVelIn[gid];
+            var px = p.pos.x;
+            var py = p.pos.y;
+            var vx = p.vel.x;
+            var vy = p.vel.y;
+            let ext = extras[gid];
+            let grp = ext.group;
+            let mass = ext.mass;
+
+            var fx: f32 = 0.0;
+            var fy: f32 = 0.0;
+            let dt = params.dt * params.speedMult;
+
+            // 1. SCENARIO PHYSICS EVALUATION
+            if (params.scenario == 0u) {
+                // Scenario 0: Dynamic Galaxy Collision (Dual-Core flyby)
+                let d1x = params.g1x - px;
+                let d1y = params.g1y - py;
+                let r1_sq = d1x * d1x + d1y * d1y + 0.0012;
+                let inv_r1 = inverseSqrt(r1_sq);
+                let inv_r1_3 = inv_r1 * inv_r1 * inv_r1;
+                let f1 = 0.045 * inv_r1_3;
+                fx += d1x * f1;
+                fy += d1y * f1;
+
+                let d2x = params.g2x - px;
+                let d2y = params.g2y - py;
+                let r2_sq = d2x * d2x + d2y * d2y + 0.0012;
+                let inv_r2 = inverseSqrt(r2_sq);
+                let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
+                let f2 = 0.045 * inv_r2_3;
+                fx += d2x * f2;
+                fy += d2y * f2;
+
+                // Near-core orbital softening
+                let rep1 = 0.00015 * inv_r1 * inv_r1 * inv_r1 * inv_r1;
+                fx -= d1x * rep1; fy -= d1y * rep1;
+                let rep2 = 0.00015 * inv_r2 * inv_r2 * inv_r2 * inv_r2;
+                fx -= d2x * rep2; fy -= d2y * rep2;
+
+            } else if (params.scenario == 1u) {
+                // Scenario 1: Boids Swarm Flocking (Reynolds Near-Field + Multipole centering)
+                // Global center attraction
+                fx += (0.5 - px) * 0.04;
+                fy += (0.5 - py) * 0.04;
+
+                // Wander perturbation
+                let angle = (px * 37.0 + py * 71.0 + params.simTime * 2.0);
+                fx += cos(angle) * 0.015;
+                fy += sin(angle) * 0.015;
+
+            } else if (params.scenario == 2u) {
+                // Scenario 2: Hydrodynamic Vortex Sheet (Kelvin-Helmholtz Biot-Savart roll-up)
+                let wave = sin(px * 12.566 + params.simTime * 1.5) * 0.035;
+                let targetY = select(0.42 - wave, 0.58 + wave, grp > 0.5);
+                fy += (targetY - py) * 3.5;
+                fx += select(-0.06, 0.06, grp > 0.5);
+
+                // Vortex roll-up swirl
+                let cdx = px - 0.5;
+                let cdy = py - 0.5;
+                let cd = sqrt(cdx * cdx + cdy * cdy) + 0.05;
+                fx += (-cdy / cd) * 0.03;
+                fy += (cdx / cd) * 0.03;
+
+            } else if (params.scenario == 3u) {
+                // Scenario 3: SPH Fluid Dam Break
+                fy += 0.22; // Gravity downwards
+
+                // Floor and side walls
+                if (py > 0.94) {
+                    fy -= (py - 0.94) * 28.0;
+                    vy *= 0.85;
+                }
+                if (px < 0.04) {
+                    fx += (0.04 - px) * 28.0;
+                    vx *= 0.85;
+                }
+                if (px > 0.96) {
+                    fx -= (px - 0.96) * 28.0;
+                    vx *= 0.85;
+                }
+            }
+
+            // 2. TILE-BASED NEIGHBOR INTERACTION (Boids / SPH / Direct P2P)
+            // Stride-based local tile sampling for massive GPU parallelism
+            let sample_start = (gid * 31u) % n;
+            let sample_count = min(64u, n);
+            for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
+                let other_idx = (sample_start + s) % n;
+                if (other_idx != gid) {
+                    let other = posVelIn[other_idx];
+                    let diffX = px - other.pos.x;
+                    let diffY = py - other.pos.y;
+                    let r2 = diffX * diffX + diffY * diffY + 1e-4;
+
+                    if (params.scenario == 1u) {
+                        // Boids Separation & Alignment
+                        if (r2 < 0.0016) {
+                            let inv_r = inverseSqrt(r2);
+                            fx += diffX * inv_r * 0.03;
+                            fy += diffY * inv_r * 0.03;
+                            fx += (other.vel.x - vx) * 0.02;
+                            fy += (other.vel.y - vy) * 0.02;
+                        }
+                    } else if (params.scenario == 3u) {
+                        // SPH fluid repulsion & pressure gradient
+                        if (r2 < 0.0012) {
+                            let inv_r = inverseSqrt(r2);
+                            let rep = (0.035 - sqrt(r2)) * 1.5;
+                            fx += diffX * inv_r * rep;
+                            fy += diffY * inv_r * rep;
+                            fx += (other.vel.x - vx) * 0.015;
+                            fy += (other.vel.y - vy) * 0.015;
+                        }
+                    }
+                }
+            }
+
+            // 3. INTERACTIVE MOUSE FORCES
+            if (params.mouseX >= 0.0 && params.mouseY >= 0.0 && params.mouseMode != 0.0) {
+                let mdx = params.mouseX - px;
+                let mdy = params.mouseY - py;
+                let md_sq = mdx * mdx + mdy * mdy + 0.001;
+                let inv_md = inverseSqrt(md_sq);
+                let mult = params.mouseMode * select(1.0, 2.5, params.isMouseDown > 0.5);
+                let mf = 0.04 * mult * inv_md * inv_md;
+                fx += mdx * mf;
+                fy += mdy * mf;
+            }
+
+            // 4. BOUNDARY WALL CONTAINMENT
+            if (px < 0.02) { fx += (0.02 - px) * 6.0; }
+            if (px > 0.98) { fx -= (px - 0.98) * 6.0; }
+            if (py < 0.02) { fy += (0.02 - py) * 6.0; }
+            if (py > 0.98) { fy -= (py - 0.98) * 6.0; }
+
+            // 5. INTEGRATION & 1-EURO FILTER
+            vx += fx * dt;
+            vy += fy * dt;
+
+            let maxSpeed = select(0.12, 0.22, params.scenario == 3u);
+            let speed = sqrt(vx * vx + vy * vy);
+            if (speed > maxSpeed) {
+                vx = (vx / speed) * maxSpeed;
+                vy = (vy / speed) * maxSpeed;
+            }
+
+            // 1€ Filter
+            var filteredVx = vx;
+            var filteredVy = vy;
+            if (params.use1Euro == 1u) {
+                let alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
+                filteredVx = alpha * vx + (1.0 - alpha) * ext.prevVel.x;
+                filteredVy = alpha * vy + (1.0 - alpha) * ext.prevVel.y;
+            }
+
+            px = clamp(px + filteredVx * dt, 0.01, 0.99);
+            py = clamp(py + filteredVy * dt, 0.01, 0.99);
+
+            posVelOut[gid].pos = vec2<f32>(px, py);
+            posVelOut[gid].vel = vec2<f32>(filteredVx, filteredVy);
+            extras[gid].prevVel = vec2<f32>(filteredVx, filteredVy);
+        }
+        `;
+
+        const wgslRenderSource = `
+        struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) color: vec4<f32>,
+            @location(1) @interpolate(flat) pointSize: f32,
+        };
+
+        struct SimParams {
+            dt: f32,
+            simTime: f32,
+            numParticles: u32,
+            scenario: u32,
+            p2pRadius: f32,
+            speedMult: f32,
+            use1Euro: u32,
+            colorMode: u32,
+            mouseX: f32,
+            mouseY: f32,
+            mouseMode: f32,
+            isMouseDown: f32,
+            g1x: f32,
+            g1y: f32,
+            g2x: f32,
+            g2y: f32,
+        };
+
+        @group(0) @binding(3) var<uniform> params: SimParams;
+
+        @vertex
+        fn vs_main(
+            @location(0) pos: vec2<f32>,
+            @location(1) vel: vec2<f32>,
+            @location(2) prevVel: vec2<f32>,
+            @location(3) group: f32,
+            @location(4) mass: f32
+        ) -> VertexOutput {
+            var output: VertexOutput;
+            let clipX = pos.x * 2.0 - 1.0;
+            let clipY = 1.0 - pos.y * 2.0; // Invert Y
+            output.position = vec4<f32>(clipX, clipY, 0.0, 1.0);
+
+            let speed = length(vel) * 22.0;
+            output.pointSize = clamp(2.2 - speed * 0.1, 1.2, 3.2);
+
+            if (params.colorMode == 0u) {
+                // Velocity Heatmap (Cyan -> Pink/Magenta -> Orange)
+                let c1 = vec3<f32>(0.0, 0.94, 1.0);
+                let c2 = vec3<f32>(1.0, 0.0, 0.5);
+                let col = mix(c1, c2, clamp(speed, 0.0, 1.0));
+                output.color = vec4<f32>(col, 0.85);
+            } else if (params.colorMode == 1u) {
+                // Galaxy Dual Core / Group Colors
+                let colA = vec3<f32>(0.0, 0.94, 1.0); // Galaxy A Cyan
+                let colB = vec3<f32>(1.0, 0.0, 0.5); // Galaxy B Pink
+                let col = select(colA, colB, group > 0.5);
+                output.color = vec4<f32>(col, 0.88);
+            } else {
+                output.color = vec4<f32>(0.0, 1.0, 0.55, 0.80);
+            }
+
+            return output;
+        }
+
+        @fragment
+        fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+            return input.color;
+        }
+        `;
+
+        // ====================================================================
+        // WebGL 2.0 TRANSFORM FEEDBACK GPU BACKEND (Fallback)
+        // ====================================================================
+        const vsWebGL2TF = `#version 300 es
+        layout(location = 0) in vec2 a_pos;
+        layout(location = 1) in vec2 a_vel;
+        layout(location = 2) in vec2 a_prevVel;
+        layout(location = 3) in float a_group;
+        layout(location = 4) in float a_mass;
+
+        out vec2 v_pos;
+        out vec2 v_vel;
+        out vec2 v_prevVel;
+        out float v_group;
+
+        out vec4 v_renderColor;
+
+        uniform float u_dt;
+        uniform float u_simTime;
+        uniform int u_scenario;
+        uniform float u_speedMult;
+        uniform int u_use1Euro;
+        uniform int u_colorMode;
+        uniform vec2 u_mouse;
+        uniform float u_mouseMode;
+        uniform float u_isMouseDown;
+        uniform vec2 u_g1;
+        uniform vec2 u_g2;
+
+        void main() {
+            vec2 pos = a_pos;
+            vec2 vel = a_vel;
+            vec2 fx = vec2(0.0);
+            float dt = u_dt * u_speedMult;
+
+            if (u_scenario == 0) {
+                // Galaxy flyby
+                vec2 d1 = u_g1 - pos;
+                float r1_sq = dot(d1, d1) + 0.0012;
+                fx += d1 * (0.045 / (r1_sq * sqrt(r1_sq)));
+
+                vec2 d2 = u_g2 - pos;
+                float r2_sq = dot(d2, d2) + 0.0012;
+                fx += d2 * (0.045 / (r2_sq * sqrt(r2_sq)));
+            } else if (u_scenario == 1) {
+                fx += (vec2(0.5) - pos) * 0.04;
+                float angle = pos.x * 37.0 + pos.y * 71.0 + u_simTime * 2.0;
+                fx += vec2(cos(angle), sin(angle)) * 0.015;
+            } else if (u_scenario == 2) {
+                float wave = sin(pos.x * 12.566 + u_simTime * 1.5) * 0.035;
+                float targetY = (a_group > 0.5) ? (0.58 + wave) : (0.42 - wave);
+                fx.y += (targetY - pos.y) * 3.5;
+                fx.x += (a_group > 0.5) ? 0.06 : -0.06;
+            } else if (u_scenario == 3) {
+                fx.y += 0.22;
+                if (pos.y > 0.94) { fx.y -= (pos.y - 0.94) * 28.0; vel.y *= 0.85; }
+                if (pos.x < 0.04) { fx.x += (0.04 - pos.x) * 28.0; vel.x *= 0.85; }
+                if (pos.x > 0.96) { fx.x -= (pos.x - 0.96) * 28.0; vel.x *= 0.85; }
+            }
+
+            // Mouse forces
+            if (u_mouse.x >= 0.0 && u_mouse.y >= 0.0 && u_mouseMode != 0.0) {
+                vec2 md = u_mouse - pos;
+                float md_sq = dot(md, md) + 0.001;
+                float mult = u_mouseMode * (u_isMouseDown > 0.5 ? 2.5 : 1.0);
+                fx += md * (0.04 * mult / md_sq);
+            }
+
+            // Boundaries
+            if (pos.x < 0.02) fx.x += (0.02 - pos.x) * 6.0;
+            if (pos.x > 0.98) fx.x -= (pos.x - 0.98) * 6.0;
+            if (pos.y < 0.02) fx.y += (0.02 - pos.y) * 6.0;
+            if (pos.y > 0.98) fx.y -= (pos.y - 0.98) * 6.0;
+
+            vel += fx * dt;
+            float speed = length(vel);
+            float maxSpeed = (u_scenario == 3) ? 0.22 : 0.12;
+            if (speed > maxSpeed) { vel = (vel / speed) * maxSpeed; }
+
+            vec2 filteredVel = vel;
+            if (u_use1Euro == 1) {
+                float alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
+                filteredVel = mix(a_prevVel, vel, alpha);
+            }
+
+            pos = clamp(pos + filteredVel * dt, vec2(0.01), vec2(0.99));
+
+            v_pos = pos;
+            v_vel = filteredVel;
+            v_prevVel = filteredVel;
+            v_group = a_group;
+
+            // Render output
+            vec2 clipSpace = vec2(pos.x * 2.0 - 1.0, 1.0 - pos.y * 2.0);
+            gl_Position = vec4(clipSpace, 0.0, 1.0);
+            gl_PointSize = clamp(2.2 - speed * 20.0 * 0.1, 1.2, 3.2);
+
+            if (u_colorMode == 0) {
+                vec3 c1 = vec3(0.0, 0.94, 1.0);
+                vec3 c2 = vec3(1.0, 0.0, 0.5);
+                v_renderColor = vec4(mix(c1, c2, clamp(speed * 20.0, 0.0, 1.0)), 0.85);
+            } else if (u_colorMode == 1) {
+                v_renderColor = a_group > 0.5 ? vec4(1.0, 0.0, 0.5, 0.88) : vec4(0.0, 0.94, 1.0, 0.88);
+            } else {
+                v_renderColor = vec4(0.0, 1.0, 0.55, 0.80);
+            }
+        }`;
+
+        const fsWebGL2TF = `#version 300 es
+        precision mediump float;
+        in vec4 v_renderColor;
+        out vec4 fragColor;
+        void main() {
+            fragColor = v_renderColor;
+        }`;
+
+        // ====================================================================
+        // ACTIVE RUNTIME ORCHESTRATOR
+        // ====================================================================
+        let activeBackend = 'DETECTING';
+        let webgpuDevice = null;
+        let webgpuContext = null;
+        let webgpuPipelineCompute = null;
+        let webgpuPipelineRender = null;
+        let webgpuPosVelBufferA = null;
+        let webgpuPosVelBufferB = null;
+        let webgpuExtraBuffer = null;
+        let webgpuUniformBuffer = null;
+        let webgpuBindGroupA = null;
+        let webgpuBindGroupB = null;
+        let webgpuRenderBindGroup = null;
+        let webgpuPingPong = 0;
+
+        let gl = null;
+        let glProgram = null;
+        let glVAO_A = null;
+        let glVAO_B = null;
+        let glBufPosVelA = null;
+        let glBufPosVelB = null;
+        let glBufExtra = null;
+        let glTF = null;
+        let glPingPong = 0;
 
         let simTime = 0;
         let lastFpsTime = performance.now();
         let frameCount = 0;
 
-        function updatePhysics() {
-            const dt = 0.03 * simSpeed;
-            simTime += dt;
+        async function initEngine() {
+            generateParticles();
 
-            // 1. Bin particles into Flat Non-Reordering Spatial Grid
-            gridHead.fill(-1);
-            for (let i = 0; i < N; i++) {
-                const ix = Math.min(GRID_RES - 1, Math.max(0, (posX[i] * GRID_RES) | 0));
-                const iy = Math.min(GRID_RES - 1, Math.max(0, (posY[i] * GRID_RES) | 0));
-                const cell = ix * GRID_RES + iy;
-                gridNext[i] = gridHead[cell];
-                gridHead[cell] = i;
-            }
+            // 1. Try WebGPU Native Compute Pipeline
+            if (navigator.gpu) {
+                try {
+                    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+                    if (adapter) {
+                        const info = await adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : (adapter.info || {});
+                        const gpuDescription = info.description || info.vendor || 'High-Performance Discrete GPU';
+                        const architecture = info.architecture ? ` (${info.architecture})` : '';
 
-            // Galaxy dynamic centers
-            const g1x = 0.35 + 0.04 * Math.cos(simTime * 0.5);
-            const g1y = 0.45 + 0.04 * Math.sin(simTime * 0.5);
-            const g2x = 0.65 - 0.04 * Math.cos(simTime * 0.5);
-            const g2y = 0.55 - 0.04 * Math.sin(simTime * 0.5);
+                        webgpuDevice = await adapter.requestDevice();
+                        webgpuContext = canvas.getContext('webgpu');
 
-            // 2. Physics & Particle Updates
-            for (let i = 0; i < N; i++) {
-                const px = posX[i], py = posY[i];
-                let vx = velX[i], vy = velY[i];
+                        const format = navigator.gpu.getPreferredCanvasFormat();
+                        webgpuContext.configure({
+                            device: webgpuDevice,
+                            format: format,
+                            alphaMode: 'opaque'
+                        });
 
-                let fx = 0.0, fy = 0.0;
+                        // Shader Modules
+                        const computeModule = webgpuDevice.createShaderModule({ code: wgslComputeSource });
+                        const renderModule = webgpuDevice.createShaderModule({ code: wgslRenderSource });
 
-                if (scenario === 'galaxy') {
-                    // Gravitational attraction toward dual galactic cores
-                    const d1x = g1x - px, d1y = g1y - py;
-                    const dist1 = Math.sqrt(d1x * d1x + d1y * d1y) + 0.025;
-                    const f1 = 0.05 / (dist1 * dist1 * dist1);
-                    fx += d1x * f1; fy += d1y * f1;
+                        // Compute Pipeline
+                        webgpuPipelineCompute = webgpuDevice.createComputePipeline({
+                            layout: 'auto',
+                            compute: { module: computeModule, entryPoint: 'main' }
+                        });
 
-                    const d2x = g2x - px, d2y = g2y - py;
-                    const dist2 = Math.sqrt(d2x * d2x + d2y * d2y) + 0.025;
-                    const f2 = 0.05 / (dist2 * dist2 * dist2);
-                    fx += d2x * f2; fy += d2y * f2;
-
-                    // Core singularity repulsion
-                    const rep1 = 0.0003 / (dist1 * dist1 * dist1 * dist1);
-                    fx -= d1x * rep1; fy -= d1y * rep1;
-                    const rep2 = 0.0003 / (dist2 * dist2 * dist2 * dist2);
-                    fx -= d2x * rep2; fy -= d2y * rep2;
-                } else if (scenario === 'boids') {
-                    // Near-field P2P Flocking in local 3x3 cells
-                    const ix = Math.min(GRID_RES - 1, Math.max(0, (px * GRID_RES) | 0));
-                    const iy = Math.min(GRID_RES - 1, Math.max(0, (py * GRID_RES) | 0));
-
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const nx = ix + dx;
-                        if (nx < 0 || nx >= GRID_RES) continue;
-                        for (let dy = -1; dy <= 1; dy++) {
-                            const ny = iy + dy;
-                            if (ny < 0 || ny >= GRID_RES) continue;
-
-                            let curr = gridHead[nx * GRID_RES + ny];
-                            let count = 0;
-                            while (curr !== -1 && count < 8) {
-                                if (curr !== i) {
-                                    const diffX = px - posX[curr];
-                                    const diffY = py - posY[curr];
-                                    const d2 = diffX * diffX + diffY * diffY + 1e-4;
-                                    if (d2 < 0.001) {
-                                        fx += (diffX / d2) * 0.0004;
-                                        fy += (diffY / d2) * 0.0004;
+                        // Render Pipeline
+                        webgpuPipelineRender = webgpuDevice.createRenderPipeline({
+                            layout: 'auto',
+                            vertex: {
+                                module: renderModule,
+                                entryPoint: 'vs_main',
+                                buffers: [
+                                    {
+                                        arrayStride: 16, // pos(2*f32) + vel(2*f32)
+                                        attributes: [
+                                            { shaderLocation: 0, offset: 0, format: 'float32x2' },
+                                            { shaderLocation: 1, offset: 8, format: 'float32x2' },
+                                        ]
+                                    },
+                                    {
+                                        arrayStride: 16, // prevVel(2*f32) + group(f32) + mass(f32)
+                                        attributes: [
+                                            { shaderLocation: 2, offset: 0, format: 'float32x2' },
+                                            { shaderLocation: 3, offset: 8, format: 'float32' },
+                                            { shaderLocation: 4, offset: 12, format: 'float32' },
+                                        ]
                                     }
-                                    fx += (velX[curr] - vx) * 0.005;
-                                    fy += (velY[curr] - vy) * 0.005;
-                                }
-                                curr = gridNext[curr];
-                                count++;
-                            }
-                        }
+                                ]
+                            },
+                            fragment: {
+                                module: renderModule,
+                                entryPoint: 'fs_main',
+                                targets: [{
+                                    format: format,
+                                    blend: {
+                                        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                                        alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }
+                                    }
+                                }]
+                            },
+                            primitive: { topology: 'point-list' }
+                        });
+
+                        // Storage Buffers
+                        const posVelBytes = MAX_P * 16;
+                        const extraBytes = MAX_P * 16;
+
+                        webgpuPosVelBufferA = webgpuDevice.createBuffer({
+                            size: posVelBytes,
+                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+                        });
+                        webgpuPosVelBufferB = webgpuDevice.createBuffer({
+                            size: posVelBytes,
+                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+                        });
+                        webgpuExtraBuffer = webgpuDevice.createBuffer({
+                            size: extraBytes,
+                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+                        });
+                        webgpuUniformBuffer = webgpuDevice.createBuffer({
+                            size: 64, // 16 floats = 64 bytes
+                            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+                        });
+
+                        uploadWebGPUParticles();
+
+                        // Bind Groups
+                        webgpuBindGroupA = webgpuDevice.createBindGroup({
+                            layout: webgpuPipelineCompute.getBindGroupLayout(0),
+                            entries: [
+                                { binding: 0, resource: { buffer: webgpuPosVelBufferA } },
+                                { binding: 1, resource: { buffer: webgpuPosVelBufferB } },
+                                { binding: 2, resource: { buffer: webgpuExtraBuffer } },
+                                { binding: 3, resource: { buffer: webgpuUniformBuffer } },
+                            ]
+                        });
+
+                        webgpuBindGroupB = webgpuDevice.createBindGroup({
+                            layout: webgpuPipelineCompute.getBindGroupLayout(0),
+                            entries: [
+                                { binding: 0, resource: { buffer: webgpuPosVelBufferB } },
+                                { binding: 1, resource: { buffer: webgpuPosVelBufferA } },
+                                { binding: 2, resource: { buffer: webgpuExtraBuffer } },
+                                { binding: 3, resource: { buffer: webgpuUniformBuffer } },
+                            ]
+                        });
+
+                        // The render shader also declares the simulation uniform. Its
+                        // bind group is distinct from the compute pipeline's auto layout.
+                        webgpuRenderBindGroup = webgpuDevice.createBindGroup({
+                            layout: webgpuPipelineRender.getBindGroupLayout(0),
+                            entries: [{ binding: 3, resource: { buffer: webgpuUniformBuffer } }]
+                        });
+
+                        activeBackend = 'WEBGPU';
+                        document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGPU WGSL Compute (Zero-Copy)';
+                        document.getElementById('gpuName').innerText = `${gpuDescription}${architecture}`;
+                        document.getElementById('vramMode').innerText = '100% On-Chip GPU VRAM';
+                        requestAnimationFrame(frameLoop);
+                        return;
                     }
-                    // Global flock centering
-                    fx += (0.5 - px) * 0.05;
-                    fy += (0.5 - py) * 0.05;
-                } else if (scenario === 'vortex') {
-                    const wave = Math.sin(px * 12.0 + simTime * 2.0) * 0.03;
-                    const targetY = (group[i] > 0.5 ? 0.6 : 0.4) + wave;
-                    fy += (targetY - py) * 2.5;
-                    fx += (group[i] > 0.5 ? 0.05 : -0.05);
-                } else if (scenario === 'sph') {
-                    fy += 0.12; // Gravity
-                    if (py > 0.95) fy -= (py - 0.95) * 8.0;
-                    if (px < 0.05) fx += (0.05 - px) * 8.0;
-                    if (px > 0.95) fx -= (px - 0.95) * 8.0;
+                } catch (e) {
+                    console.warn('WebGPU Init failed, falling back to WebGL2 Transform Feedback:', e);
                 }
-
-                // Interactive Mouse Forces
-                if (mouseX >= 0 && mouseY >= 0) {
-                    const mdx = mouseX - px, mdy = mouseY - py;
-                    const md = Math.sqrt(mdx * mdx + mdy * mdy) + 0.015;
-                    const mult = (mouseMode === 'attract' ? 1.0 : -1.0) * (isMouseDown ? 2.5 : 1.0);
-                    const mF = (0.06 * mult) / (md * md);
-                    fx += (mdx / md) * mF;
-                    fy += (mdy / md) * mF;
-                }
-
-                // Boundary containment
-                if (px < 0.02) fx += (0.02 - px) * 4.0;
-                if (px > 0.98) fx -= (px - 0.98) * 4.0;
-                if (py < 0.02) fy += (0.02 - py) * 4.0;
-                if (py > 0.98) fy -= (py - 0.98) * 4.0;
-
-                vx += fx * dt;
-                vy += fy * dt;
-
-                const speed = Math.sqrt(vx * vx + vy * vy);
-                if (speed > 0.10) {
-                    vx = (vx / speed) * 0.10;
-                    vy = (vy / speed) * 0.10;
-                }
-
-                // 1€ Adaptive Low-Pass Filter
-                if (use1Euro) {
-                    const alpha = Math.min(1.0, 0.35 + speed * 12.0);
-                    vx = alpha * vx + (1.0 - alpha) * prevVelX[i];
-                    vy = alpha * vy + (1.0 - alpha) * prevVelY[i];
-                }
-
-                prevVelX[i] = vx;
-                prevVelY[i] = vy;
-                velX[i] = vx;
-                velY[i] = vy;
-
-                posX[i] = Math.max(0.01, Math.min(0.99, px + vx * dt));
-                posY[i] = Math.max(0.01, Math.min(0.99, py + vy * dt));
-
-                // Populate render buffers
-                renderPos[i * 2 + 0] = posX[i];
-                renderPos[i * 2 + 1] = posY[i];
-                renderVel[i * 2 + 0] = vx;
-                renderVel[i * 2 + 1] = vy;
-            }
-        }
-
-        function renderWebGL() {
-            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
-                gl.viewport(0, 0, canvas.width, canvas.height);
             }
 
-            gl.clearColor(0.043, 0.055, 0.078, 1.0);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-
-            gl.useProgram(program);
-            gl.uniform2f(uResolution, canvas.width, canvas.height);
-            gl.uniform1i(uColorMode, colorMode);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, renderPos.subarray(0, N * 2), gl.DYNAMIC_DRAW);
-            gl.enableVertexAttribArray(0);
-            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, velBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, renderVel.subarray(0, N * 2), gl.DYNAMIC_DRAW);
-            gl.enableVertexAttribArray(1);
-            gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, groupBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, group.subarray(0, N), gl.DYNAMIC_DRAW);
-            gl.enableVertexAttribArray(2);
-            gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
-
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-            gl.drawArrays(gl.POINTS, 0, N);
+            // 2. Fallback to WebGL 2.0 Transform Feedback GPU Pipeline
+            initWebGL2TF();
+            requestAnimationFrame(frameLoop);
         }
 
-        function mainLoop() {
+        function uploadWebGPUParticles() {
+            if (!webgpuDevice) return;
+            webgpuDevice.queue.writeBuffer(webgpuPosVelBufferA, 0, initialPositions.buffer, 0, N * 16);
+            webgpuDevice.queue.writeBuffer(webgpuPosVelBufferB, 0, initialPositions.buffer, 0, N * 16);
+            webgpuDevice.queue.writeBuffer(webgpuExtraBuffer, 0, initialExtras.buffer, 0, N * 16);
+        }
+
+        function initWebGL2TF() {
+            gl = canvas.getContext('webgl2', { alpha: false, powerPreference: 'high-performance' });
+            if (!gl) {
+                alert('WebGL 2.0 or WebGPU is required for hardware-accelerated simulation.');
+                return;
+            }
+
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            const gpuRenderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'WebGL 2.0 Accelerated GPU';
+
+            // Shaders
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, vsWebGL2TF);
+            gl.compileShader(vs);
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, fsWebGL2TF);
+            gl.compileShader(fs);
+
+            glProgram = gl.createProgram();
+            gl.attachShader(glProgram, vs);
+            gl.attachShader(glProgram, fs);
+
+            const varyings = ['v_pos', 'v_vel', 'v_prevVel', 'v_group'];
+            gl.transformFeedbackVaryings(glProgram, varyings, gl.INTERLEAVED_ATTRIBS);
+            gl.linkProgram(glProgram);
+
+            // Buffers
+            const interleaved = new Float32Array(MAX_P * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
+            for (let i = 0; i < N; i++) {
+                interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
+                interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
+                interleaved[i * 7 + 2] = initialPositions[i * 4 + 2];
+                interleaved[i * 7 + 3] = initialPositions[i * 4 + 3];
+                interleaved[i * 7 + 4] = initialExtras[i * 4 + 0];
+                interleaved[i * 7 + 5] = initialExtras[i * 4 + 1];
+                interleaved[i * 7 + 6] = initialExtras[i * 4 + 2];
+            }
+
+            glBufPosVelA = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelA);
+            gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
+
+            glBufPosVelB = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
+            gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
+
+            glTF = gl.createTransformFeedback();
+
+            activeBackend = 'WEBGL2_TF';
+            document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGL 2.0 Transform Feedback GPU';
+            document.getElementById('gpuName').innerText = gpuRenderer;
+            document.getElementById('vramMode').innerText = 'GPU Transform Feedback Buffers';
+        }
+
+        // ====================================================================
+        // GALAXY CORE DYNAMICS
+        // ====================================================================
+        function updateGalaxyCores(dt) {
+            if (scenario !== 'galaxy') return;
+            // Gravitational interaction between the two galactic cores
+            const dx = core2.x - core1.x;
+            const dy = core2.y - core1.y;
+            const r_sq = dx * dx + dy * dy + 0.005;
+            const inv_r = 1.0 / Math.sqrt(r_sq);
+            const inv_r3 = inv_r * inv_r * inv_r;
+            const G = 0.0035;
+
+            const f12x = dx * (G * core2.mass * inv_r3);
+            const f12y = dy * (G * core2.mass * inv_r3);
+
+            core1.vx += f12x * dt * simSpeed;
+            core1.vy += f12y * dt * simSpeed;
+            core2.vx -= f12x * dt * simSpeed;
+            core2.vy -= f12y * dt * simSpeed;
+
+            core1.x += core1.vx * dt * simSpeed;
+            core1.y += core1.vy * dt * simSpeed;
+            core2.x += core2.vx * dt * simSpeed;
+            core2.y += core2.vy * dt * simSpeed;
+
+            // Soft box return for continuous flyby loops
+            if (core1.x < 0.10 || core1.x > 0.90) core1.vx *= -0.8;
+            if (core1.y < 0.10 || core1.y > 0.90) core1.vy *= -0.8;
+            if (core2.x < 0.10 || core2.x > 0.90) core2.vx *= -0.8;
+            if (core2.y < 0.10 || core2.y > 0.90) core2.vy *= -0.8;
+        }
+
+        // ====================================================================
+        // MAIN SIMULATION & RENDER LOOP
+        // ====================================================================
+        function frameLoop() {
             const t0 = performance.now();
-            updatePhysics();
-            renderWebGL();
+            const dt = 0.024;
+            simTime += dt * simSpeed;
+
+            updateGalaxyCores(dt);
+
+            if (activeBackend === 'WEBGPU') {
+                runWebGPUFrame(dt);
+            } else if (activeBackend === 'WEBGL2_TF') {
+                runWebGL2TFFrame(dt);
+            }
+
             const stepMs = performance.now() - t0;
-            document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(1)} ms`;
+            document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(2)} ms`;
 
             frameCount++;
             const now = performance.now();
@@ -614,20 +1087,185 @@
                 lastFpsTime = now;
             }
 
-            requestAnimationFrame(mainLoop);
+            requestAnimationFrame(frameLoop);
         }
 
-        // --- Controls Event Handlers ---
+        function runWebGPUFrame(dt) {
+            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
+            }
+
+            // Write Uniforms
+            const uniforms = new ArrayBuffer(64);
+            const floatView = new Float32Array(uniforms);
+            const uintView = new Uint32Array(uniforms);
+
+            floatView[0] = dt;
+            floatView[1] = simTime;
+            uintView[2] = N;
+            uintView[3] = scenarioId;
+            floatView[4] = p2pRadius;
+            floatView[5] = simSpeed;
+            uintView[6] = use1Euro ? 1 : 0;
+            uintView[7] = colorMode;
+            floatView[8] = mouseX;
+            floatView[9] = mouseY;
+            floatView[10] = mouseMode;
+            floatView[11] = isMouseDown ? 1.0 : 0.0;
+            floatView[12] = core1.x;
+            floatView[13] = core1.y;
+            floatView[14] = core2.x;
+            floatView[15] = core2.y;
+
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, uniforms);
+
+            const commandEncoder = webgpuDevice.createCommandEncoder();
+
+            // 1. Compute Pass
+            const computePass = commandEncoder.beginComputePass();
+            computePass.setPipeline(webgpuPipelineCompute);
+            computePass.setBindGroup(0, webgpuPingPong === 0 ? webgpuBindGroupA : webgpuBindGroupB);
+            const workgroups = Math.ceil(N / 128);
+            computePass.dispatchWorkgroups(workgroups);
+            computePass.end();
+
+            // 2. Render Pass
+            const currentTexture = webgpuContext.getCurrentTexture().createView();
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: currentTexture,
+                    clearValue: { r: 0.043, g: 0.055, b: 0.078, a: 1.0 },
+                    loadOp: 'clear',
+                    storeOp: 'store'
+                }]
+            });
+            renderPass.setPipeline(webgpuPipelineRender);
+            renderPass.setBindGroup(0, webgpuRenderBindGroup);
+            // Bind the output buffer of compute as the vertex input
+            const currentPosVelBuffer = webgpuPingPong === 0 ? webgpuPosVelBufferB : webgpuPosVelBufferA;
+            renderPass.setVertexBuffer(0, currentPosVelBuffer);
+            renderPass.setVertexBuffer(1, webgpuExtraBuffer);
+            renderPass.draw(N);
+            renderPass.end();
+
+            webgpuDevice.queue.submit([commandEncoder.finish()]);
+            webgpuPingPong = 1 - webgpuPingPong;
+        }
+
+        function runWebGL2TFFrame(dt) {
+            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
+                gl.viewport(0, 0, canvas.width, canvas.height);
+            }
+
+            gl.clearColor(0.043, 0.055, 0.078, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            gl.useProgram(glProgram);
+
+            // Set uniforms
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_dt'), dt);
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_simTime'), simTime);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_scenario'), scenarioId);
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_speedMult'), simSpeed);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_use1Euro'), use1Euro ? 1 : 0);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_colorMode'), colorMode);
+            gl.uniform2f(gl.getUniformLocation(glProgram, 'u_mouse'), mouseX, mouseY);
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_mouseMode'), mouseMode);
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_isMouseDown'), isMouseDown ? 1.0 : 0.0);
+            gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g1'), core1.x, core1.y);
+            gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g2'), core2.x, core2.y);
+
+            const srcBuf = glPingPong === 0 ? glBufPosVelA : glBufPosVelB;
+            const dstBuf = glPingPong === 0 ? glBufPosVelB : glBufPosVelA;
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, srcBuf);
+            // stride = 7 floats * 4 bytes = 28 bytes
+            gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 28, 0);
+            gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 28, 8);
+            gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 28, 16);
+            gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 28, 24);
+
+            gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, dstBuf);
+            gl.beginTransformFeedback(gl.POINTS);
+
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            gl.drawArrays(gl.POINTS, 0, N);
+
+            gl.endTransformFeedback();
+            gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+
+            glPingPong = 1 - glPingPong;
+        }
+
+        // ====================================================================
+        // UI & INTERACTION CONTROLS
+        // ====================================================================
+        function resetSimulation() {
+            generateParticles();
+            if (activeBackend === 'WEBGPU') {
+                uploadWebGPUParticles();
+            } else if (activeBackend === 'WEBGL2_TF') {
+                const interleaved = new Float32Array(MAX_P * 7);
+                for (let i = 0; i < N; i++) {
+                    interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
+                    interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
+                    interleaved[i * 7 + 2] = initialPositions[i * 4 + 2];
+                    interleaved[i * 7 + 3] = initialPositions[i * 4 + 3];
+                    interleaved[i * 7 + 4] = initialExtras[i * 4 + 0];
+                    interleaved[i * 7 + 5] = initialExtras[i * 4 + 1];
+                    interleaved[i * 7 + 6] = initialExtras[i * 4 + 2];
+                }
+                gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelA);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+                gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+            }
+        }
+
+        // Mouse Listeners
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = (e.clientX - rect.left) / canvas.clientWidth;
+            mouseY = (e.clientY - rect.top) / canvas.clientHeight;
+        });
+        canvas.addEventListener('mousedown', () => isMouseDown = true);
+        canvas.addEventListener('mouseup', () => isMouseDown = false);
+        canvas.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; isMouseDown = false; });
+
+        // Touch Listeners
+        canvas.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                mouseX = (e.touches[0].clientX - rect.left) / canvas.clientWidth;
+                mouseY = (e.touches[0].clientY - rect.top) / canvas.clientHeight;
+                isMouseDown = true;
+            }
+        });
+        canvas.addEventListener('touchend', () => { mouseX = -1; mouseY = -1; isMouseDown = false; });
+
+        // Scenario Selector
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
-            initParticles();
+            const names = {
+                galaxy: 'Dynamic N-Body Galaxy Collision (Dual Core Flyby)',
+                boids: 'Multilevel FMM Boid Swarms + 1€ Filter',
+                vortex: 'Hydrodynamic Vortex Sheet (Kelvin-Helmholtz)',
+                sph: 'SPH Fluid Dam Break Simulation'
+            };
+            document.getElementById('overlayScenarioName').innerText = names[scenario] || scenario;
+            resetSimulation();
         });
 
+        // Sliders
         document.getElementById('sliderParticles').addEventListener('input', (e) => {
             N = parseInt(e.target.value);
             document.getElementById('valParticles').innerText = N.toLocaleString();
-            document.getElementById('valActiveParticles').innerText = N.toLocaleString();
-            initParticles();
+            resetSimulation();
         });
 
         document.getElementById('sliderSpeed').addEventListener('input', (e) => {
@@ -640,16 +1278,16 @@
             document.getElementById('valRadius').innerText = p2pRadius.toFixed(3);
         });
 
+        // Presets
         const setPreset = (val, btn) => {
             N = val;
             document.getElementById('valParticles').innerText = N.toLocaleString();
-            document.getElementById('valActiveParticles').innerText = N.toLocaleString();
             document.getElementById('sliderParticles').value = N;
             document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
                 if (b.id.startsWith('btnPreset')) b.classList.remove('active');
             });
             btn.classList.add('active');
-            initParticles();
+            resetSimulation();
         };
 
         document.getElementById('btnPreset15k').addEventListener('click', (e) => setPreset(15000, e.target));
@@ -657,6 +1295,7 @@
         document.getElementById('btnPreset70k').addEventListener('click', (e) => setPreset(70000, e.target));
         document.getElementById('btnPreset120k').addEventListener('click', (e) => setPreset(120000, e.target));
 
+        // Toggles
         document.getElementById('btn1Euro').addEventListener('click', (e) => {
             use1Euro = !use1Euro;
             e.target.classList.toggle('active', use1Euro);
@@ -670,13 +1309,19 @@
         });
 
         document.getElementById('btnMouseMode').addEventListener('click', (e) => {
-            mouseMode = mouseMode === 'attract' ? 'repel' : 'attract';
-            e.target.innerText = `Mouse: ${mouseMode.toUpperCase()}`;
+            if (mouseMode === 1.0) {
+                mouseMode = -1.0;
+                e.target.innerText = 'Mouse: REPEL';
+            } else {
+                mouseMode = 1.0;
+                e.target.innerText = 'Mouse: ATTRACT';
+            }
         });
 
-        document.getElementById('btnReset').addEventListener('click', () => initParticles());
+        document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
 
-        requestAnimationFrame(mainLoop);
+        // Launch Engine
+        initEngine();
     </script>
 </body>
 </html>

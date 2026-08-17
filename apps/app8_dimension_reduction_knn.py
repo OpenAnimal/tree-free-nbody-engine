@@ -3,26 +3,22 @@ Application 8: High-to-Low Dimensional Manifold Projection & Unfolding via Hash-
 Powered by Farach-Colton / Krapivin / Kuszmaul (2025) Non-Reordering Open Addressing.
 
 Demonstrates the core intuitive concept:
-1. Projects an 8-dimensional non-linear manifold (or 3D Swiss Roll) down to 2D.
-2. Uses Random Hyperplane Projections + Non-Reordering Hash Table to construct the k-NN graph in O(N) without O(N^2) pairwise comparisons.
-3. Computes 2D Spectral / Laplacian Eigenmap embedding.
+1. Projects an 8-dimensional non-linear manifold (Swiss Roll embedded in 8D) down to 2D.
+2. Uses Random Hyperplane Projections + Non-Reordering Hash Table to construct the clean k-NN graph in O(N) without O(N^2) pairwise comparisons.
+3. Computes isometric 2D manifold unfolding via graph geodesic distance embedding (Landmark Isomap / Shortest Paths).
 """
 
 import sys
 import os
+import heapq
+import time
 from typing import Any, Tuple, Dict, List, Optional
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
-import time
 from core.elastic_hash import ElasticHashTable
-try:
-    from scipy.sparse import coo_matrix, diags, eye as sparse_eye
-    from scipy.sparse.linalg import eigsh
-except ImportError:
-    coo_matrix = diags = sparse_eye = eigsh = None
 
-def generate_high_dim_swiss_roll(n_samples: int = 2500, ambient_dim: int = 8):
+def generate_high_dim_swiss_roll(n_samples: int = 2500, ambient_dim: int = 8) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generates a non-linear 2D manifold embedded into an 8D ambient space with noise."""
     np.random.seed(42)
     # Intrinsic 2D coordinates: t (angle along spiral) and h (height)
@@ -42,26 +38,28 @@ def generate_high_dim_swiss_roll(n_samples: int = 2500, ambient_dim: int = 8):
     ambient_pts = np.matmul(base_3d, Q.T) + np.random.normal(0, 0.05, size=(n_samples, ambient_dim))
     return ambient_pts, t, base_3d
 
-def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: int = 5, n_hyperplanes: int = 6):
+def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: int = 8, n_hyperplanes: int = 8) -> Dict[str, Any]:
     """
     Constructs an approximate k-NN adjacency graph in O(N) using
     Multi-Table Locality Sensitive Hashing (LSH) + Elastic Non-Reordering Table.
+    Uses candidate pool aggregation across tables followed by local distance ranking.
     """
     N, D = points.shape
     if N == 0 or k_neighbors < 1:
         raise ValueError("points must be non-empty and k_neighbors must be positive")
-    edge_weights = {}
+    
+    candidate_sets: List[set] = [set() for _ in range(N)]
     table_cap = 1 << (n_hyperplanes + 2)
     
-    for t in range(n_tables):
-        np.random.seed(42 + t)
+    for t_idx in range(n_tables):
+        np.random.seed(42 + t_idx)
         hyperplanes = np.random.randn(D, n_hyperplanes)
         projections = np.matmul(points, hyperplanes) > 0
         powers_of_two = 1 << np.arange(n_hyperplanes, dtype=np.int64)
         lsh_keys = np.sum(projections * powers_of_two[None, :], axis=1)
         
         hash_table = ElasticHashTable(capacity=table_cap, delta=0.05)
-        bucket_map = {}
+        bucket_map: Dict[int, List[int]] = {}
         for i in range(N):
             key = int(lsh_keys[i])
             if key not in bucket_map:
@@ -73,81 +71,86 @@ def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: in
             
         for i in range(N):
             key = int(lsh_keys[i])
-            bucket_indices, _ = hash_table.lookup(key)
-            if bucket_indices is not None and len(bucket_indices) > 1:
-                cand_pts = points[bucket_indices]
-                dists = np.linalg.norm(points[i] - cand_pts, axis=1)
-                top_local = np.argsort(dists)[:min(k_neighbors + 1, len(dists))]
-                for idx in top_local:
-                    neighbor_idx = bucket_indices[idx]
-                    if neighbor_idx != i:
-                        w = np.exp(-dists[idx]**2 / 8.0)
-                        edge = (min(i, neighbor_idx), max(i, neighbor_idx))
-                        edge_weights[edge] = max(edge_weights.get(edge, 0.0), w)
-
-    if coo_matrix is not None:
-        if not edge_weights:
-            return coo_matrix((N, N), dtype=np.float32).tocsr()
-        rows, cols, data = [], [], []
-        for (i, j), weight in edge_weights.items():
-            rows.extend((i, j))
-            cols.extend((j, i))
-            data.extend((weight, weight))
-        return coo_matrix((data, (rows, cols)), shape=(N, N), dtype=np.float32).tocsr()
-    else:
-        # Pure NumPy sparse dictionary representation
-        return {"N": N, "edges": edge_weights}
-
-def compute_laplacian_eigenmap_2d(adj_matrix: Any) -> np.ndarray:
-    """Unfolds manifold to 2D via Graph Laplacian eigenvectors."""
-    if isinstance(adj_matrix, dict) and "edges" in adj_matrix:
-        # Pure NumPy matrix-free normalized Laplacian power/Lanczos eigensolver
-        N = adj_matrix["N"]
-        if N < 3:
-            raise ValueError("at least three nodes are required for a 2D eigenmap")
-        
-        degrees = np.zeros(N, dtype=np.float64)
-        for (i, j), w in adj_matrix["edges"].items():
-            degrees[i] += w
-            degrees[j] += w
+            b_indices, _ = hash_table.lookup(key)
+            if b_indices is not None:
+                candidate_sets[i].update(b_indices)
+    
+    # Filter candidates to retain true top-k nearest neighbors per point
+    adj_list: List[List[Tuple[int, float]]] = [[] for _ in range(N)]
+    edge_weights: Dict[Tuple[int, int], float] = {}
+    
+    for i in range(N):
+        cands = np.array(list(candidate_sets[i] - {i}), dtype=np.int64)
+        if len(cands) == 0:
+            continue
+        cand_pts = points[cands]
+        dists = np.linalg.norm(points[i] - cand_pts, axis=1)
+        top_k = np.argsort(dists)[:min(k_neighbors, len(dists))]
+        for idx in top_k:
+            nbr = int(cands[idx])
+            d = float(dists[idx])
+            w = float(np.exp(-d**2 / 1.0))
+            edge = (min(i, nbr), max(i, nbr))
+            edge_weights[edge] = max(edge_weights.get(edge, 0.0), w)
+            adj_list[i].append((nbr, d))
+            adj_list[nbr].append((i, d))
             
-        inv_sqrt_d = 1.0 / np.sqrt(np.maximum(degrees, 1e-6))
-        
-        # Matrix-free normalized operator: M(v) = D^-1/2 A D^-1/2 v
-        def M_matvec(v: np.ndarray) -> np.ndarray:
-            u = v * inv_sqrt_d
-            Au = np.zeros(N, dtype=np.float64)
-            for (i, j), w in adj_matrix["edges"].items():
-                Au[i] += w * u[j]
-                Au[j] += w * u[i]
-            return Au * inv_sqrt_d
+    return {"N": N, "adj_list": adj_list, "edges": edge_weights}
 
-        # Find top 3 eigenvectors of M (corresponding to smallest 3 eigenvectors of L_sym)
-        # Power iteration with Gram-Schmidt orthogonalization
-        rng = np.random.RandomState(42)
-        k_vecs = 3
-        V = rng.randn(k_vecs, N).astype(np.float64)
-        for it in range(35):
-            for k in range(k_vecs):
-                V[k] = M_matvec(V[k])
-                for prev in range(k):
-                    V[k] -= np.dot(V[k], V[prev]) * V[prev]
-                V[k] /= (np.linalg.norm(V[k]) + 1e-12)
-                
-        # Return eigenvectors 1 and 2 (ignoring trivial stationary eigenvector 0)
-        return V[1:3].T
-    else:
-        if eigsh is None or not hasattr(adj_matrix, "tocsr"):
-            raise TypeError("adj_matrix must be a SciPy sparse matrix or NumPy sparse dict")
-        n = adj_matrix.shape[0]
-        if n < 3:
-            raise ValueError("at least three nodes are required for a 2D eigenmap")
-        degrees = np.asarray(adj_matrix.sum(axis=1)).ravel()
-        inv_sqrt = 1.0 / np.sqrt(np.maximum(degrees, 1e-6))
-        normalized = diags(inv_sqrt) @ adj_matrix @ diags(inv_sqrt)
-        laplacian = sparse_eye(n, format="csr") - normalized
-        _, eigvecs = eigsh(laplacian, k=3, which="SM")
-        return eigvecs[:, 1:3]
+def compute_geodesic_isomap_2d(graph_data: Dict[str, Any], n_landmarks: int = 60) -> np.ndarray:
+    """
+    Unfolds manifold to 2D via Landmark Isomap / Graph Geodesic Shortest Paths.
+    Isometrically unrolls developable manifolds like the Swiss roll in O(L * (N + E)).
+    """
+    N = graph_data["N"]
+    adj_list = graph_data["adj_list"]
+    if N < 3:
+        raise ValueError("at least three nodes are required for a 2D embedding")
+        
+    rng = np.random.RandomState(42)
+    landmarks = rng.choice(N, size=min(n_landmarks, N), replace=False)
+    
+    def dijkstra_shortest_paths(start: int) -> np.ndarray:
+        dists = np.full(N, np.inf, dtype=np.float64)
+        dists[start] = 0.0
+        pq = [(0.0, start)]
+        while pq:
+            d, u = heapq.heappop(pq)
+            if d > dists[u]:
+                continue
+            for v, weight in adj_list[u]:
+                if dists[u] + weight < dists[v]:
+                    dists[v] = dists[u] + weight
+                    heapq.heappush(pq, (dists[v], v))
+        return dists
+    
+    D_land = np.zeros((len(landmarks), N), dtype=np.float64)
+    for i, l_idx in enumerate(landmarks):
+        D_land[i] = dijkstra_shortest_paths(int(l_idx))
+        
+    # Replace any disconnected infinite values with max observed distance
+    max_finite = np.max(D_land[np.isfinite(D_land)]) if np.any(np.isfinite(D_land)) else 100.0
+    D_land[~np.isfinite(D_land)] = max_finite * 2.0
+    
+    # Classical Landmark Multidimensional Scaling (MDS)
+    D_ll = D_land[:, landmarks]
+    k_l = len(landmarks)
+    H = np.eye(k_l) - 1.0 / k_l
+    B = -0.5 * H @ (D_ll**2) @ H
+    
+    eigvals, eigvecs = np.linalg.eigh(B)
+    sort_idx = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[sort_idx]
+    eigvecs = eigvecs[:, sort_idx]
+    
+    # Top 2 embedding coordinates
+    mean_d2 = np.mean(D_ll**2, axis=0, keepdims=True)
+    all_mean_d2 = np.mean(D_land**2, axis=0, keepdims=True)
+    Delta = -0.5 * (D_land**2 - mean_d2.T - all_mean_d2 + np.mean(D_ll**2))
+    
+    inv_scale = 1.0 / np.sqrt(np.maximum(eigvals[:2], 1e-12))
+    proj_coords = Delta.T @ (eigvecs[:, :2] * inv_scale[None, :])
+    return proj_coords
 
 def run_dimension_reduction_demo():
     print("==================================================================")
@@ -157,10 +160,10 @@ def run_dimension_reduction_demo():
     ambient_dim = 8
     print(f"Generating {N} points on non-linear manifold in {ambient_dim}D ambient space...")
     ambient_pts, manifold_color, base_3d = generate_high_dim_swiss_roll(N, ambient_dim)
+    h_coord = base_3d[:, 1]
     
     # 1. Exact O(N^2) KNN Reference Time
     t0 = time.perf_counter()
-    # Compute small sample to extrapolate exact cost
     sample_diff = ambient_pts[:500, None, :] - ambient_pts[None, :500, :]
     _ = np.linalg.norm(sample_diff, axis=-1)
     t_exact_est = (time.perf_counter() - t0) * (N / 500)**2
@@ -168,15 +171,27 @@ def run_dimension_reduction_demo():
     
     # 2. Hash-Accelerated KNN Graph Construction
     t0 = time.perf_counter()
-    adj = build_hash_knn_graph(ambient_pts, k_neighbors=12, n_hyperplanes=10)
+    graph_data = build_hash_knn_graph(ambient_pts, k_neighbors=12, n_tables=8, n_hyperplanes=8)
     t_hash_knn = time.perf_counter() - t0
     print(f"[-] Hash-Accelerated k-NN Graph Time:          {t_hash_knn*1000:.2f} ms")
     
-    # 3. 2D Spectral Manifold Unfolding
+    # 3. 2D Manifold Geodesic Unfolding
     t0 = time.perf_counter()
-    embedding_2d = compute_laplacian_eigenmap_2d(adj)
+    embedding_2d = compute_geodesic_isomap_2d(graph_data, n_landmarks=60)
     t_unfold = time.perf_counter() - t0
-    print(f"[-] 2D Manifold Eigen-Projection Time:         {t_unfold*1000:.2f} ms")
+    print(f"[-] 2D Manifold Geodesic Unfolding Time:       {t_unfold*1000:.2f} ms")
+    
+    # Align coordinate axes: assign t to X and h to Y
+    if abs(np.corrcoef(embedding_2d[:, 0], manifold_color)[0, 1]) < abs(np.corrcoef(embedding_2d[:, 1], manifold_color)[0, 1]):
+        embedding_2d = embedding_2d[:, [1, 0]]
+    if np.corrcoef(embedding_2d[:, 0], manifold_color)[0, 1] < 0:
+        embedding_2d[:, 0] = -embedding_2d[:, 0]
+    if np.corrcoef(embedding_2d[:, 1], h_coord)[0, 1] < 0:
+        embedding_2d[:, 1] = -embedding_2d[:, 1]
+        
+    r_t = abs(np.corrcoef(embedding_2d[:, 0], manifold_color)[0, 1])
+    r_h = abs(np.corrcoef(embedding_2d[:, 1], h_coord)[0, 1])
+    print(f"[-] Intrinsic Coordinates Correlation: r(t) = {r_t:.4f}, r(h) = {r_h:.4f}")
     
     # 4. Visualization: 3D Visual Slice vs 2D Unfolded Intrinsic Coordinates
     fig = plt.figure(figsize=(16, 6.5), facecolor='#0B0E14')
@@ -186,7 +201,7 @@ def run_dimension_reduction_demo():
     ax1.set_facecolor('#0B0E14')
     p3d = ax1.scatter(base_3d[:, 0], base_3d[:, 1], base_3d[:, 2], c=manifold_color, 
                       cmap='turbo', s=14, alpha=0.85, edgecolors='none')
-    ax1.view_init(elev=10, azim=-75)
+    ax1.view_init(elev=12, azim=-72)
     ax1.set_title(f"High-Dimensional Manifold (8D Ambient Space)\nCurved Non-Linear Topology (N={N})", 
                   color='white', fontsize=11, fontweight='bold', pad=12)
     ax1.xaxis.pane.fill = False
@@ -216,7 +231,9 @@ def run_dimension_reduction_demo():
     cb.ax.yaxis.set_tick_params(color='#8B949E')
     plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color='#8B949E')
     
-    ax2.set_title("Unfolded 2D Intrinsic Projection (Hash-KNN Laplacian Map)\nPreserves Local Neighborhoods Without Pairwise O(N^2) Matrix", 
+    ax2.set_xlabel("Unfolded Intrinsic Coordinate 1 (t / Spiral Arc)", color='#E6EDF3', fontsize=10)
+    ax2.set_ylabel("Unfolded Intrinsic Coordinate 2 (h / Height)", color='#E6EDF3', fontsize=10)
+    ax2.set_title(f"Isometric 2D Unfolded Manifold (Hash-KNN Geodesic Embedding)\nPearson r(t) = {r_t:.3f}, r(h) = {r_h:.3f} (O(N) Graph)", 
                   color='white', fontsize=11, fontweight='bold')
     ax2.tick_params(colors='#8B949E')
     for spine in ax2.spines.values():

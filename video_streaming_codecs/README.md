@@ -89,13 +89,7 @@ python video_streaming_codecs/ffmpeg_interop_bridge.py
 
 ## 🔬 Theoretical Foundations & Citations
 
-1. **Optimal Bounds for Open Addressing Without Reordering**  
-   *Martín Farach-Colton, Andrew Krapivin, William Kuszmaul* (2025).  
-   *IEEE Symposium on Foundations of Computer Science (FOCS 2024)*. [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
-2. **AV1 Bitstream & Decoding Process Specification: Parametric Noise Synthesis**  
-   *Alliance for Open Media (AOMedia)* (2019). Section 7.18.
-3. **1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems**  
-   *Géry Casiez, Nicolas Roussel, Daniel Vogel* (2012).  
-   *ACM CHI Conference on Human Factors in Computing Systems*.
-4. **Perceptual Rate-Distortion Optimization for High-Efficiency Video Coding**  
-   *ITU-T H.265 / ISO/IEC 23008-2 (HEVC) & AOMedia AV1 Delta-QP Specifications*.
+1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+2. **AV1 Bitstream & Decoding Process Specification: Parametric Noise Synthesis.** Alliance for Open Media (2019). Section 7.18.
+3. **1€ Filter: A Simple Speed-Based Low-Pass Filter for Noisy Input in Interactive Systems.** Casiez, Roussel, Vogel (2012). *ACM CHI Conference on Human Factors in Computing Systems*.
+4. **Perceptual Rate-Distortion Optimization for High-Efficiency Video Coding.** ITU-T H.265 / ISO/IEC 23008-2 (HEVC) & AOMedia AV1 Delta-QP Specifications.

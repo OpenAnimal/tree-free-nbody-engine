@@ -79,18 +79,8 @@ python game_mechanics_spatial/fast_mesh_lod_decimator.py
 
 ## 🔬 Theoretical Citations
 
-1. **Optimal Bounds for Open Addressing Without Reordering**  
-   *Martín Farach-Colton, Andrew Krapivin, William Kuszmaul* (2025).  
-   *IEEE Symposium on Foundations of Computer Science (FOCS 2024)*. [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
-2. **A Fast Algorithm for Particle Simulations**  
-   *Leslie Greengard, Vladimir Rokhlin* (1987).  
-   *Journal of Computational Physics*, 73(2), 325-348.
-3. **Flocks, Herds, and Schools: A Distributed Behavioral Model**  
-   *Craig W. Reynolds* (1987).  
-   *ACM SIGGRAPH Computer Graphics*, 21(4), 25-34.
-4. **WaveFunctionCollapse Algorithm**  
-   *Maxim Gumin* (2016).  
-   *GitHub Repository*: [mxgmn/WaveFunctionCollapse](https://github.com/mxgmn/WaveFunctionCollapse).
-5. **Fast Poisson Disk Sampling in Arbitrary Dimensions**  
-   *Robert Bridson* (2007).  
-   *ACM SIGGRAPH Sketches*, Article 22.
+1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+2. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
+3. **Flocks, Herds, and Schools: A Distributed Behavioral Model.** Reynolds (1987). *ACM SIGGRAPH Computer Graphics*, 21(4), 25–34.
+4. **WaveFunctionCollapse Algorithm.** Gumin (2016). *GitHub*: [mxgmn/WaveFunctionCollapse](https://github.com/mxgmn/WaveFunctionCollapse).
+5. **Fast Poisson Disk Sampling in Arbitrary Dimensions.** Bridson (2007). *ACM SIGGRAPH Sketches*, Article 22.
