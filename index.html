@@ -728,12 +728,12 @@
                 vy = (vy / speed) * maxSpeed;
             }
 
-            // 1€ Adaptive Filter calculation
+            // 1€ Adaptive Filter calculation (Active specifically for autonomous Boid Swarms)
             var filteredVx = vx;
             var filteredVy = vy;
             var filterDamping: f32 = 0.0;
 
-            if (params.use1Euro == 1u && params.scenario != 0u) {
+            if (params.use1Euro == 1u && params.scenario == 1u) {
                 let alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVx = alpha * vx + (1.0 - alpha) * ext.prevVel.x;
                 filteredVy = alpha * vy + (1.0 - alpha) * ext.prevVel.y;
@@ -1015,7 +1015,7 @@
 
             vec2 filteredVel = vel;
             float filterDamping = 0.0;
-            if (u_use1Euro == 1 && u_scenario != 0) {
+            if (u_use1Euro == 1 && u_scenario == 1) {
                 float alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVel = mix(a_prevVel, vel, alpha);
                 filterDamping = (1.0 - alpha) * length(vel - a_prevVel) * 40.0;
@@ -1664,6 +1664,7 @@
         // Scenario Selector
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
+            update1EuroUI();
             resetSimulation();
         });
 
@@ -1726,10 +1727,26 @@
         });
 
         // Toggles
+        function update1EuroUI() {
+            const btn = document.getElementById('btn1Euro');
+            if (!btn) return;
+            if (scenario === 'boids') {
+                btn.innerText = `1€ Filter: ${use1Euro ? 'ON (Boids)' : 'OFF'}`;
+                btn.classList.toggle('active', use1Euro);
+                btn.style.opacity = '1.0';
+                btn.disabled = false;
+            } else {
+                btn.innerText = '1€ Filter: N/A (Boids Only)';
+                btn.classList.remove('active');
+                btn.style.opacity = '0.55';
+                btn.disabled = true;
+            }
+        }
+
         document.getElementById('btn1Euro').addEventListener('click', (e) => {
+            if (scenario !== 'boids') return;
             use1Euro = !use1Euro;
-            e.target.classList.toggle('active', use1Euro);
-            e.target.innerText = `1€ Filter: ${use1Euro ? 'ON' : 'OFF'}`;
+            update1EuroUI();
         });
 
         const colorModeNames = [
@@ -1758,6 +1775,7 @@
         document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
 
         // Launch Engine
+        update1EuroUI();
         initEngine();
     </script>
 </body>
