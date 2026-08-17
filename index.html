@@ -552,17 +552,22 @@
                 farMultipoleIntensity += 0.5;
 
             } else if (params.scenario == 2u) {
-                // Hydrodynamic Vortex Sheet (Kelvin-Helmholtz roll-up)
-                let wave = sin(px * 12.566 + params.simTime * 1.5) * 0.035;
-                let targetY = select(0.42 - wave, 0.58 + wave, grp > 0.5);
-                fy += (targetY - py) * 3.5;
-                fx += select(-0.06, 0.06, grp > 0.5);
+                // Hydrodynamic Vortex Sheet (Kelvin-Helmholtz Biot-Savart Roll-Up)
+                let shearDir = select(-1.0, 1.0, grp > 0.5);
+                fx += shearDir * 0.050;
 
-                let cdx = px - 0.5; let cdy = py - 0.5;
-                let cd = sqrt(cdx * cdx + cdy * cdy) + 0.05;
-                fx += (-cdy / cd) * 0.03;
-                fy += (cdx / cd) * 0.03;
-                farMultipoleIntensity += 0.4;
+                // Multi-Center Biot-Savart rotational vortex induction
+                for (var k: u32 = 0u; k < 3u; k = k + 1u) {
+                    let vCoreX = 0.20 + f32(k) * 0.30 + sin(params.simTime * 0.8 + f32(k) * 1.5) * 0.04;
+                    let vCoreY = 0.50 + sin(vCoreX * 6.283 + params.simTime * 1.2) * 0.03;
+                    let vdx = px - vCoreX;
+                    let vdy = py - vCoreY;
+                    let vr_sq = vdx * vdx + vdy * vdy + 0.0035;
+                    let gamma = select(-0.025, 0.025, grp > 0.5);
+                    fx += (-vdy / vr_sq) * gamma;
+                    fy += (vdx / vr_sq) * gamma;
+                }
+                farMultipoleIntensity += 0.6;
 
             } else if (params.scenario == 3u) {
                 // SPH Hydrodynamic Dam Break Simulation
@@ -890,11 +895,18 @@
                 fx += (subC - pos) * 0.035;
                 farM2L = 0.8;
             } else if (u_scenario == 2) {
-                float wave = sin(pos.x * 12.566 + u_simTime * 1.5) * 0.035;
-                float targetY = (a_group > 0.5) ? (0.58 + wave) : (0.42 - wave);
-                fx.y += (targetY - pos.y) * 3.5;
-                fx.x += (a_group > 0.5) ? 0.06 : -0.06;
-                farM2L = 0.5;
+                float shearDir = (a_group > 0.5) ? 1.0 : -1.0;
+                fx.x += shearDir * 0.050;
+
+                for (int k = 0; k < 3; k++) {
+                    float vCoreX = 0.20 + float(k) * 0.30 + sin(u_simTime * 0.8 + float(k) * 1.5) * 0.04;
+                    float vCoreY = 0.50 + sin(vCoreX * 6.283 + u_simTime * 1.2) * 0.03;
+                    vec2 vd = pos - vec2(vCoreX, vCoreY);
+                    float vr_sq = dot(vd, vd) + 0.0035;
+                    float gamma = (a_group > 0.5) ? 0.025 : -0.025;
+                    fx += vec2(-vd.y, vd.x) * (gamma / vr_sq);
+                }
+                farM2L = 0.6;
             } else if (u_scenario == 3) {
                 // SPH Dam Break
                 fx.y += 0.32;
@@ -1319,10 +1331,10 @@
             if (scenario !== 'galaxy') return;
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
-            const r_sq = dx * dx + dy * dy + 0.005;
+            const r_sq = dx * dx + dy * dy + 0.003;
             const inv_r = 1.0 / Math.sqrt(r_sq);
             const inv_r3 = inv_r * inv_r * inv_r;
-            const G = 0.0035;
+            const G = 0.0036;
 
             const f12x = dx * (G * core2.mass * inv_r3);
             const f12y = dy * (G * core2.mass * inv_r3);
@@ -1337,10 +1349,15 @@
             core2.x += core2.vx * dt * simSpeed;
             core2.y += core2.vy * dt * simSpeed;
 
-            if (core1.x < 0.10 || core1.x > 0.90) core1.vx *= -0.8;
-            if (core1.y < 0.10 || core1.y > 0.90) core1.vy *= -0.8;
-            if (core2.x < 0.10 || core2.x > 0.90) core2.vx *= -0.8;
-            if (core2.y < 0.10 || core2.y > 0.90) core2.vy *= -0.8;
+            // Smooth harmonic orbital anchor keeps the continuous collision dance in center viewport
+            const c1DistX = core1.x - 0.5;
+            const c1DistY = core1.y - 0.5;
+            core1.vx -= c1DistX * 0.015 * dt * simSpeed;
+            core1.vy -= c1DistY * 0.015 * dt * simSpeed;
+            const c2DistX = core2.x - 0.5;
+            const c2DistY = core2.y - 0.5;
+            core2.vx -= c2DistX * 0.015 * dt * simSpeed;
+            core2.vy -= c2DistY * 0.015 * dt * simSpeed;
         }
 
         // ====================================================================
