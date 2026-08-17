@@ -333,8 +333,10 @@
 
     <script>
         const canvas = document.getElementById('mainCanvas');
-        const MAX_P = 10000000; // Supports Extreme Mode up to 10,000,000 live particles on GPU
-        let N = 120000;
+        const MAX_P = 10000000; // Maximum accepted custom count
+        const storedCount = Number.parseInt(localStorage.getItem('treeFreeParticleCount') || '120000', 10);
+        let N = Number.isFinite(storedCount) ? Math.min(MAX_P, Math.max(1000, storedCount)) : 120000;
+        let particleCapacity = N; // Allocate CPU/GPU storage for the active count, not the 10M ceiling
         let scenario = 'galaxy';
         let scenarioId = 0;
         let colorMode = 0; // 0: Velocity, 1: FMM & 1€ Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
@@ -349,10 +351,18 @@
         let core2 = { x: 0.70, y: 0.60, vx: -0.035, vy: -0.020, mass: 1.5 };
 
         // Simulation initial state generation
-        const initialPositions = new Float32Array(MAX_P * 4); // [x, y, vx, vy]
-        const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
+        let initialPositions = new Float32Array(particleCapacity * 4); // [x, y, vx, vy]
+        let initialExtras = new Float32Array(particleCapacity * 4);    // [prevVx, prevVy, group, stateFlags]
+
+        function ensureParticleCapacity(count) {
+            if (count <= particleCapacity) return;
+            particleCapacity = count;
+            initialPositions = new Float32Array(particleCapacity * 4);
+            initialExtras = new Float32Array(particleCapacity * 4);
+        }
 
         function generateParticles() {
+            ensureParticleCapacity(N);
             core1 = { x: 0.25, y: 0.45, vx: 0.018, vy: 0.008, mass: 1.0 };
             core2 = { x: 0.75, y: 0.55, vx: -0.018, vy: -0.008, mass: 1.0 };
 
@@ -615,12 +625,12 @@
                 // High-Velocity Stagnation Splash against Vertical Container Walls
                 if (px > 0.86 && vx > 0.03 && py > 0.40) {
                     fy -= vx * 9.0; // High upward splash on right wall
-                    fx.x -= 0.30;
+                    fx -= 0.30;
                     nearP2PIntensity += 1.0;
                 }
                 if (px < 0.14 && vx < -0.03 && py > 0.40) {
                     fy -= abs(vx) * 9.0; // Reflection splash on left wall
-                    fx.x += 0.30;
+                    fx += 0.30;
                     nearP2PIntensity += 1.0;
                 }
 
@@ -640,7 +650,7 @@
                 }
                 if (px > 0.96) {
                     let pen = px - 0.96;
-                    fx.x -= pen * 70.0;
+                    fx -= pen * 70.0;
                     vx *= -0.35;
                     nearP2PIntensity += 0.8;
                 }
@@ -1163,14 +1173,21 @@
         }
 
         async function initEngine() {
+            document.getElementById('valParticles').innerText = N.toLocaleString();
+            document.getElementById('inputCustomParticles').value = N;
+            document.getElementById('sliderParticles').value = Math.min(N, 250000);
             generateParticles();
 
             // 1. Try WebGPU Native Compute Pipeline
             if (navigator.gpu) {
                 try {
-                    let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+                    const webgpuTimeout = new Promise(resolve => setTimeout(() => resolve(null), 1500));
+                    let adapter = await Promise.race([
+                        navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }),
+                        webgpuTimeout
+                    ]);
                     if (!adapter) {
-                        adapter = await navigator.gpu.requestAdapter();
+                        adapter = await Promise.race([navigator.gpu.requestAdapter(), webgpuTimeout]);
                     }
                     if (adapter) {
                         let gpuDescription = 'High-Performance Discrete GPU';
@@ -1195,7 +1212,10 @@
                             }
                         }
 
-                        webgpuDevice = await adapter.requestDevice({ requiredLimits });
+                        webgpuDevice = await Promise.race([
+                            adapter.requestDevice({ requiredLimits }),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU device timeout')), 2000))
+                        ]);
                         webgpuContext = canvas.getContext('webgpu');
 
                         webgpuFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -1254,8 +1274,8 @@
                         });
 
                         // Storage Buffers
-                        const posVelBytes = MAX_P * 16;
-                        const extraBytes = MAX_P * 16;
+                        const posVelBytes = particleCapacity * 16;
+                        const extraBytes = particleCapacity * 16;
 
                         webgpuPosVelBufferA = webgpuDevice.createBuffer({
                             size: posVelBytes,
@@ -1734,6 +1754,13 @@
         // Presets
         const setPreset = (val, btn) => {
             N = Math.min(MAX_P, Math.max(1000, val));
+            localStorage.setItem('treeFreeParticleCount', String(N));
+            if (N > particleCapacity) {
+                // Recreate the page so GPU/CPU buffers are allocated at the new capacity,
+                // rather than allocating the 10M ceiling during every normal 120k run.
+                location.reload();
+                return;
+            }
             document.getElementById('valParticles').innerText = N.toLocaleString();
             const slider = document.getElementById('sliderParticles');
             if (N <= 250000) {
