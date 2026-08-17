@@ -265,19 +265,19 @@
 
         <div class="section-title">Scale Presets</div>
         <div class="btn-grid">
-            <button id="btnPreset120k" class="active">120k (Heavy)</button>
-            <button id="btnPreset1M">1.0M (Hyper)</button>
-            <button id="btnPreset5M">5.0M (Extreme)</button>
-            <button id="btnPreset10M">10.0M (Titan GPU)</button>
+            <button id="btnPreset15k">15k (Ultra High)</button>
+            <button id="btnPreset35k">35k (Balanced)</button>
+            <button id="btnPreset70k">70k (Heavy)</button>
+            <button id="btnPreset120k" class="active">120k (Extreme)</button>
         </div>
 
-        <div class="section-title">Custom Scale (Extreme Mode)</div>
+        <div class="section-title">Particle Count & Dynamics</div>
         <div class="control-group">
             <div class="control-label">Particles: <span id="valParticles">120,000</span></div>
-            <input type="range" id="sliderParticles" min="5000" max="10000000" step="50000" value="120000">
+            <input type="range" id="sliderParticles" min="5000" max="250000" step="5000" value="120000">
             <div style="display:flex; gap:6px; margin-top:4px;">
-                <input type="number" id="inputCustomParticles" min="1000" max="10000000" step="100000" value="120000" style="flex:1; background:var(--bg-main); color:var(--text-main); border:1px solid var(--bg-border); padding:6px 10px; border-radius:6px; font-family:monospace; font-size:0.80rem;">
-                <button id="btnApplyCustom" style="padding:6px 14px; font-size:0.76rem; font-weight:bold; background:rgba(0,240,255,0.18); border-color:var(--accent-cyan); color:var(--accent-cyan);">Apply</button>
+                <input type="number" id="inputCustomParticles" min="1000" max="10000000" step="50000" value="120000" placeholder="Custom (e.g. 2500000)" style="flex:1; background:var(--bg-main); color:var(--text-main); border:1px solid var(--bg-border); padding:6px 10px; border-radius:6px; font-family:monospace; font-size:0.80rem;">
+                <button id="btnApplyCustom" style="padding:6px 14px; font-size:0.76rem; font-weight:bold; background:rgba(0,240,255,0.18); border-color:var(--accent-cyan); color:var(--accent-cyan);">Set</button>
             </div>
         </div>
 
@@ -1657,7 +1657,14 @@
         const setPreset = (val, btn) => {
             N = Math.min(MAX_P, Math.max(1000, val));
             document.getElementById('valParticles').innerText = N.toLocaleString();
-            document.getElementById('sliderParticles').value = N;
+            const slider = document.getElementById('sliderParticles');
+            if (N <= 250000) {
+                slider.max = 250000;
+                slider.value = N;
+            } else {
+                slider.max = N;
+                slider.value = N;
+            }
             document.getElementById('inputCustomParticles').value = N;
             document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
                 if (b.id.startsWith('btnPreset')) b.classList.remove('active');
@@ -1666,10 +1673,10 @@
             resetSimulation();
         };
 
+        document.getElementById('btnPreset15k').addEventListener('click', (e) => setPreset(15000, e.target));
+        document.getElementById('btnPreset35k').addEventListener('click', (e) => setPreset(35000, e.target));
+        document.getElementById('btnPreset70k').addEventListener('click', (e) => setPreset(70000, e.target));
         document.getElementById('btnPreset120k').addEventListener('click', (e) => setPreset(120000, e.target));
-        document.getElementById('btnPreset1M').addEventListener('click', (e) => setPreset(1000000, e.target));
-        document.getElementById('btnPreset5M').addEventListener('click', (e) => setPreset(5000000, e.target));
-        document.getElementById('btnPreset10M').addEventListener('click', (e) => setPreset(10000000, e.target));
 
         // Custom Count Apply Button & Enter Key
         const applyCustomCount = () => {
