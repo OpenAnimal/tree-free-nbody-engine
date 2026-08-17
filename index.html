@@ -760,8 +760,12 @@
             posVelOut[gid].vel = vec2<f32>(filteredVx, filteredVy);
             extras[gid].prevVel = vec2<f32>(filteredVx, filteredVy);
             
-            // Encode state: low-byte near-field, mid-byte far-field, high-byte filter
-            extras[gid].state = clamp(nearP2PIntensity, 0.0, 1.0) * 1.0 + clamp(farMultipoleIntensity, 0.0, 1.0) * 2.0 + clamp(filterDamping, 0.0, 1.0) * 4.0;
+            // Encode state: exact bitfield packing 8-bit channels for P2P, M2L Far-Field, and 1-Euro Filter
+            let p2pByte = u32(clamp(nearP2PIntensity, 0.0, 1.0) * 255.0);
+            let farByte = u32(clamp(farMultipoleIntensity, 0.0, 1.0) * 255.0);
+            let fltByte = u32(clamp(filterDamping, 0.0, 1.0) * 255.0);
+            let packedState = p2pByte | (farByte << 8u) | (fltByte << 16u);
+            extras[gid].state = bitcast<f32>(packedState);
         }
         `;
 
@@ -835,20 +839,24 @@
                     col = mix(cPink, cGold, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
                 }
             } else if (params.colorMode == 1u) {
-                // 2. FMM & 1€ Dynamics (Cyan=Near, Purple=Far, Green=1€ Filter, Pink=Evasion)
-                let p2p = fract(state);
-                let far = fract(state * 0.5);
-                let filterAct = fract(state * 0.25);
+                // 2. FMM & 1€ Dynamics (Purple=Far M2L, Cyan=Near P2P, Green=1€ Filter)
+                let packedState = bitcast<u32>(state);
+                let p2p = f32(packedState & 255u) / 255.0;
+                let far = f32((packedState >> 8u) & 255u) / 255.0;
+                let filterAct = f32((packedState >> 16u) & 255u) / 255.0;
 
-                col = cPurple; // Default far-field base
-                if (p2p > 0.2) {
-                    col = mix(col, cCyan, clamp(p2p * 2.0, 0.0, 1.0));
+                // Base Far-Field Multipole M2L (Purple)
+                col = mix(vec3<f32>(0.28, 0.18, 0.50), cPurple, clamp(far * 1.5, 0.0, 1.0));
+                // Direct Near-Field P2P (Cyan overlay for close separation / core forces)
+                if (p2p > 0.05) {
+                    col = mix(col, cCyan, clamp(p2p * 1.8, 0.0, 1.0));
                 }
-                if (filterAct > 0.15) {
-                    col = mix(col, cGreen, clamp(filterAct * 2.5, 0.0, 1.0));
+                // 1€ Adaptive Filter Active (Emerald Green overlay for velocity damping)
+                if (filterAct > 0.05) {
+                    col = mix(col, cGreen, clamp(filterAct * 2.2, 0.0, 1.0));
                 }
-                if (speed > 1.2) {
-                    col = mix(col, cPink, clamp((speed - 1.2) * 1.5, 0.0, 1.0));
+                if (speed > 1.4) {
+                    col = mix(col, cPink, clamp((speed - 1.4) * 1.5, 0.0, 1.0));
                 }
             } else if (params.colorMode == 2u) {
                 // 3. Scenario Clusters
@@ -936,8 +944,8 @@
                 float inv_r2 = 1.0 / sqrt(r2_sq);
                 fx += d2 * (0.00075 * inv_r2 * inv_r2 * inv_r2);
 
-                farM2L = 0.6;
-                nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
+                farM2L = clamp((inv_r1 + inv_r2) * 0.07, 0.0, 1.0);
+                nearP2P = clamp(max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0), 0.0, 1.0);
             } else if (u_scenario == 1) {
                 // Boids flocking
                 fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
@@ -1064,11 +1072,11 @@
                 else if (speedNorm < 1.0) col = mix(cPurple, cPink, (speedNorm - 0.5) * 2.0);
                 else col = mix(cPink, cGold, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
             } else if (u_colorMode == 1) {
-                // FMM & 1€ Dynamics
-                col = cPurple;
-                if (nearP2P > 0.2) col = mix(col, cCyan, clamp(nearP2P * 1.5, 0.0, 1.0));
-                if (filterDamping > 0.15) col = mix(col, cGreen, clamp(filterDamping * 2.5, 0.0, 1.0));
-                if (speedNorm > 1.2) col = mix(col, cPink, clamp((speedNorm - 1.2) * 1.5, 0.0, 1.0));
+                // FMM & 1€ Dynamics (Purple=Far M2L, Cyan=Near P2P, Green=1€ Filter)
+                col = mix(vec3(0.28, 0.18, 0.50), cPurple, clamp(farM2L * 1.5, 0.0, 1.0));
+                if (nearP2P > 0.05) col = mix(col, cCyan, clamp(nearP2P * 1.8, 0.0, 1.0));
+                if (filterDamping > 0.05) col = mix(col, cGreen, clamp(filterDamping * 2.2, 0.0, 1.0));
+                if (speedNorm > 1.4) col = mix(col, cPink, clamp((speedNorm - 1.4) * 1.5, 0.0, 1.0));
             } else if (u_colorMode == 2) {
                 // Scenario Clusters
                 if (u_scenario == 1) {
