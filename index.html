@@ -199,6 +199,7 @@
             flex-direction: column;
             gap: 4px;
             pointer-events: none;
+            min-width: 280px;
         }
 
         .legend-dot {
@@ -239,7 +240,7 @@
         <div class="section-title">Simulation Scenario</div>
         <select id="scenarioSelect">
             <option value="galaxy">Dynamic N-Body Galaxy Collision (Dual Core Flyby)</option>
-            <option value="boids">Multilevel FMM Boid Swarms + 1€ Filter</option>
+            <option value="boids">Multilevel FMM Boid Swarms (Tri-Flock Murmuration)</option>
             <option value="vortex">Hydrodynamic Vortex Sheet (Kelvin-Helmholtz)</option>
             <option value="sph">SPH Fluid Dam Break Simulation</option>
         </select>
@@ -263,7 +264,7 @@
         <div class="section-title">Controls & Filtering</div>
         <div class="btn-grid">
             <button id="btn1Euro" class="active">1€ Filter: ON</button>
-            <button id="btnColorMode">Color: Velocity</button>
+            <button id="btnColorMode">Color: Velocity Heatmap</button>
             <button id="btnMouseMode">Mouse: Attract</button>
             <button id="btnReset">Reset Particles</button>
         </div>
@@ -283,11 +284,7 @@
     <div id="stage-container">
         <canvas id="mainCanvas"></canvas>
         <div id="overlay-info">
-            <div id="overlayScenarioName" style="font-weight:bold; color:#fff; margin-bottom:2px;">Galaxy Collision</div>
-            <div><span class="legend-dot" style="background:var(--accent-cyan)"></span> Near-Field: Direct P2P (O(1) Spatial Probe)</div>
-            <div><span class="legend-dot" style="background:var(--accent-purple)"></span> Far-Field: Multipole M2L Expansion</div>
-            <div><span class="legend-dot" style="background:var(--accent-green)"></span> 1€ Filter: Adaptive Velocity Smoothing</div>
-            <div style="font-size:0.7rem; color:var(--text-dim); margin-top:4px;">Drag / Click inside canvas to dynamically interact with particle field</div>
+            <!-- Dynamically populated by updateOverlayLegend() -->
         </div>
     </div>
 
@@ -297,12 +294,11 @@
         let N = 120000;
         let scenario = 'galaxy';
         let scenarioId = 0;
-        let colorMode = 0;
+        let colorMode = 0; // 0: Velocity, 1: FMM & 1€ Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
         let use1Euro = true;
         let simSpeed = 1.0;
         let p2pRadius = 0.035;
         let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
-        let mouseModeStr = 'attract';
         let mouseX = -1, mouseY = -1, isMouseDown = false;
 
         // Dynamic Galaxy cores
@@ -311,15 +307,14 @@
 
         // Simulation initial state generation
         const initialPositions = new Float32Array(MAX_P * 4); // [x, y, vx, vy]
-        const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, mass]
+        const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            // Reset core dynamics
             core1 = { x: 0.28, y: 0.38, vx: 0.038, vy: 0.024, mass: 1.6 };
             core2 = { x: 0.72, y: 0.62, vx: -0.038, vy: -0.024, mass: 1.6 };
 
             for (let i = 0; i < N; i++) {
-                let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, mass = 1.0;
+                let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
 
                 if (scenario === 'galaxy') {
                     scenarioId = 0;
@@ -343,17 +338,33 @@
                     vx = cVx - vOrb * Math.sin(th);
                     vy = cVy + vOrb * Math.cos(th);
                     grp = isG1 ? 0.0 : 1.0;
-                    mass = 1.0;
+                    state = 0.0;
                 } else if (scenario === 'boids') {
                     scenarioId = 1;
-                    px = 0.15 + Math.random() * 0.70;
-                    py = 0.15 + Math.random() * 0.70;
-                    const th = Math.random() * Math.PI * 2;
-                    const speed = 0.02 + Math.random() * 0.03;
-                    vx = Math.cos(th) * speed;
-                    vy = Math.sin(th) * speed;
-                    grp = (i % 3 === 0) ? 1.0 : (i % 3 === 1 ? 0.5 : 0.0);
-                    mass = 1.0;
+                    // 3 Distinct Sub-Flocks (Tri-Swarm Murmuration)
+                    const swarmIdx = i % 3;
+                    grp = swarmIdx; // 0.0: Alpha (Cyan), 1.0: Beta (Emerald), 2.0: Gamma (Purple)
+
+                    let scx = 0.32, scy = 0.45, sRadius = 0.14, sAngle = Math.random() * Math.PI * 2;
+                    let baseVx = 0.035, baseVy = -0.020;
+
+                    if (swarmIdx === 1) {
+                        scx = 0.68; scy = 0.55; sRadius = 0.14;
+                        baseVx = -0.035; baseVy = 0.020;
+                    } else if (swarmIdx === 2) {
+                        scx = 0.50; scy = 0.28; sRadius = 0.12;
+                        baseVx = 0.025; baseVy = 0.030;
+                    }
+
+                    const r = Math.sqrt(Math.random()) * sRadius;
+                    px = scx + r * Math.cos(sAngle);
+                    py = scy + r * Math.sin(sAngle);
+
+                    // Swirling orbital velocity + flock direction
+                    const sOrb = 0.020;
+                    vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.008;
+                    vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.008;
+                    state = 0.0;
                 } else if (scenario === 'vortex') {
                     scenarioId = 2;
                     // Two opposing shear vortex layers (Kelvin-Helmholtz)
@@ -364,7 +375,7 @@
                     vx = isUpper ? 0.05 : -0.05;
                     vy = Math.cos(px * Math.PI * 4.0) * 0.02 * (isUpper ? 1.0 : -1.0);
                     grp = isUpper ? 0.0 : 1.0;
-                    mass = isUpper ? 1.0 : -1.0; // Circulation gamma
+                    state = isUpper ? 1.0 : -1.0; // Circulation gamma
                 } else if (scenario === 'sph') {
                     scenarioId = 3;
                     // SPH Dam Break initial column on the left
@@ -373,7 +384,7 @@
                     vx = (Math.random() - 0.5) * 0.005;
                     vy = 0.02 + Math.random() * 0.02;
                     grp = 0.0;
-                    mass = 1.0;
+                    state = 0.0;
                 }
 
                 initialPositions[i * 4 + 0] = px;
@@ -381,12 +392,13 @@
                 initialPositions[i * 4 + 2] = vx;
                 initialPositions[i * 4 + 3] = vy;
 
-                initialExtras[i * 4 + 0] = vx;  // prevVx
-                initialExtras[i * 4 + 1] = vy;  // prevVy
-                initialExtras[i * 4 + 2] = grp; // group
-                initialExtras[i * 4 + 3] = mass;// mass
+                initialExtras[i * 4 + 0] = vx;    // prevVx
+                initialExtras[i * 4 + 1] = vy;    // prevVy
+                initialExtras[i * 4 + 2] = grp;   // group
+                initialExtras[i * 4 + 3] = state; // stateFlags
             }
             document.getElementById('valActiveParticles').innerText = N.toLocaleString();
+            updateOverlayLegend();
         }
 
         // ====================================================================
@@ -401,7 +413,7 @@
         struct ParticleExtra {
             prevVel: vec2<f32>,
             group: f32,
-            mass: f32,
+            state: f32,
         };
 
         struct SimParams {
@@ -428,10 +440,6 @@
         @group(0) @binding(2) var<storage, read_write> extras: array<ParticleExtra>;
         @group(0) @binding(3) var<uniform> params: SimParams;
 
-        var<workgroup> tile_pos: array<vec2<f32>, 128>;
-        var<workgroup> tile_vel: array<vec2<f32>, 128>;
-        var<workgroup> tile_extra: array<vec2<f32>, 128>; // group, mass
-
         @compute @workgroup_size(128, 1, 1)
         fn main(
             @builtin(global_invocation_id) global_id: vec3<u32>,
@@ -450,23 +458,24 @@
             var vy = p.vel.y;
             let ext = extras[gid];
             let grp = ext.group;
-            let mass = ext.mass;
 
             var fx: f32 = 0.0;
             var fy: f32 = 0.0;
             let dt = params.dt * params.speedMult;
 
+            var nearP2PIntensity: f32 = 0.0;
+            var farMultipoleIntensity: f32 = 0.0;
+
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Scenario 0: Dynamic Galaxy Collision (Dual-Core flyby)
+                // Galaxy Dual-Core Flyby & Far-Field Attraction
                 let d1x = params.g1x - px;
                 let d1y = params.g1y - py;
                 let r1_sq = d1x * d1x + d1y * d1y + 0.0012;
                 let inv_r1 = inverseSqrt(r1_sq);
                 let inv_r1_3 = inv_r1 * inv_r1 * inv_r1;
                 let f1 = 0.045 * inv_r1_3;
-                fx += d1x * f1;
-                fy += d1y * f1;
+                fx += d1x * f1; fy += d1y * f1;
 
                 let d2x = params.g2x - px;
                 let d2y = params.g2y - py;
@@ -474,62 +483,55 @@
                 let inv_r2 = inverseSqrt(r2_sq);
                 let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
                 let f2 = 0.045 * inv_r2_3;
-                fx += d2x * f2;
-                fy += d2y * f2;
+                fx += d2x * f2; fy += d2y * f2;
 
-                // Near-core orbital softening
+                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.08;
+
+                // Near-core softening
                 let rep1 = 0.00015 * inv_r1 * inv_r1 * inv_r1 * inv_r1;
                 fx -= d1x * rep1; fy -= d1y * rep1;
                 let rep2 = 0.00015 * inv_r2 * inv_r2 * inv_r2 * inv_r2;
                 fx -= d2x * rep2; fy -= d2y * rep2;
+                nearP2PIntensity += (rep1 + rep2) * 50.0;
 
             } else if (params.scenario == 1u) {
-                // Scenario 1: Boids Swarm Flocking (Reynolds Near-Field + Multipole centering)
-                // Global center attraction
-                fx += (0.5 - px) * 0.04;
-                fy += (0.5 - py) * 0.04;
+                // Boids Swarm: Global Far-Field Murmuration Vortex Draft
+                let draftX = (0.5 - py) * 0.04;
+                let draftY = (px - 0.5) * 0.04;
+                fx += draftX;
+                fy += draftY;
 
-                // Wander perturbation
-                let angle = (px * 37.0 + py * 71.0 + params.simTime * 2.0);
-                fx += cos(angle) * 0.015;
-                fy += sin(angle) * 0.015;
+                // Sub-swarm center pull
+                var subCx = 0.35; var subCy = 0.45;
+                if (grp > 1.5) { subCx = 0.50; subCy = 0.30; }
+                else if (grp > 0.5) { subCx = 0.65; subCy = 0.55; }
+                fx += (subCx - px) * 0.035;
+                fy += (subCy - py) * 0.035;
+                farMultipoleIntensity += 0.5;
 
             } else if (params.scenario == 2u) {
-                // Scenario 2: Hydrodynamic Vortex Sheet (Kelvin-Helmholtz Biot-Savart roll-up)
+                // Hydrodynamic Vortex Sheet (Kelvin-Helmholtz roll-up)
                 let wave = sin(px * 12.566 + params.simTime * 1.5) * 0.035;
                 let targetY = select(0.42 - wave, 0.58 + wave, grp > 0.5);
                 fy += (targetY - py) * 3.5;
                 fx += select(-0.06, 0.06, grp > 0.5);
 
-                // Vortex roll-up swirl
-                let cdx = px - 0.5;
-                let cdy = py - 0.5;
+                let cdx = px - 0.5; let cdy = py - 0.5;
                 let cd = sqrt(cdx * cdx + cdy * cdy) + 0.05;
                 fx += (-cdy / cd) * 0.03;
                 fy += (cdx / cd) * 0.03;
+                farMultipoleIntensity += 0.4;
 
             } else if (params.scenario == 3u) {
-                // Scenario 3: SPH Fluid Dam Break
-                fy += 0.22; // Gravity downwards
-
-                // Floor and side walls
-                if (py > 0.94) {
-                    fy -= (py - 0.94) * 28.0;
-                    vy *= 0.85;
-                }
-                if (px < 0.04) {
-                    fx += (0.04 - px) * 28.0;
-                    vx *= 0.85;
-                }
-                if (px > 0.96) {
-                    fx -= (px - 0.96) * 28.0;
-                    vx *= 0.85;
-                }
+                // SPH Dam Break Gravity
+                fy += 0.22;
+                if (py > 0.94) { fy -= (py - 0.94) * 28.0; vy *= 0.85; nearP2PIntensity += 0.8; }
+                if (px < 0.04) { fx += (0.04 - px) * 28.0; vx *= 0.85; nearP2PIntensity += 0.8; }
+                if (px > 0.96) { fx -= (px - 0.96) * 28.0; vx *= 0.85; nearP2PIntensity += 0.8; }
             }
 
-            // 2. TILE-BASED NEIGHBOR INTERACTION (Boids / SPH / Direct P2P)
-            // Stride-based local tile sampling for massive GPU parallelism
-            let sample_start = (gid * 31u) % n;
+            // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH)
+            let sample_start = (gid * 37u) % n;
             let sample_count = min(64u, n);
             for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
                 let other_idx = (sample_start + s) % n;
@@ -540,16 +542,23 @@
                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
                     if (params.scenario == 1u) {
-                        // Boids Separation & Alignment
-                        if (r2 < 0.0016) {
+                        // Boids Separation (Near-Field P2P)
+                        if (r2 < 0.0010) {
                             let inv_r = inverseSqrt(r2);
-                            fx += diffX * inv_r * 0.03;
-                            fy += diffY * inv_r * 0.03;
-                            fx += (other.vel.x - vx) * 0.02;
-                            fy += (other.vel.y - vy) * 0.02;
+                            fx += diffX * inv_r * 0.040;
+                            fy += diffY * inv_r * 0.040;
+                            nearP2PIntensity += 0.4;
+                        }
+                        // Boids Alignment & Cohesion (Far-Field Multi-agent)
+                        if (r2 < 0.0040) {
+                            fx += (other.vel.x - vx) * 0.030;
+                            fy += (other.vel.y - vy) * 0.030;
+                            fx -= diffX * 0.015;
+                            fy -= diffY * 0.015;
+                            farMultipoleIntensity += 0.2;
                         }
                     } else if (params.scenario == 3u) {
-                        // SPH fluid repulsion & pressure gradient
+                        // SPH Fluid Repulsion & Viscosity
                         if (r2 < 0.0012) {
                             let inv_r = inverseSqrt(r2);
                             let rep = (0.035 - sqrt(r2)) * 1.5;
@@ -557,6 +566,7 @@
                             fy += diffY * inv_r * rep;
                             fx += (other.vel.x - vx) * 0.015;
                             fy += (other.vel.y - vy) * 0.015;
+                            nearP2PIntensity += 0.3;
                         }
                     }
                 }
@@ -572,15 +582,16 @@
                 let mf = 0.04 * mult * inv_md * inv_md;
                 fx += mdx * mf;
                 fy += mdy * mf;
+                nearP2PIntensity += 0.6;
             }
 
-            // 4. BOUNDARY WALL CONTAINMENT
+            // 4. BOUNDARY CONTAINMENT
             if (px < 0.02) { fx += (0.02 - px) * 6.0; }
             if (px > 0.98) { fx -= (px - 0.98) * 6.0; }
             if (py < 0.02) { fy += (0.02 - py) * 6.0; }
             if (py > 0.98) { fy -= (py - 0.98) * 6.0; }
 
-            // 5. INTEGRATION & 1-EURO FILTER
+            // 5. INTEGRATION & 1-EURO ADAPTIVE LOW-PASS FILTER
             vx += fx * dt;
             vy += fy * dt;
 
@@ -591,13 +602,16 @@
                 vy = (vy / speed) * maxSpeed;
             }
 
-            // 1€ Filter
+            // 1€ Adaptive Filter calculation
             var filteredVx = vx;
             var filteredVy = vy;
+            var filterDamping: f32 = 0.0;
+
             if (params.use1Euro == 1u) {
                 let alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVx = alpha * vx + (1.0 - alpha) * ext.prevVel.x;
                 filteredVy = alpha * vy + (1.0 - alpha) * ext.prevVel.y;
+                filterDamping = (1.0 - alpha) * length(vec2<f32>(vx - ext.prevVel.x, vy - ext.prevVel.y)) * 40.0;
             }
 
             px = clamp(px + filteredVx * dt, 0.01, 0.99);
@@ -606,6 +620,9 @@
             posVelOut[gid].pos = vec2<f32>(px, py);
             posVelOut[gid].vel = vec2<f32>(filteredVx, filteredVy);
             extras[gid].prevVel = vec2<f32>(filteredVx, filteredVy);
+            
+            // Encode state: low-byte near-field, mid-byte far-field, high-byte filter
+            extras[gid].state = clamp(nearP2PIntensity, 0.0, 1.0) * 1.0 + clamp(farMultipoleIntensity, 0.0, 1.0) * 2.0 + clamp(filterDamping, 0.0, 1.0) * 4.0;
         }
         `;
 
@@ -643,32 +660,75 @@
             @location(1) vel: vec2<f32>,
             @location(2) prevVel: vec2<f32>,
             @location(3) group: f32,
-            @location(4) mass: f32
+            @location(4) state: f32
         ) -> VertexOutput {
             var output: VertexOutput;
             let clipX = pos.x * 2.0 - 1.0;
-            let clipY = 1.0 - pos.y * 2.0; // Invert Y
+            let clipY = 1.0 - pos.y * 2.0;
             output.position = vec4<f32>(clipX, clipY, 0.0, 1.0);
 
             let speed = length(vel) * 22.0;
             output.pointSize = clamp(2.2 - speed * 0.1, 1.2, 3.2);
 
+            let cCyan = vec3<f32>(0.0, 0.94, 1.0);     // #00F0FF (Near-Field P2P)
+            let cPurple = vec3<f32>(0.64, 0.44, 0.97);  // #A371F7 (Far-Field M2L)
+            let cGreen = vec3<f32>(0.0, 1.0, 0.53);    // #00FF88 (1€ Filter)
+            let cPink = vec3<f32>(1.0, 0.0, 0.5);      // #FF007F (High Speed)
+            let cGold = vec3<f32>(1.0, 0.65, 0.0);     // #FFA500 (Singularity / Core)
+
+            var col = cCyan;
+
             if (params.colorMode == 0u) {
-                // Velocity Heatmap (Cyan -> Pink/Magenta -> Orange)
-                let c1 = vec3<f32>(0.0, 0.94, 1.0);
-                let c2 = vec3<f32>(1.0, 0.0, 0.5);
-                let col = mix(c1, c2, clamp(speed, 0.0, 1.0));
-                output.color = vec4<f32>(col, 0.85);
+                // 1. Velocity Heatmap
+                if (speed < 0.5) {
+                    col = mix(cCyan, cPurple, speed * 2.0);
+                } else if (speed < 1.0) {
+                    col = mix(cPurple, cPink, (speed - 0.5) * 2.0);
+                } else {
+                    col = mix(cPink, cGold, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
+                }
             } else if (params.colorMode == 1u) {
-                // Galaxy Dual Core / Group Colors
-                let colA = vec3<f32>(0.0, 0.94, 1.0); // Galaxy A Cyan
-                let colB = vec3<f32>(1.0, 0.0, 0.5); // Galaxy B Pink
-                let col = select(colA, colB, group > 0.5);
-                output.color = vec4<f32>(col, 0.88);
-            } else {
-                output.color = vec4<f32>(0.0, 1.0, 0.55, 0.80);
+                // 2. FMM & 1€ Dynamics (Cyan=Near, Purple=Far, Green=1€ Filter, Pink=Evasion)
+                let p2p = fract(state);
+                let far = fract(state * 0.5);
+                let filterAct = fract(state * 0.25);
+
+                col = cPurple; // Default far-field base
+                if (p2p > 0.2) {
+                    col = mix(col, cCyan, clamp(p2p * 2.0, 0.0, 1.0));
+                }
+                if (filterAct > 0.15) {
+                    col = mix(col, cGreen, clamp(filterAct * 2.5, 0.0, 1.0));
+                }
+                if (speed > 1.2) {
+                    col = mix(col, cPink, clamp((speed - 1.2) * 1.5, 0.0, 1.0));
+                }
+            } else if (params.colorMode == 2u) {
+                // 3. Scenario Clusters
+                if (params.scenario == 1u) {
+                    // Boids: 3 Swarms (Alpha=Cyan, Beta=Emerald, Gamma=Purple)
+                    if (group < 0.5) { col = cCyan; }
+                    else if (group < 1.5) { col = cGreen; }
+                    else { col = cPurple; }
+                } else if (params.scenario == 0u) {
+                    // Galaxy: A (Cyan) vs B (Pink)
+                    col = select(cCyan, cPink, group > 0.5);
+                } else if (params.scenario == 2u) {
+                    // Vortex: Upper +Gamma (Cyan) vs Lower -Gamma (Pink)
+                    col = select(cCyan, cPink, group > 0.5);
+                } else {
+                    // SPH: Pressure gradient
+                    col = mix(vec3<f32>(0.0, 0.5, 1.0), cCyan, clamp((pos.y - 0.1) * 1.2, 0.0, 1.0));
+                }
+            } else if (params.colorMode == 3u) {
+                // 4. 1€ Filter Damping Activity (Green=Jitter-damped, Cyan=Cruising, Pink=Evasion)
+                col = mix(cGreen, cCyan, clamp(speed * 0.8, 0.0, 1.0));
+                if (speed > 1.0) {
+                    col = mix(col, cPink, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
+                }
             }
 
+            output.color = vec4<f32>(col, 0.88);
             return output;
         }
 
@@ -686,7 +746,6 @@
         layout(location = 1) in vec2 a_vel;
         layout(location = 2) in vec2 a_prevVel;
         layout(location = 3) in float a_group;
-        layout(location = 4) in float a_mass;
 
         out vec2 v_pos;
         out vec2 v_vel;
@@ -713,6 +772,9 @@
             vec2 fx = vec2(0.0);
             float dt = u_dt * u_speedMult;
 
+            float nearP2P = 0.0;
+            float farM2L = 0.0;
+
             if (u_scenario == 0) {
                 // Galaxy flyby
                 vec2 d1 = u_g1 - pos;
@@ -722,20 +784,24 @@
                 vec2 d2 = u_g2 - pos;
                 float r2_sq = dot(d2, d2) + 0.0012;
                 fx += d2 * (0.045 / (r2_sq * sqrt(r2_sq)));
+                farM2L = 0.6;
             } else if (u_scenario == 1) {
-                fx += (vec2(0.5) - pos) * 0.04;
-                float angle = pos.x * 37.0 + pos.y * 71.0 + u_simTime * 2.0;
-                fx += vec2(cos(angle), sin(angle)) * 0.015;
+                // Boids flocking
+                fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
+                vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.30) : ((a_group > 0.5) ? vec2(0.65, 0.55) : vec2(0.35, 0.45));
+                fx += (subC - pos) * 0.035;
+                farM2L = 0.8;
             } else if (u_scenario == 2) {
                 float wave = sin(pos.x * 12.566 + u_simTime * 1.5) * 0.035;
                 float targetY = (a_group > 0.5) ? (0.58 + wave) : (0.42 - wave);
                 fx.y += (targetY - pos.y) * 3.5;
                 fx.x += (a_group > 0.5) ? 0.06 : -0.06;
+                farM2L = 0.5;
             } else if (u_scenario == 3) {
                 fx.y += 0.22;
-                if (pos.y > 0.94) { fx.y -= (pos.y - 0.94) * 28.0; vel.y *= 0.85; }
-                if (pos.x < 0.04) { fx.x += (0.04 - pos.x) * 28.0; vel.x *= 0.85; }
-                if (pos.x > 0.96) { fx.x -= (pos.x - 0.96) * 28.0; vel.x *= 0.85; }
+                if (pos.y > 0.94) { fx.y -= (pos.y - 0.94) * 28.0; vel.y *= 0.85; nearP2P = 0.8; }
+                if (pos.x < 0.04) { fx.x += (0.04 - pos.x) * 28.0; vel.x *= 0.85; nearP2P = 0.8; }
+                if (pos.x > 0.96) { fx.x -= (pos.x - 0.96) * 28.0; vel.x *= 0.85; nearP2P = 0.8; }
             }
 
             // Mouse forces
@@ -744,6 +810,7 @@
                 float md_sq = dot(md, md) + 0.001;
                 float mult = u_mouseMode * (u_isMouseDown > 0.5 ? 2.5 : 1.0);
                 fx += md * (0.04 * mult / md_sq);
+                nearP2P = 0.7;
             }
 
             // Boundaries
@@ -758,9 +825,11 @@
             if (speed > maxSpeed) { vel = (vel / speed) * maxSpeed; }
 
             vec2 filteredVel = vel;
+            float filterDamping = 0.0;
             if (u_use1Euro == 1) {
                 float alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVel = mix(a_prevVel, vel, alpha);
+                filterDamping = (1.0 - alpha) * length(vel - a_prevVel) * 40.0;
             }
 
             pos = clamp(pos + filteredVel * dt, vec2(0.01), vec2(0.99));
@@ -773,17 +842,44 @@
             // Render output
             vec2 clipSpace = vec2(pos.x * 2.0 - 1.0, 1.0 - pos.y * 2.0);
             gl_Position = vec4(clipSpace, 0.0, 1.0);
-            gl_PointSize = clamp(2.2 - speed * 20.0 * 0.1, 1.2, 3.2);
+            float speedNorm = length(filteredVel) * 22.0;
+            gl_PointSize = clamp(2.2 - speedNorm * 0.1, 1.2, 3.2);
+
+            vec3 cCyan = vec3(0.0, 0.94, 1.0);
+            vec3 cPurple = vec3(0.64, 0.44, 0.97);
+            vec3 cGreen = vec3(0.0, 1.0, 0.53);
+            vec3 cPink = vec3(1.0, 0.0, 0.5);
+            vec3 cGold = vec3(1.0, 0.65, 0.0);
+
+            vec3 col = cCyan;
 
             if (u_colorMode == 0) {
-                vec3 c1 = vec3(0.0, 0.94, 1.0);
-                vec3 c2 = vec3(1.0, 0.0, 0.5);
-                v_renderColor = vec4(mix(c1, c2, clamp(speed * 20.0, 0.0, 1.0)), 0.85);
+                // Velocity Heatmap
+                if (speedNorm < 0.5) col = mix(cCyan, cPurple, speedNorm * 2.0);
+                else if (speedNorm < 1.0) col = mix(cPurple, cPink, (speedNorm - 0.5) * 2.0);
+                else col = mix(cPink, cGold, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
             } else if (u_colorMode == 1) {
-                v_renderColor = a_group > 0.5 ? vec4(1.0, 0.0, 0.5, 0.88) : vec4(0.0, 0.94, 1.0, 0.88);
-            } else {
-                v_renderColor = vec4(0.0, 1.0, 0.55, 0.80);
+                // FMM & 1€ Dynamics
+                col = cPurple;
+                if (nearP2P > 0.2) col = mix(col, cCyan, clamp(nearP2P * 1.5, 0.0, 1.0));
+                if (filterDamping > 0.15) col = mix(col, cGreen, clamp(filterDamping * 2.5, 0.0, 1.0));
+                if (speedNorm > 1.2) col = mix(col, cPink, clamp((speedNorm - 1.2) * 1.5, 0.0, 1.0));
+            } else if (u_colorMode == 2) {
+                // Scenario Clusters
+                if (u_scenario == 1) {
+                    col = (a_group < 0.5) ? cCyan : ((a_group < 1.5) ? cGreen : cPurple);
+                } else if (u_scenario == 0 || u_scenario == 2) {
+                    col = (a_group > 0.5) ? cPink : cCyan;
+                } else {
+                    col = mix(vec3(0.0, 0.5, 1.0), cCyan, clamp((pos.y - 0.1) * 1.2, 0.0, 1.0));
+                }
+            } else if (u_colorMode == 3) {
+                // 1€ Filter Damping
+                col = mix(cGreen, cCyan, clamp(speedNorm * 0.8, 0.0, 1.0));
+                if (speedNorm > 1.0) col = mix(col, cPink, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
             }
+
+            v_renderColor = vec4(col, 0.88);
         }`;
 
         const fsWebGL2TF = `#version 300 es
@@ -813,11 +909,8 @@
 
         let gl = null;
         let glProgram = null;
-        let glVAO_A = null;
-        let glVAO_B = null;
         let glBufPosVelA = null;
         let glBufPosVelB = null;
-        let glBufExtra = null;
         let glTF = null;
         let glPingPong = 0;
 
@@ -827,7 +920,6 @@
 
         function formatWebGLRenderer(raw) {
             if (!raw) return 'WebGL 2.0 Accelerated GPU';
-            // Clean up ANGLE strings: "ANGLE (Microsoft, NVIDIA GeForce RTX 4070 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)"
             const match = raw.match(/ANGLE\s*\([^,]+,\s*([^,]+?)(?:\s+Direct3D|\s+D3D|\s+vulkan|\s+gl|\s+\(|$)/i);
             if (match && match[1]) {
                 let cleanName = match[1].trim();
@@ -904,7 +996,7 @@
                                         ]
                                     },
                                     {
-                                        arrayStride: 16, // prevVel(2*f32) + group(f32) + mass(f32)
+                                        arrayStride: 16, // prevVel(2*f32) + group(f32) + state(f32)
                                         attributes: [
                                             { shaderLocation: 2, offset: 0, format: 'float32x2' },
                                             { shaderLocation: 3, offset: 8, format: 'float32' },
@@ -1062,7 +1154,6 @@
         // ====================================================================
         function updateGalaxyCores(dt) {
             if (scenario !== 'galaxy') return;
-            // Gravitational interaction between the two galactic cores
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
             const r_sq = dx * dx + dy * dy + 0.005;
@@ -1083,11 +1174,86 @@
             core2.x += core2.vx * dt * simSpeed;
             core2.y += core2.vy * dt * simSpeed;
 
-            // Soft box return for continuous flyby loops
             if (core1.x < 0.10 || core1.x > 0.90) core1.vx *= -0.8;
             if (core1.y < 0.10 || core1.y > 0.90) core1.vy *= -0.8;
             if (core2.x < 0.10 || core2.x > 0.90) core2.vx *= -0.8;
             if (core2.y < 0.10 || core2.y > 0.90) core2.vy *= -0.8;
+        }
+
+        // ====================================================================
+        // DYNAMIC OVERLAY LEGEND
+        // ====================================================================
+        function updateOverlayLegend() {
+            const overlay = document.getElementById('overlay-info');
+            if (!overlay) return;
+
+            const scenarioNames = {
+                galaxy: 'Dynamic Galaxy Collision',
+                boids: 'Multilevel FMM Boid Swarms',
+                vortex: 'Hydrodynamic Vortex Sheet',
+                sph: 'SPH Fluid Dam Break'
+            };
+            const sName = scenarioNames[scenario] || scenario;
+
+            let title = '';
+            let items = [];
+
+            if (colorMode === 0) {
+                title = `${sName} — Velocity Heatmap`;
+                items = [
+                    { color: 'var(--accent-cyan)', label: 'Low Speed (< 0.03)' },
+                    { color: 'var(--accent-purple)', label: 'Cruising Speed (0.03 – 0.08)' },
+                    { color: 'var(--accent-pink)', label: 'High Acceleration (> 0.08)' }
+                ];
+            } else if (colorMode === 1) {
+                title = `${sName} — FMM & 1€ Dynamics`;
+                items = [
+                    { color: 'var(--accent-cyan)', label: 'Near-Field: Direct P2P (Separation / Repulsion)' },
+                    { color: 'var(--accent-purple)', label: 'Far-Field: Multipole M2L (Macro Cohesion)' },
+                    { color: 'var(--accent-green)', label: '1€ Filter: Adaptive Velocity Smoothing Active' }
+                ];
+            } else if (colorMode === 2) {
+                title = `${sName} — Scenario Clusters`;
+                if (scenario === 'boids') {
+                    items = [
+                        { color: 'var(--accent-cyan)', label: 'Alpha Swarm (Cyan Flock)' },
+                        { color: 'var(--accent-green)', label: 'Beta Swarm (Emerald Flock)' },
+                        { color: 'var(--accent-purple)', label: 'Gamma Swarm (Amethyst Flock)' }
+                    ];
+                } else if (scenario === 'galaxy') {
+                    items = [
+                        { color: 'var(--accent-cyan)', label: 'Galaxy A (Cyan Stellar Disk)' },
+                        { color: 'var(--accent-pink)', label: 'Galaxy B (Pink Counter-Disk)' },
+                        { color: 'var(--accent-orange)', label: 'Galactic Core Singularities' }
+                    ];
+                } else if (scenario === 'vortex') {
+                    items = [
+                        { color: 'var(--accent-cyan)', label: 'Upper Vortex Sheet (+Gamma Circulation)' },
+                        { color: 'var(--accent-pink)', label: 'Lower Vortex Sheet (-Gamma Circulation)' },
+                        { color: 'var(--accent-purple)', label: 'Kelvin-Helmholtz Roll-up Core' }
+                    ];
+                } else {
+                    items = [
+                        { color: 'var(--accent-cyan)', label: 'Hydrostatic Base Fluid' },
+                        { color: 'var(--accent-purple)', label: 'Dynamic Wave Compression Zone' },
+                        { color: 'var(--accent-pink)', label: 'Breaking Wave Splash Boundary' }
+                    ];
+                }
+            } else if (colorMode === 3) {
+                title = `${sName} — 1€ Adaptive Filter`;
+                items = [
+                    { color: 'var(--accent-green)', label: 'High Jitter Smoothing (Low-Speed Quiescence)' },
+                    { color: 'var(--accent-cyan)', label: 'Balanced Dynamic Cutoff (Cruising)' },
+                    { color: 'var(--accent-pink)', label: 'Rapid Evasion (Zero Phase-Lag Response)' }
+                ];
+            }
+
+            let html = `<div style="font-weight:bold; color:#fff; margin-bottom:4px;">${title}</div>`;
+            for (const item of items) {
+                html += `<div><span class="legend-dot" style="background:${item.color}"></span> ${item.label}</div>`;
+            }
+            html += `<div style="font-size:0.7rem; color:var(--text-dim); margin-top:4px;">Drag / Click canvas to attract or repel particles</div>`;
+            overlay.innerHTML = html;
         }
 
         // ====================================================================
@@ -1174,7 +1340,6 @@
             });
             renderPass.setPipeline(webgpuPipelineRender);
             renderPass.setBindGroup(0, webgpuRenderBindGroup);
-            // Bind the output buffer of compute as the vertex input
             const currentPosVelBuffer = webgpuPingPong === 0 ? webgpuPosVelBufferB : webgpuPosVelBufferA;
             renderPass.setVertexBuffer(0, currentPosVelBuffer);
             renderPass.setVertexBuffer(1, webgpuExtraBuffer);
@@ -1214,7 +1379,6 @@
             const dstBuf = glPingPong === 0 ? glBufPosVelB : glBufPosVelA;
 
             gl.bindBuffer(gl.ARRAY_BUFFER, srcBuf);
-            // stride = 7 floats * 4 bytes = 28 bytes
             gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 28, 0);
             gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 28, 8);
             gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 28, 16);
@@ -1283,13 +1447,6 @@
         // Scenario Selector
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
-            const names = {
-                galaxy: 'Dynamic N-Body Galaxy Collision (Dual Core Flyby)',
-                boids: 'Multilevel FMM Boid Swarms + 1€ Filter',
-                vortex: 'Hydrodynamic Vortex Sheet (Kelvin-Helmholtz)',
-                sph: 'SPH Fluid Dam Break Simulation'
-            };
-            document.getElementById('overlayScenarioName').innerText = names[scenario] || scenario;
             resetSimulation();
         });
 
@@ -1334,10 +1491,17 @@
             e.target.innerText = `1€ Filter: ${use1Euro ? 'ON' : 'OFF'}`;
         });
 
+        const colorModeNames = [
+            'Color: Velocity Heatmap',
+            'Color: FMM & 1€ Dynamics',
+            'Color: Scenario Clusters',
+            'Color: 1€ Filter Damping'
+        ];
+
         document.getElementById('btnColorMode').addEventListener('click', (e) => {
-            colorMode = (colorMode + 1) % 3;
-            const names = ['Color: Velocity', 'Color: Cluster/Group', 'Color: Cyan'];
-            e.target.innerText = names[colorMode];
+            colorMode = (colorMode + 1) % 4;
+            e.target.innerText = colorModeNames[colorMode];
+            updateOverlayLegend();
         });
 
         document.getElementById('btnMouseMode').addEventListener('click', (e) => {
