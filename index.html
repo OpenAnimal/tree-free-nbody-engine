@@ -333,7 +333,7 @@
 
     <script>
         const canvas = document.getElementById('mainCanvas');
-        const MAX_P = 10000000; // Supports Extreme Mode up to 10,000,000 live particles on GPU
+        const MAX_P = 5000000; // WebGPU 5,000,000 live particles (80 MB buffer, strictly within 128 MB driver limit)
         let N = 120000;
         let scenario = 'galaxy';
         let scenarioId = 0;
@@ -1199,17 +1199,7 @@
                             } catch (_) {}
                         }
 
-                        const requiredLimits = {};
-                        if (adapter.limits) {
-                            if (adapter.limits.maxStorageBufferBindingSize) {
-                                requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
-                            }
-                            if (adapter.limits.maxBufferSize) {
-                                requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
-                            }
-                        }
-
-                        webgpuDevice = await adapter.requestDevice({ requiredLimits });
+                        webgpuDevice = await adapter.requestDevice();
                         webgpuContext = canvas.getContext('webgpu');
 
                         const format = navigator.gpu.getPreferredCanvasFormat();
@@ -1371,7 +1361,7 @@
             gl.linkProgram(glProgram);
 
             // Buffers
-            const interleaved = new Float32Array(MAX_P * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
+            const interleaved = new Float32Array(N * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
             for (let i = 0; i < N; i++) {
                 interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                 interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1672,7 +1662,7 @@
             if (activeBackend === 'WEBGPU') {
                 uploadWebGPUParticles();
             } else if (activeBackend === 'WEBGL2_TF') {
-                const interleaved = new Float32Array(MAX_P * 7);
+                const interleaved = new Float32Array(N * 7);
                 for (let i = 0; i < N; i++) {
                     interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                     interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1683,9 +1673,9 @@
                     interleaved[i * 7 + 6] = initialExtras[i * 4 + 2];
                 }
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelA);
-                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
-                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
             }
         }
 
