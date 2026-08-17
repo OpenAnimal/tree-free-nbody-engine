@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/Dependencies-Near_Zero-success.svg" alt="Near Dependency Free">
   <img src="https://img.shields.io/badge/Renderer-WebGL%202.0%20%2F%20WebGPU-orange.svg" alt="Renderer: WebGL 2.0 / WebGPU">
-  <img src="https://img.shields.io/badge/Scale-250%2C000%2B%20Particles-purple.svg" alt="Scale: 250k+ Particles">
+  <img src="https://img.shields.io/badge/Scale-5%2C000%2C000%2B%20Particles-purple.svg" alt="Scale: 5M+ Particles">
 </p>
 
 ---
@@ -22,7 +22,7 @@
 > 🔬 **Research Prototype & Exploratory Notice:**
 > While core algorithms include automated verification tests and empirical scaling benchmarks, these implementations are exploratory research prototypes and WILL contain bugs that have to be fixed over time.
 
-> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no unpaid support. (I am poor as a church mouse and don't have time or resources for anything.)
+> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no guaranteed support. (I am poor as a church mouse and don't have time or resources for anything.)
 
 ---
 
@@ -118,7 +118,7 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 * **AMD ROCm / HIP:** Native AMD Radeon kernel with lock-free atomics and warp shuffle reductions (`core/hip_kernels/tree_free_fmm_kernel.hip`).
 * **OpenAI Triton:** Block-tiled GPU kernel for PyTorch with fused SRAM potential evaluations (`core/cuda_kernels/triton_tree_free_fmm.py`).
 * **OpenCL (Cross-Platform):** Vendor-neutral compute backend for AMD, Intel, and Apple GPUs (`core/opencl_kernels/tree_free_fmm_opencl.cl`).
-* **WebGPU / WebGL 2.0:** In-browser WGSL compute shaders and GPU-instanced rendering up to 250k+ particles (`index.html`, `core/webgpu_kernels/`).
+* **WebGPU / WebGL 2.0:** In-browser WGSL compute shaders and GPU-instanced rendering up to 5M+ particles (`index.html`, `core/webgpu_kernels/`).
 * **Zig Native:** Crossplatform, dependency-free near-instant-compilation C-ABI library for high-throughput CPU execution (`core/zig_backend.py`, `native/zig/`).
 
 ---

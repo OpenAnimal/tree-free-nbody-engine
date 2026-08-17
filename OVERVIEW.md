@@ -317,7 +317,7 @@ python physics_simulation/ppf_contact_solver_fmm/benchmark_contact_scaling.py
   * **AMD ROCm / HIP Kernel (`core/hip_kernels/tree_free_fmm_kernel.hip`):** Native AMD Radeon / ROCm kernel featuring lock-free atomics and warp shuffle reductions.
   * **OpenAI Triton Kernel (`core/cuda_kernels/triton_tree_free_fmm.py`):** Block-tiled GPU kernel for PyTorch providing fused SRAM potential evaluations.
   * **OpenCL Backend (`core/opencl_kernels/tree_free_fmm_opencl.cl`):** Vendor-agnostic acceleration for AMD, Intel, and Apple Silicon GPUs.
-  * **WebGPU Client (`core/webgpu_kernels/tree_free_fmm.wgsl` & `index.html`):** In-browser compute shaders and GPU-instanced point rendering handling up to 250,000+ particles.
+  * **WebGPU Client (`core/webgpu_kernels/tree_free_fmm.wgsl` & `index.html`):** In-browser compute shaders and GPU-instanced point rendering handling up to 5,000,000+ particles.
 
 ---
 

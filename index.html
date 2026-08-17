@@ -3,9 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
     <title>Tree-Free N-Body Engine (High-Performance GPU-Accelerated Simulation)</title>
     <style>
         :root {
@@ -333,10 +330,8 @@
 
     <script>
         const canvas = document.getElementById('mainCanvas');
-        const MAX_P = 10000000; // Maximum accepted custom count
-        const storedCount = Number.parseInt(localStorage.getItem('treeFreeParticleCount') || '120000', 10);
-        let N = Number.isFinite(storedCount) ? Math.min(MAX_P, Math.max(1000, storedCount)) : 120000;
-        let particleCapacity = N; // Allocate CPU/GPU storage for the active count, not the 10M ceiling
+        const MAX_P = 10000000; // Supports Extreme Mode up to 10,000,000 live particles on GPU
+        let N = 120000;
         let scenario = 'galaxy';
         let scenarioId = 0;
         let colorMode = 0; // 0: Velocity, 1: FMM & 1€ Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
@@ -347,24 +342,16 @@
         let mouseX = -1, mouseY = -1, isMouseDown = false;
 
         // Dynamic Galaxy cores
-        let core1 = { x: 0.30, y: 0.40, vx: 0.035, vy: 0.020, mass: 1.5 };
-        let core2 = { x: 0.70, y: 0.60, vx: -0.035, vy: -0.020, mass: 1.5 };
+        let core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
+        let core2 = { x: 0.75, y: 0.55, vx: -0.024, vy: -0.011, mass: 1.0 };
 
         // Simulation initial state generation
-        let initialPositions = new Float32Array(particleCapacity * 4); // [x, y, vx, vy]
-        let initialExtras = new Float32Array(particleCapacity * 4);    // [prevVx, prevVy, group, stateFlags]
-
-        function ensureParticleCapacity(count) {
-            if (count <= particleCapacity) return;
-            particleCapacity = count;
-            initialPositions = new Float32Array(particleCapacity * 4);
-            initialExtras = new Float32Array(particleCapacity * 4);
-        }
+        const initialPositions = new Float32Array(MAX_P * 4); // [x, y, vx, vy]
+        const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            ensureParticleCapacity(N);
-            core1 = { x: 0.25, y: 0.45, vx: 0.018, vy: 0.008, mass: 1.0 };
-            core2 = { x: 0.75, y: 0.55, vx: -0.018, vy: -0.008, mass: 1.0 };
+            core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
+            core2 = { x: 0.75, y: 0.55, vx: -0.024, vy: -0.011, mass: 1.0 };
 
             for (let i = 0; i < N; i++) {
                 let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
@@ -377,11 +364,21 @@
                     const cVx = isG1 ? core1.vx : core2.vx;
                     const cVy = isG1 ? core1.vy : core2.vy;
 
-                    // Logarithmic spiral disk distribution with stable exponential scale radius
-                    const r = Math.pow(Math.random(), 0.50) * 0.22 + 0.020;
+                    // Standard Exponential Surface Density Disk (50% smaller scale): Sigma(r) = Sigma_0 * exp(-r / R_d)
+                    // Sampling via Gamma(2, R_d): r = -R_d * ln(u1 * u2)
+                    const Rd = 0.026;
+                    const u1 = Math.max(1e-4, Math.random());
+                    const u2 = Math.max(1e-4, Math.random());
+                    const r = -Rd * Math.log(u1 * u2) + 0.005;
+
+                    // Classical Logarithmic Spiral Arm Distribution: phi(r) = cot(alpha) * ln(r / r_0)
                     const arms = 2.0;
-                    const spiralAngle = Math.log(r / 0.22 + 0.01) * 2.0;
-                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.6 + spiralAngle + (Math.random() - 0.5) * 0.15;
+                    const armIdx = Math.floor(Math.random() * arms);
+                    const pitch = 1.45; // Logarithmic winding parameter
+                    const phi = pitch * Math.log(r / 0.018 + 0.003);
+                    // Gaussian angular dispersion (Central Limit Theorem via 3 uniform randoms)
+                    const armDispersion = (Math.random() + Math.random() + Math.random() - 1.5) * 0.42;
+                    const th = (armIdx * (Math.PI * 2.0 / arms)) + phi + armDispersion;
 
                     // 3D disk inclination tilt for rich 3D-projected warping & counter-tail uncurling
                     const tilt = isG1 ? 0.25 : -0.35;
@@ -390,41 +387,43 @@
                     px = cx + dx;
                     py = cy + dy;
 
-                    // Non-collapsing softened potential circular velocity (GM = 0.00075, eps = 0.080)
+                    // Calibrated non-collapsing softened potential circular orbital velocity (GM = 0.00075, eps = 0.038)
                     // v_orb(r) = sqrt( G*M * r^2 / (r^2 + eps^2)^(3/2) )
-                    const epsSq = 0.080 * 0.080; // 0.0064
+                    const epsSq = 0.038 * 0.038; // 0.001444
                     const rSq = r * r;
                     const vOrb = Math.sqrt((0.00075 * rSq) / Math.pow(rSq + epsSq, 1.5));
 
                     const dir = isG1 ? 1.0 : -1.0;
-                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.002;
-                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt) + (Math.random() - 0.5) * 0.002;
+                    // Natural velocity dispersion
+                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.0020;
+                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt) + (Math.random() - 0.5) * 0.0020;
                     grp = isG1 ? 0.0 : 1.0;
                     state = 0.0;
                 } else if (scenario === 'boids') {
                     scenarioId = 1;
-                    // 3 Distinct Swarm Archetypes with unique aerodynamic traits
+                    // 3 Distinct Sub-Flocks (Tri-Swarm Murmuration)
                     const swarmIdx = i % 3;
-                    grp = swarmIdx; // 0.0: Alpha (Fast Starlings), 1.0: Beta (Heavy Cruisers), 2.0: Gamma (Chaotic Swallows)
+                    grp = swarmIdx; // 0.0: Alpha (Cyan), 1.0: Beta (Emerald), 2.0: Gamma (Purple)
 
-                    let scx = 0.30, scy = 0.42, sRadius = 0.11, sAngle = Math.random() * Math.PI * 2;
-                    let baseVx = 0.050, baseVy = -0.025;
+                    let scx = 0.32, scy = 0.45, sRadius = 0.14, sAngle = Math.random() * Math.PI * 2;
+                    let baseVx = 0.035, baseVy = -0.020;
 
                     if (swarmIdx === 1) {
-                        scx = 0.70; scy = 0.58; sRadius = 0.16;
-                        baseVx = -0.032; baseVy = 0.018;
+                        scx = 0.68; scy = 0.55; sRadius = 0.14;
+                        baseVx = -0.035; baseVy = 0.020;
                     } else if (swarmIdx === 2) {
-                        scx = 0.50; scy = 0.28; sRadius = 0.14;
-                        baseVx = 0.038; baseVy = 0.038;
+                        scx = 0.50; scy = 0.28; sRadius = 0.12;
+                        baseVx = 0.025; baseVy = 0.030;
                     }
 
                     const r = Math.sqrt(Math.random()) * sRadius;
                     px = scx + r * Math.cos(sAngle);
                     py = scy + r * Math.sin(sAngle);
 
-                    const sOrb = (swarmIdx === 0) ? 0.030 : ((swarmIdx === 1) ? 0.015 : 0.024);
-                    vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.006;
-                    vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.006;
+                    // Swirling orbital velocity + flock direction
+                    const sOrb = 0.020;
+                    vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.008;
+                    vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.008;
                     state = 0.0;
                 } else if (scenario === 'vortex') {
                     scenarioId = 2;
@@ -442,11 +441,12 @@
                     state = isUpper ? 1.0 : -1.0;
                 } else if (scenario === 'sph') {
                     scenarioId = 3;
-                    // SPH Dam Break initial column on the left (pure vertical downward gravity domain)
-                    px = 0.04 + Math.random() * 0.26;
+                    // SPH Dam Break initial fluid column with hydrostatic lateral burst
+                    px = 0.04 + Math.random() * 0.30;
                     py = 0.15 + Math.random() * 0.72;
-                    vx = 0.0;
-                    vy = 0.02 + Math.random() * 0.02;
+                    const depth = Math.max(0.0, py - 0.15);
+                    vx = Math.sqrt(depth * 0.035) * (0.8 + Math.random() * 0.4);
+                    vy = (Math.random() - 0.5) * 0.01;
                     grp = 0.0;
                     state = 0.0;
                 }
@@ -504,7 +504,7 @@
         @group(0) @binding(2) var<storage, read_write> extras: array<ParticleExtra>;
         @group(0) @binding(3) var<uniform> params: SimParams;
 
-        @compute @workgroup_size(128, 1, 1)
+        @compute @workgroup_size(256, 1, 1)
         fn main(
             @builtin(global_invocation_id) global_id: vec3<u32>,
             @builtin(local_invocation_id) local_id: vec3<u32>
@@ -532,8 +532,8 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.080)
-                let epsSq: f32 = 0.0064; // 0.080^2
+                // Calibrated Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.038)
+                let epsSq: f32 = 0.001444; // 0.038^2
 
                 // Core 1 Attraction
                 let d1x = params.g1x - px;
@@ -553,35 +553,23 @@
                 let f2 = 0.00075 * inv_r2_3;
                 fx += d2x * f2; fy += d2y * f2;
 
-                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.08;
-                nearP2PIntensity += max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 5.0);
+                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.07;
+                nearP2PIntensity += max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
 
             } else if (params.scenario == 1u) {
-                // Multi-Flock Aerodynamic Personalities
-                if (grp < 0.5) {
-                    // Alpha Swarm (Cyan): Agile High-Speed Starlings (Fast vortex draft, tight cohesion)
-                    let draftX = (0.5 - py) * 0.055;
-                    let draftY = (px - 0.5) * 0.055;
-                    fx += draftX + (0.35 - px) * 0.040;
-                    fy += draftY + (0.45 - py) * 0.040;
-                    farMultipoleIntensity += 0.6;
-                } else if (grp < 1.5) {
-                    // Beta Swarm (Emerald): Heavy Migratory Cruisers (Steady orbital circulation)
-                    let cruiseAngle = params.simTime * 0.7;
-                    let targetX = 0.50 + cos(cruiseAngle) * 0.22;
-                    let targetY = 0.50 + sin(cruiseAngle) * 0.16;
-                    fx += (targetX - px) * 0.028;
-                    fy += (targetY - py) * 0.028;
-                    farMultipoleIntensity += 0.4;
-                } else {
-                    // Gamma Swarm (Purple): Chaotic Sweeping Swallows (Dynamic flutter, cross-cutting)
-                    let flutter = sin(px * 18.0 + params.simTime * 3.0) * 0.035;
-                    let loopX = (0.50 - py) * 0.075 + flutter;
-                    let loopY = (px - 0.50) * 0.075 + cos(py * 18.0 + params.simTime * 3.0) * 0.035;
-                    fx += loopX + (0.50 - px) * 0.025;
-                    fy += loopY + (0.35 - py) * 0.025;
-                    farMultipoleIntensity += 0.8;
-                }
+                // Boids Swarm: Global Far-Field Murmuration Vortex Draft
+                let draftX = (0.5 - py) * 0.04;
+                let draftY = (px - 0.5) * 0.04;
+                fx += draftX;
+                fy += draftY;
+
+                // Sub-swarm center pull
+                var subCx = 0.35; var subCy = 0.45;
+                if (grp > 1.5) { subCx = 0.50; subCy = 0.30; }
+                else if (grp > 0.5) { subCx = 0.65; subCy = 0.55; }
+                fx += (subCx - px) * 0.035;
+                fy += (subCy - py) * 0.035;
+                farMultipoleIntensity += 0.5;
 
             } else if (params.scenario == 2u) {
                 // Hydrodynamic Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
@@ -607,118 +595,116 @@
                 farMultipoleIntensity += 0.6;
 
             } else if (params.scenario == 3u) {
-                // SPH Dam Break Simulation (Pure Uniform Vertical Downward Gravity)
-                fy += 1.40; // Pure downward vertical gravity (no horizontal bias)
+                // SPH Dam Break Simulation (Active Lateral Flow & Downward Gravity)
+                fy += 0.70; // Steady downward gravity
 
-                // Hydrostatic Buoyancy & Bulk Fluid Incompressibility
+                // Dynamic Hydrodynamic Wave & Sloshing Surface
                 let wavePhase = params.simTime * 2.5;
-                let sloshWave = sin(px * 4.712 + wavePhase) * 0.08 * exp(-min(params.simTime * 0.05, 1.8));
-                let baseSurfaceY = 0.68 - sloshWave;
+                let sloshWave = sin(px * 4.712 + wavePhase) * 0.05 * exp(-min(params.simTime * 0.04, 1.8));
+                let baseSurfaceY = 0.72 - sloshWave;
 
-                // Hydrostatic upward pressure balancing pure vertical gravity below water surface
+                // Hydrostatic buoyancy & lateral expansion gradient
                 if (py > baseSurfaceY) {
                     let depth = py - baseSurfaceY;
-                    fy -= depth * 9.5; // Pure vertical upward buoyancy
+                    let subm = min(depth / 0.04, 1.0);
+                    fy -= depth * 3.5; // Upward restoring buoyancy
+                    fy -= vy * 2.8 * subm; // Vertical oscillation damping
+
+                    // Active lateral hydrostatic pressure gradient drives water to expand and fill right side
+                    let lateralPush = max(0.0, 0.88 - px) * depth * 0.65;
+                    fx += lateralPush;
                     farMultipoleIntensity += depth * 2.5;
                 }
 
-                // High-Velocity Stagnation Splash against Vertical Container Walls
-                if (px > 0.86 && vx > 0.03 && py > 0.40) {
-                    fy -= vx * 9.0; // High upward splash on right wall
-                    fx -= 0.30;
+                // High-Velocity Stagnation Splash & Wave Reflection against Container Walls
+                if (px > 0.86 && vx > 0.02 && py > 0.35) {
+                    fy -= vx * 5.5; // Upward wave surge on right wall
+                    fx -= 0.25;
                     nearP2PIntensity += 1.0;
                 }
-                if (px < 0.14 && vx < -0.03 && py > 0.40) {
-                    fy -= abs(vx) * 9.0; // Reflection splash on left wall
-                    fx += 0.30;
+                if (px < 0.14 && vx < -0.02 && py > 0.35) {
+                    fy -= abs(vx) * 5.5; // Wave reflection on left wall
+                    fx += 0.25;
                     nearP2PIntensity += 1.0;
                 }
 
-                // Flat Horizontal Container Floor (y = 0.92) and Vertical Walls
+                // Flat Horizontal Container Floor (y = 0.92) with spring-damper contact
                 let floorY = 0.92;
                 if (py > floorY) {
                     let pen = py - floorY;
-                    fy -= pen * 70.0;
-                    vy *= 0.60;
+                    fy -= pen * 30.0 + max(0.0, vy) * 8.0;
                     nearP2PIntensity += 0.9;
                 }
                 if (px < 0.04) {
                     let pen = 0.04 - px;
-                    fx += pen * 70.0;
-                    vx *= -0.35;
+                    fx += pen * 30.0 - min(0.0, vx) * 8.0;
                     nearP2PIntensity += 0.8;
                 }
                 if (px > 0.96) {
                     let pen = px - 0.96;
-                    fx -= pen * 70.0;
-                    vx *= -0.35;
+                    fx -= pen * 30.0 + max(0.0, vx) * 8.0;
                     nearP2PIntensity += 0.8;
                 }
             }
 
-            // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH / Vortex)
-            let sample_start = (gid * 37u) % n;
-            let sample_count = min(64u, n);
-            for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
-                let other_idx = (sample_start + s) % n;
-                if (other_idx != gid) {
-                    let other = posVelIn[other_idx];
-                    let diffX = px - other.pos.x;
-                    let diffY = py - other.pos.y;
-                    let r2 = diffX * diffX + diffY * diffY + 1e-4;
+            // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH / Vortex only)
+            if (params.scenario != 0u) {
+                let sample_start = (gid * 37u) % n;
+                let sample_count = select(16u, 32u, n < 250000u);
+                for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
+                    let other_idx = (sample_start + s) % n;
+                    if (other_idx != gid) {
+                        let other = posVelIn[other_idx];
+                        let diffX = px - other.pos.x;
+                        let diffY = py - other.pos.y;
+                        let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                    if (params.scenario == 1u) {
-                        let other_grp = extras[other_idx].group;
-                        let isSameFlock = abs(grp - other_grp) < 0.5;
-                        if (r2 < 0.0012) {
-                            let sepForce = select(0.035, 0.055, grp < 0.5);
-                            let inv_r = inverseSqrt(r2);
-                            fx += diffX * inv_r * sepForce;
-                            fy += diffY * inv_r * sepForce;
-                            nearP2PIntensity += 0.4;
-                        }
-                        if (r2 < 0.0050) {
-                            if (isSameFlock) {
-                                let alignWeight = select(0.025, 0.050, grp < 0.5);
-                                fx += (other.vel.x - vx) * alignWeight;
-                                fy += (other.vel.y - vy) * alignWeight;
-                                fx -= diffX * 0.012;
-                                fy -= diffY * 0.012;
-                            } else {
-                                fx += diffX * 0.015;
-                                fy += diffY * 0.015;
-                            }
-                            farMultipoleIntensity += 0.2;
-                        }
-                    } else if (params.scenario == 2u) {
-                        // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing
-                        if (r2 < 0.0030) {
-                            let r = sqrt(r2);
-                            let q = max(0.0, 1.0 - r / 0.055);
-                            fx += (other.vel.x - vx) * q * 0.040;
-                            fy += (other.vel.y - vy) * q * 0.040;
-                            // Dispersion pressure preventing 1D thin curve clumping
-                            if (r2 < 0.0008) {
+                        if (params.scenario == 1u) {
+                            // Boids Separation (Near-Field P2P)
+                            if (r2 < 0.0010) {
                                 let inv_r = inverseSqrt(r2);
-                                fx += diffX * inv_r * 0.018;
-                                fy += diffY * inv_r * 0.018;
+                                fx += diffX * inv_r * 0.040;
+                                fy += diffY * inv_r * 0.040;
+                                nearP2PIntensity += 0.4;
                             }
-                            nearP2PIntensity += q * 0.4;
-                        }
-                    } else if (params.scenario == 3u) {
-                        // SPH Fluid Incompressibility & Viscous Shear (Spiky pressure kernel)
-                        if (r2 < 0.0016) {
-                            let r = sqrt(r2);
-                            let h = 0.040;
-                            if (r < h) {
-                                let q = 1.0 - r / h;
-                                let rep = q * q * 2.5;
-                                let inv_r = 1.0 / max(r, 1e-4);
-                                fx += diffX * inv_r * rep;
-                                fy += diffY * inv_r * rep;
-                                fx += (other.vel.x - vx) * q * 0.045;
-                                fy += (other.vel.y - vy) * q * 0.045;
-                                nearP2PIntensity += q * 0.5;
+                            // Boids Alignment & Cohesion (Far-Field Multi-agent)
+                            if (r2 < 0.0040) {
+                                fx += (other.vel.x - vx) * 0.030;
+                                fy += (other.vel.y - vy) * 0.030;
+                                fx -= diffX * 0.015;
+                                fy -= diffY * 0.015;
+                                farMultipoleIntensity += 0.2;
+                            }
+                        } else if (params.scenario == 2u) {
+                            // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing
+                            if (r2 < 0.0030) {
+                                let r = sqrt(r2);
+                                let q = max(0.0, 1.0 - r / 0.055);
+                                fx += (other.vel.x - vx) * q * 0.040;
+                                fy += (other.vel.y - vy) * q * 0.040;
+                                // Dispersion pressure preventing 1D thin curve clumping
+                                if (r2 < 0.0008) {
+                                    let inv_r = inverseSqrt(r2);
+                                    fx += diffX * inv_r * 0.018;
+                                    fy += diffY * inv_r * 0.018;
+                                }
+                                nearP2PIntensity += q * 0.4;
+                            }
+                        } else if (params.scenario == 3u) {
+                            // SPH Fluid Incompressibility & Active Lateral Pressure Expansion
+                            if (r2 < 0.0036) {
+                                let r = sqrt(r2);
+                                let h = 0.060;
+                                if (r < h) {
+                                    let q = 1.0 - r / h;
+                                    let rep = q * q * 2.8;
+                                    let inv_r = 1.0 / max(r, 1e-4);
+                                    fx += diffX * inv_r * rep;
+                                    fy += diffY * inv_r * rep;
+                                    fx += (other.vel.x - vx) * q * 0.020;
+                                    fy += (other.vel.y - vy) * q * 0.020;
+                                    nearP2PIntensity += q * 0.6;
+                                }
                             }
                         }
                     }
@@ -755,12 +741,12 @@
                 vy = (vy / speed) * maxSpeed;
             }
 
-            // 1€ Adaptive Filter calculation (Active specifically for autonomous Boid Swarms)
+            // 1€ Adaptive Filter calculation
             var filteredVx = vx;
             var filteredVy = vy;
             var filterDamping: f32 = 0.0;
 
-            if (params.use1Euro == 1u && params.scenario == 1u) {
+            if (params.use1Euro == 1u) {
                 let alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVx = alpha * vx + (1.0 - alpha) * ext.prevVel.x;
                 filteredVy = alpha * vy + (1.0 - alpha) * ext.prevVel.y;
@@ -937,8 +923,8 @@
             float farM2L = 0.0;
 
             if (u_scenario == 0) {
-                // Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.080)
-                float epsSq = 0.0064;
+                // Calibrated Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.038)
+                float epsSq = 0.001444;
 
                 vec2 d1 = u_g1 - pos;
                 float r1_sq = dot(d1, d1) + epsSq;
@@ -951,25 +937,13 @@
                 fx += d2 * (0.00075 * inv_r2 * inv_r2 * inv_r2);
 
                 farM2L = 0.6;
-                nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 5.0);
+                nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
             } else if (u_scenario == 1) {
-                // Multi-Flock Aerodynamic Personalities
-                if (a_group < 0.5) {
-                    float draftX = (0.5 - pos.y) * 0.055;
-                    float draftY = (pos.x - 0.5) * 0.055;
-                    fx += vec2(draftX, draftY) + (vec2(0.35, 0.45) - pos) * 0.040;
-                    farM2L = 0.6;
-                } else if (a_group < 1.5) {
-                    float cruiseAngle = u_simTime * 0.7;
-                    vec2 target = vec2(0.50 + cos(cruiseAngle) * 0.22, 0.50 + sin(cruiseAngle) * 0.16);
-                    fx += (target - pos) * 0.028;
-                    farM2L = 0.4;
-                } else {
-                    float flutter = sin(pos.x * 18.0 + u_simTime * 3.0) * 0.035;
-                    vec2 loopVec = vec2((0.50 - pos.y) * 0.075 + flutter, (pos.x - 0.50) * 0.075 + cos(pos.y * 18.0 + u_simTime * 3.0) * 0.035);
-                    fx += loopVec + (vec2(0.50, 0.35) - pos) * 0.025;
-                    farM2L = 0.8;
-                }
+                // Boids flocking
+                fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
+                vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.30) : ((a_group > 0.5) ? vec2(0.65, 0.55) : vec2(0.35, 0.45));
+                fx += (subC - pos) * 0.035;
+                farM2L = 0.8;
             } else if (u_scenario == 2) {
                 // Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
                 float yDist = pos.y - 0.50;
@@ -988,48 +962,49 @@
                 fx.y += diffY * exp(-abs(yDist) * 10.0);
                 farM2L = 0.6;
             } else if (u_scenario == 3) {
-                // SPH Dam Break (Pure Uniform Vertical Downward Gravity)
-                fx.y += 1.40;
+                // SPH Dam Break (Active Lateral Flow & Downward Gravity)
+                fx.y += 0.70;
 
                 float wavePhase = u_simTime * 2.5;
-                float sloshWave = sin(pos.x * 4.712 + wavePhase) * 0.08 * exp(-min(u_simTime * 0.05, 1.8));
-                float baseSurfaceY = 0.68 - sloshWave;
+                float sloshWave = sin(pos.x * 4.712 + wavePhase) * 0.05 * exp(-min(u_simTime * 0.04, 1.8));
+                float baseSurfaceY = 0.72 - sloshWave;
 
                 if (pos.y > baseSurfaceY) {
                     float depth = pos.y - baseSurfaceY;
-                    fx.y -= depth * 9.5;
+                    float subm = min(depth / 0.04, 1.0);
+                    fx.y -= depth * 3.5;
+                    fx.y -= vel.y * 2.8 * subm;
+
+                    float lateralPush = max(0.0, 0.88 - pos.x) * depth * 0.65;
+                    fx.x += lateralPush;
                     farM2L = depth * 2.5;
                 }
 
-                if (pos.x > 0.86 && vel.x > 0.03 && pos.y > 0.40) {
-                    fx.y -= vel.x * 9.0;
-                    fx.x -= 0.30;
+                if (pos.x > 0.86 && vel.x > 0.02 && pos.y > 0.35) {
+                    fx.y -= vel.x * 5.5;
+                    fx.x -= 0.25;
                     nearP2P = 1.0;
                 }
-                if (pos.x < 0.14 && vel.x < -0.03 && pos.y > 0.40) {
-                    fx.y -= abs(vel.x) * 9.0;
-                    fx.x += 0.30;
+                if (pos.x < 0.14 && vel.x < -0.02 && pos.y > 0.35) {
+                    fx.y -= abs(vel.x) * 5.5;
+                    fx.x += 0.25;
                     nearP2P = 1.0;
                 }
 
                 float floorY = 0.92;
                 if (pos.y > floorY) {
                     float pen = pos.y - floorY;
-                    fx.y -= pen * 75.0;
-                    vel.y *= 0.60;
-                    fx.x += (pos.x > 0.5) ? 0.06 : -0.06;
+                    fx.y -= pen * 30.0 + max(0.0, vel.y) * 8.0;
                     nearP2P = 0.9;
                 }
                 if (pos.x < 0.04) {
                     float pen = 0.04 - pos.x;
-                    fx.x += pen * 75.0;
-                    vel.x *= -0.45;
+                    fx.x += pen * 30.0 - min(0.0, vel.x) * 8.0;
                     nearP2P = 0.8;
                 }
                 if (pos.x > 0.96) {
                     float pen = pos.x - 0.96;
-                    fx.x -= pen * 75.0;
-                    vel.x *= -0.45;
+                    fx.x -= pen * 30.0 + max(0.0, vel.x) * 8.0;
                     nearP2P = 0.8;
                 }
             }
@@ -1056,7 +1031,7 @@
 
             vec2 filteredVel = vel;
             float filterDamping = 0.0;
-            if (u_use1Euro == 1 && u_scenario == 1) {
+            if (u_use1Euro == 1) {
                 float alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
                 filteredVel = mix(a_prevVel, vel, alpha);
                 filterDamping = (1.0 - alpha) * length(vel - a_prevVel) * 40.0;
@@ -1073,7 +1048,7 @@
             vec2 clipSpace = vec2(pos.x * 2.0 - 1.0, 1.0 - pos.y * 2.0);
             gl_Position = vec4(clipSpace, 0.0, 1.0);
             float speedNorm = length(filteredVel) * 22.0;
-            gl_PointSize = clamp(3.5 - speedNorm * 0.1, 2.0, 6.0);
+            gl_PointSize = clamp(2.0 - speedNorm * 0.1, 0.8, 3.0);
 
             vec3 cCyan = vec3(0.0, 0.94, 1.0);
             vec3 cPurple = vec3(0.64, 0.44, 0.97);
@@ -1117,8 +1092,6 @@
         in vec4 v_renderColor;
         out vec4 fragColor;
         void main() {
-            vec2 coord = gl_PointCoord - vec2(0.5);
-            if (dot(coord, coord) > 0.25) discard;
             fragColor = v_renderColor;
         }`;
 
@@ -1128,7 +1101,6 @@
         let activeBackend = 'DETECTING';
         let webgpuDevice = null;
         let webgpuContext = null;
-        let webgpuFormat = null;
         let webgpuPipelineCompute = null;
         let webgpuPipelineRender = null;
         let webgpuPosVelBufferA = null;
@@ -1173,21 +1145,14 @@
         }
 
         async function initEngine() {
-            document.getElementById('valParticles').innerText = N.toLocaleString();
-            document.getElementById('inputCustomParticles').value = N;
-            document.getElementById('sliderParticles').value = Math.min(N, 250000);
             generateParticles();
 
             // 1. Try WebGPU Native Compute Pipeline
             if (navigator.gpu) {
                 try {
-                    const webgpuTimeout = new Promise(resolve => setTimeout(() => resolve(null), 1500));
-                    let adapter = await Promise.race([
-                        navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }),
-                        webgpuTimeout
-                    ]);
+                    let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
                     if (!adapter) {
-                        adapter = await Promise.race([navigator.gpu.requestAdapter(), webgpuTimeout]);
+                        adapter = await navigator.gpu.requestAdapter();
                     }
                     if (adapter) {
                         let gpuDescription = 'High-Performance Discrete GPU';
@@ -1212,16 +1177,13 @@
                             }
                         }
 
-                        webgpuDevice = await Promise.race([
-                            adapter.requestDevice({ requiredLimits }),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('WebGPU device timeout')), 2000))
-                        ]);
+                        webgpuDevice = await adapter.requestDevice({ requiredLimits });
                         webgpuContext = canvas.getContext('webgpu');
 
-                        webgpuFormat = navigator.gpu.getPreferredCanvasFormat();
+                        const format = navigator.gpu.getPreferredCanvasFormat();
                         webgpuContext.configure({
                             device: webgpuDevice,
-                            format: webgpuFormat,
+                            format: format,
                             alphaMode: 'opaque'
                         });
 
@@ -1274,8 +1236,8 @@
                         });
 
                         // Storage Buffers
-                        const posVelBytes = particleCapacity * 16;
-                        const extraBytes = particleCapacity * 16;
+                        const posVelBytes = MAX_P * 16;
+                        const extraBytes = MAX_P * 16;
 
                         webgpuPosVelBufferA = webgpuDevice.createBuffer({
                             size: posVelBytes,
@@ -1377,7 +1339,7 @@
             gl.linkProgram(glProgram);
 
             // Buffers
-            const interleaved = new Float32Array(N * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
+            const interleaved = new Float32Array(MAX_P * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
             for (let i = 0; i < N; i++) {
                 interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                 interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1422,11 +1384,11 @@
             if (scenario !== 'galaxy') return;
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
-            const epsSq = 0.0080; // Softening between the two supermassive cores
+            const epsSq = 0.004;
             const r_sq = dx * dx + dy * dy + epsSq;
             const inv_r = 1.0 / Math.sqrt(r_sq);
             const inv_r3 = inv_r * inv_r * inv_r;
-            const G = 0.00065; // Soft gentle core-core attraction
+            const G = 0.0012; // Calibrated core-core attraction
 
             const f12x = dx * (G * core2.mass * inv_r3);
             const f12y = dy * (G * core2.mass * inv_r3);
@@ -1441,15 +1403,15 @@
             core2.x += core2.vx * dt * simSpeed;
             core2.y += core2.vy * dt * simSpeed;
 
-            // Gentle harmonic orbital anchor keeps the slow graceful flyby loop centered
+            // Gentle harmonic orbital anchor keeps the graceful flyby loop centered
             const c1DistX = core1.x - 0.5;
             const c1DistY = core1.y - 0.5;
-            core1.vx -= c1DistX * 0.006 * dt * simSpeed;
-            core1.vy -= c1DistY * 0.006 * dt * simSpeed;
+            core1.vx -= c1DistX * 0.008 * dt * simSpeed;
+            core1.vy -= c1DistY * 0.008 * dt * simSpeed;
             const c2DistX = core2.x - 0.5;
             const c2DistY = core2.y - 0.5;
-            core2.vx -= c2DistX * 0.006 * dt * simSpeed;
-            core2.vy -= c2DistY * 0.006 * dt * simSpeed;
+            core2.vx -= c2DistX * 0.008 * dt * simSpeed;
+            core2.vy -= c2DistY * 0.008 * dt * simSpeed;
         }
 
         // ====================================================================
@@ -1562,15 +1524,8 @@
 
         function runWebGPUFrame(dt) {
             if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                canvas.width = Math.max(1, canvas.clientWidth);
-                canvas.height = Math.max(1, canvas.clientHeight);
-                if (webgpuContext && webgpuDevice && webgpuFormat) {
-                    webgpuContext.configure({
-                        device: webgpuDevice,
-                        format: webgpuFormat,
-                        alphaMode: 'opaque'
-                    });
-                }
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
             }
 
             // Write Uniforms
@@ -1603,7 +1558,7 @@
             const computePass = commandEncoder.beginComputePass();
             computePass.setPipeline(webgpuPipelineCompute);
             computePass.setBindGroup(0, webgpuPingPong === 0 ? webgpuBindGroupA : webgpuBindGroupB);
-            const workgroups = Math.ceil(N / 128);
+            const workgroups = Math.ceil(N / 256);
             computePass.dispatchWorkgroups(workgroups);
             computePass.end();
 
@@ -1631,8 +1586,8 @@
 
         function runWebGL2TFFrame(dt) {
             if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                canvas.width = Math.max(1, canvas.clientWidth);
-                canvas.height = Math.max(1, canvas.clientHeight);
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
                 gl.viewport(0, 0, canvas.width, canvas.height);
             }
 
@@ -1684,8 +1639,8 @@
             generateParticles();
             if (activeBackend === 'WEBGPU') {
                 uploadWebGPUParticles();
-            } else if (activeBackend === 'WEBGL2_TF' && gl) {
-                const interleaved = new Float32Array(N * 7);
+            } else if (activeBackend === 'WEBGL2_TF') {
+                const interleaved = new Float32Array(MAX_P * 7);
                 for (let i = 0; i < N; i++) {
                     interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                     interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1696,9 +1651,9 @@
                     interleaved[i * 7 + 6] = initialExtras[i * 4 + 2];
                 }
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelA);
-                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
-                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
+                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
             }
         }
 
@@ -1726,7 +1681,6 @@
         // Scenario Selector
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
-            update1EuroUI();
             resetSimulation();
         });
 
@@ -1754,13 +1708,6 @@
         // Presets
         const setPreset = (val, btn) => {
             N = Math.min(MAX_P, Math.max(1000, val));
-            localStorage.setItem('treeFreeParticleCount', String(N));
-            if (N > particleCapacity) {
-                // Recreate the page so GPU/CPU buffers are allocated at the new capacity,
-                // rather than allocating the 10M ceiling during every normal 120k run.
-                location.reload();
-                return;
-            }
             document.getElementById('valParticles').innerText = N.toLocaleString();
             const slider = document.getElementById('sliderParticles');
             if (N <= 250000) {
@@ -1796,26 +1743,10 @@
         });
 
         // Toggles
-        function update1EuroUI() {
-            const btn = document.getElementById('btn1Euro');
-            if (!btn) return;
-            if (scenario === 'boids') {
-                btn.innerText = `1€ Filter: ${use1Euro ? 'ON (Boids)' : 'OFF'}`;
-                btn.classList.toggle('active', use1Euro);
-                btn.style.opacity = '1.0';
-                btn.disabled = false;
-            } else {
-                btn.innerText = '1€ Filter: N/A (Boids Only)';
-                btn.classList.remove('active');
-                btn.style.opacity = '0.55';
-                btn.disabled = true;
-            }
-        }
-
         document.getElementById('btn1Euro').addEventListener('click', (e) => {
-            if (scenario !== 'boids') return;
             use1Euro = !use1Euro;
-            update1EuroUI();
+            e.target.classList.toggle('active', use1Euro);
+            e.target.innerText = `1€ Filter: ${use1Euro ? 'ON' : 'OFF'}`;
         });
 
         const colorModeNames = [
@@ -1844,7 +1775,6 @@
         document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
 
         // Launch Engine
-        update1EuroUI();
         initEngine();
     </script>
 </body>
