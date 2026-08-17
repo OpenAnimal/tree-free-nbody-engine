@@ -350,8 +350,8 @@
         const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            core1 = { x: 0.28, y: 0.38, vx: 0.038, vy: 0.024, mass: 1.6 };
-            core2 = { x: 0.72, y: 0.62, vx: -0.038, vy: -0.024, mass: 1.6 };
+            core1 = { x: 0.28, y: 0.38, vx: 0.032, vy: 0.020, mass: 1.0 };
+            core2 = { x: 0.72, y: 0.62, vx: -0.032, vy: -0.020, mass: 1.0 };
 
             for (let i = 0; i < N; i++) {
                 let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
@@ -364,19 +364,25 @@
                     const cVx = isG1 ? core1.vx : core2.vx;
                     const cVy = isG1 ? core1.vy : core2.vy;
 
-                    // Logarithmic spiral disk distribution
-                    const r = Math.pow(Math.random(), 0.7) * 0.18 + 0.008;
+                    // Logarithmic spiral disk distribution with exponential scale radius
+                    const r = Math.pow(Math.random(), 0.6) * 0.16 + 0.015;
                     const arms = 2.0;
-                    const spiralAngle = Math.log(r / 0.18 + 0.01) * 1.5;
-                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.8 + spiralAngle + Math.random() * 0.3;
+                    const spiralAngle = Math.log(r / 0.16 + 0.01) * 1.8;
+                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.7 + spiralAngle + Math.random() * 0.25;
 
                     px = cx + r * Math.cos(th);
                     py = cy + r * Math.sin(th);
 
-                    // Keplerian orbital speed
-                    const vOrb = Math.sqrt(0.0022 / (r + 0.015));
-                    vx = cVx - vOrb * Math.sin(th);
-                    vy = cVy + vOrb * Math.cos(th);
+                    // Exact circular orbital velocity balancing the Plummer potential (GM = 0.035, eps = 0.030)
+                    // v_orb(r) = sqrt( G*M * r^2 / (r^2 + eps^2)^(3/2) )
+                    const epsSq = 0.030 * 0.030;
+                    const rSq = r * r;
+                    const vOrb = Math.sqrt((0.035 * rSq) / Math.pow(rSq + epsSq, 1.5));
+
+                    // Counter-rotating disks for rich tidal bridge & counter-tail formations
+                    const dir = isG1 ? 1.0 : -1.0;
+                    vx = cVx - dir * vOrb * Math.sin(th);
+                    vy = cVy + dir * vOrb * Math.cos(th);
                     grp = isG1 ? 0.0 : 1.0;
                     state = 0.0;
                 } else if (scenario === 'boids') {
@@ -510,31 +516,29 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Galaxy Dual-Core Flyby & Far-Field Attraction
+                // Galaxy Dual-Core Plummer Potential (GM = 0.035, eps = 0.030)
+                let epsSq: f32 = 0.0009; // 0.030^2
+
+                // Core 1 Attraction
                 let d1x = params.g1x - px;
                 let d1y = params.g1y - py;
-                let r1_sq = d1x * d1x + d1y * d1y + 0.0012;
+                let r1_sq = d1x * d1x + d1y * d1y + epsSq;
                 let inv_r1 = inverseSqrt(r1_sq);
                 let inv_r1_3 = inv_r1 * inv_r1 * inv_r1;
-                let f1 = 0.045 * inv_r1_3;
+                let f1 = 0.035 * inv_r1_3;
                 fx += d1x * f1; fy += d1y * f1;
 
+                // Core 2 Attraction
                 let d2x = params.g2x - px;
                 let d2y = params.g2y - py;
-                let r2_sq = d2x * d2x + d2y * d2y + 0.0012;
+                let r2_sq = d2x * d2x + d2y * d2y + epsSq;
                 let inv_r2 = inverseSqrt(r2_sq);
                 let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
-                let f2 = 0.045 * inv_r2_3;
+                let f2 = 0.035 * inv_r2_3;
                 fx += d2x * f2; fy += d2y * f2;
 
-                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.08;
-
-                // Near-core softening
-                let rep1 = 0.00015 * inv_r1 * inv_r1 * inv_r1 * inv_r1;
-                fx -= d1x * rep1; fy -= d1y * rep1;
-                let rep2 = 0.00015 * inv_r2 * inv_r2 * inv_r2 * inv_r2;
-                fx -= d2x * rep2; fy -= d2y * rep2;
-                nearP2PIntensity += (rep1 + rep2) * 50.0;
+                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.06;
+                nearP2PIntensity += max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 12.0);
 
             } else if (params.scenario == 1u) {
                 // Boids Swarm: Global Far-Field Murmuration Vortex Draft
@@ -881,15 +885,17 @@
             float farM2L = 0.0;
 
             if (u_scenario == 0) {
-                // Galaxy flyby
+                // Galaxy Dual-Core Plummer Potential (GM = 0.035, eps = 0.030)
+                float epsSq = 0.0009;
                 vec2 d1 = u_g1 - pos;
-                float r1_sq = dot(d1, d1) + 0.0012;
-                fx += d1 * (0.045 / (r1_sq * sqrt(r1_sq)));
+                float r1_sq = dot(d1, d1) + epsSq;
+                fx += d1 * (0.035 / (r1_sq * sqrt(r1_sq)));
 
                 vec2 d2 = u_g2 - pos;
-                float r2_sq = dot(d2, d2) + 0.0012;
-                fx += d2 * (0.045 / (r2_sq * sqrt(r2_sq)));
+                float r2_sq = dot(d2, d2) + epsSq;
+                fx += d2 * (0.035 / (r2_sq * sqrt(r2_sq)));
                 farM2L = 0.6;
+                nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 12.0);
             } else if (u_scenario == 1) {
                 // Boids flocking
                 fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
