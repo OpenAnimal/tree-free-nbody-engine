@@ -353,8 +353,8 @@
         const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            core1 = { x: 0.28, y: 0.38, vx: 0.032, vy: 0.020, mass: 1.0 };
-            core2 = { x: 0.72, y: 0.62, vx: -0.032, vy: -0.020, mass: 1.0 };
+            core1 = { x: 0.22, y: 0.42, vx: 0.048, vy: 0.022, mass: 1.2 };
+            core2 = { x: 0.78, y: 0.58, vx: -0.048, vy: -0.022, mass: 1.2 };
 
             for (let i = 0; i < N; i++) {
                 let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
@@ -367,25 +367,28 @@
                     const cVx = isG1 ? core1.vx : core2.vx;
                     const cVy = isG1 ? core1.vy : core2.vy;
 
-                    // Logarithmic spiral disk distribution with exponential scale radius
-                    const r = Math.pow(Math.random(), 0.55) * 0.18 + 0.015;
-                    const arms = 2.0;
-                    const spiralAngle = Math.log(r / 0.18 + 0.01) * 1.8;
-                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.7 + spiralAngle + Math.random() * 0.25;
+                    // Logarithmic 3-arm spiral disk with realistic exponential scale radius
+                    const r = Math.pow(Math.random(), 0.50) * 0.20 + 0.015;
+                    const arms = 3.0;
+                    const spiralAngle = Math.log(r / 0.20 + 0.01) * 2.2;
+                    const th = (Math.floor(Math.random() * arms) * (Math.PI * 2 / arms)) + Math.random() * 0.6 + spiralAngle + (Math.random() - 0.5) * 0.20;
 
-                    px = cx + r * Math.cos(th);
-                    py = cy + r * Math.sin(th);
+                    // 3D disk inclination tilt for rich 3D-projected warping & counter-tail uncurling
+                    const tilt = isG1 ? 0.30 : -0.40;
+                    const dx = r * Math.cos(th);
+                    const dy = (r * Math.sin(th)) * Math.cos(tilt);
+                    px = cx + dx;
+                    py = cy + dy;
 
-                    // Exact circular orbital velocity balancing the softened potential (GM = 0.024, eps = 0.055)
-                    // v_orb(r) = sqrt( G*M * r^2 / (r^2 + eps^2)^(3/2) )
-                    const epsSq = 0.055 * 0.055; // 0.003025
+                    // Dual-component potential circular velocity curve (Core GM=0.020, eps=0.042 + Halo GM=0.015, eps=0.090)
                     const rSq = r * r;
-                    const vOrb = Math.sqrt((0.024 * rSq) / Math.pow(rSq + epsSq, 1.5));
+                    const vOrbCoreSq = (0.020 * rSq) / Math.pow(rSq + 0.001764, 1.5);
+                    const vOrbHaloSq = (0.015 * rSq) / Math.pow(rSq + 0.008100, 1.5);
+                    const vOrb = Math.sqrt(vOrbCoreSq + vOrbHaloSq);
 
-                    // Counter-rotating disks for rich tidal bridge & counter-tail formations
                     const dir = isG1 ? 1.0 : -1.0;
-                    vx = cVx - dir * vOrb * Math.sin(th);
-                    vy = cVy + dir * vOrb * Math.cos(th);
+                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.005;
+                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt) + (Math.random() - 0.5) * 0.005;
                     grp = isG1 ? 0.0 : 1.0;
                     state = 0.0;
                 } else if (scenario === 'boids') {
@@ -521,28 +524,29 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Galaxy Dual-Core Softened Potential (GM = 0.024, eps = 0.055)
-                let epsSq: f32 = 0.003025; // 0.055^2
+                // Multi-Scale Galactic Potential (Plummer Core GM=0.020, eps=0.042 + Halo GM=0.015, eps=0.090)
+                let epsCoreSq: f32 = 0.001764; // 0.042^2
+                let epsHaloSq: f32 = 0.008100; // 0.090^2
 
                 // Core 1 Attraction
                 let d1x = params.g1x - px;
                 let d1y = params.g1y - py;
-                let r1_sq = d1x * d1x + d1y * d1y + epsSq;
-                let inv_r1 = inverseSqrt(r1_sq);
-                let inv_r1_3 = inv_r1 * inv_r1 * inv_r1;
-                let f1 = 0.024 * inv_r1_3;
+                let r1_sq = d1x * d1x + d1y * d1y;
+                let inv_r1_c = inverseSqrt(r1_sq + epsCoreSq);
+                let inv_r1_h = inverseSqrt(r1_sq + epsHaloSq);
+                let f1 = (0.020 * inv_r1_c * inv_r1_c * inv_r1_c) + (0.015 * inv_r1_h * inv_r1_h * inv_r1_h);
                 fx += d1x * f1; fy += d1y * f1;
 
                 // Core 2 Attraction
                 let d2x = params.g2x - px;
                 let d2y = params.g2y - py;
-                let r2_sq = d2x * d2x + d2y * d2y + epsSq;
-                let inv_r2 = inverseSqrt(r2_sq);
-                let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
-                let f2 = 0.024 * inv_r2_3;
+                let r2_sq = d2x * d2x + d2y * d2y;
+                let inv_r2_c = inverseSqrt(r2_sq + epsCoreSq);
+                let inv_r2_h = inverseSqrt(r2_sq + epsHaloSq);
+                let f2 = (0.020 * inv_r2_c * inv_r2_c * inv_r2_c) + (0.015 * inv_r2_h * inv_r2_h * inv_r2_h);
                 fx += d2x * f2; fy += d2y * f2;
 
-                farMultipoleIntensity += (inv_r1 + inv_r2) * 0.06;
+                farMultipoleIntensity += (inv_r1_c + inv_r2_c) * 0.06;
                 nearP2PIntensity += max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 8.0);
 
             } else if (params.scenario == 1u) {
@@ -910,15 +914,20 @@
             float farM2L = 0.0;
 
             if (u_scenario == 0) {
-                // Galaxy Dual-Core Softened Potential (GM = 0.024, eps = 0.055)
-                float epsSq = 0.003025;
+                // Multi-Scale Galactic Potential (Core GM=0.020, eps=0.042 + Halo GM=0.015, eps=0.090)
+                float epsCoreSq = 0.001764;
+                float epsHaloSq = 0.008100;
+
                 vec2 d1 = u_g1 - pos;
-                float r1_sq = dot(d1, d1) + epsSq;
-                fx += d1 * (0.024 / (r1_sq * sqrt(r1_sq)));
+                float r1_sq = dot(d1, d1);
+                float f1 = (0.020 / pow(r1_sq + epsCoreSq, 1.5)) + (0.015 / pow(r1_sq + epsHaloSq, 1.5));
+                fx += d1 * f1;
 
                 vec2 d2 = u_g2 - pos;
-                float r2_sq = dot(d2, d2) + epsSq;
-                fx += d2 * (0.024 / (r2_sq * sqrt(r2_sq)));
+                float r2_sq = dot(d2, d2);
+                float f2 = (0.020 / pow(r2_sq + epsCoreSq, 1.5)) + (0.015 / pow(r2_sq + epsHaloSq, 1.5));
+                fx += d2 * f2;
+
                 farM2L = 0.6;
                 nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 8.0);
             } else if (u_scenario == 1) {
@@ -1368,10 +1377,11 @@
             if (scenario !== 'galaxy') return;
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
-            const r_sq = dx * dx + dy * dy + 0.006;
+            const epsSq = 0.0035; // Softening between the two supermassive cores
+            const r_sq = dx * dx + dy * dy + epsSq;
             const inv_r = 1.0 / Math.sqrt(r_sq);
             const inv_r3 = inv_r * inv_r * inv_r;
-            const G = 0.0024;
+            const G = 0.0032;
 
             const f12x = dx * (G * core2.mass * inv_r3);
             const f12y = dy * (G * core2.mass * inv_r3);
@@ -1389,12 +1399,12 @@
             // Smooth harmonic orbital anchor keeps the continuous collision dance in center viewport
             const c1DistX = core1.x - 0.5;
             const c1DistY = core1.y - 0.5;
-            core1.vx -= c1DistX * 0.008 * dt * simSpeed;
-            core1.vy -= c1DistY * 0.008 * dt * simSpeed;
+            core1.vx -= c1DistX * 0.012 * dt * simSpeed;
+            core1.vy -= c1DistY * 0.012 * dt * simSpeed;
             const c2DistX = core2.x - 0.5;
             const c2DistY = core2.y - 0.5;
-            core2.vx -= c2DistX * 0.008 * dt * simSpeed;
-            core2.vy -= c2DistY * 0.008 * dt * simSpeed;
+            core2.vx -= c2DistX * 0.012 * dt * simSpeed;
+            core2.vy -= c2DistY * 0.012 * dt * simSpeed;
         }
 
         // ====================================================================
