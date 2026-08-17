@@ -43,7 +43,7 @@ If you are coming from game development, robotics, artificial intelligence, biop
   * **Point-Based Global Illumination (PBGI), Surfel Radiosity & Hybrid 3D Voxel + FMM Volumetric Raymarching**
   * **Perceptual Rate Control (Delta-QP), Stochastic Noise Field Synthesis & Lock-Free Motion Estimation**
 
-> **The Core Breakthrough:** Instead of computing interactions between all $N 	imes N$ pairs ($O(N^2)$, which crashes performance at scale), this engine computes localized near-field interactions directly ($O(1)$) and translates distant particles into hierarchical cluster multipoles ($O(N)$) &mdash; **strictly without using pointer-chasing Octrees, $k$-d trees, or BVHs, and without requiring multi-pass Radix Sorts**.
+> **The Core Breakthrough:** Instead of computing interactions between all $NxN$ pairs ($O(N^2)$, which crashes performance at scale), this engine computes localized near-field interactions directly ($O(1)$) and translates distant particles into hierarchical cluster multipoles ($O(N)$) &mdash; **strictly without using pointer-chasing Octrees, $k$-d trees, or BVHs, and without requiring multi-pass Radix Sorts**.
 
 ---
 
