@@ -265,10 +265,20 @@
 
         <div class="section-title">Scale Presets</div>
         <div class="btn-grid">
-            <button id="btnPreset15k">15k (Ultra High)</button>
             <button id="btnPreset35k">35k (Balanced)</button>
-            <button id="btnPreset70k">70k (Heavy)</button>
-            <button id="btnPreset120k" class="active">120k (Extreme GPU)</button>
+            <button id="btnPreset120k" class="active">120k (Heavy)</button>
+            <button id="btnPreset500k">500k (Extreme)</button>
+            <button id="btnPreset2_5M">2.5M (Titan GPU)</button>
+        </div>
+
+        <div class="section-title">Custom Scale (Extreme Mode)</div>
+        <div class="control-group">
+            <div class="control-label">Particles: <span id="valParticles">120,000</span></div>
+            <input type="range" id="sliderParticles" min="5000" max="3000000" step="10000" value="120000">
+            <div style="display:flex; gap:6px; margin-top:4px;">
+                <input type="number" id="inputCustomParticles" min="1000" max="5000000" step="50000" value="120000" style="flex:1; background:var(--bg-main); color:var(--text-main); border:1px solid var(--bg-border); padding:6px 10px; border-radius:6px; font-family:monospace; font-size:0.80rem;">
+                <button id="btnApplyCustom" style="padding:6px 14px; font-size:0.76rem; font-weight:bold; background:rgba(0,240,255,0.18); border-color:var(--accent-cyan); color:var(--accent-cyan);">Apply</button>
+            </div>
         </div>
 
         <div class="section-title">Simulation Scenario</div>
@@ -279,11 +289,7 @@
             <option value="sph">SPH Fluid Dam Break Simulation</option>
         </select>
 
-        <div class="section-title">Particle Count & Dynamics</div>
-        <div class="control-group">
-            <div class="control-label">Particles: <span id="valParticles">120,000</span></div>
-            <input type="range" id="sliderParticles" min="5000" max="250000" step="5000" value="120000">
-        </div>
+        <div class="section-title">Dynamics & Controls</div>
 
         <div class="control-group">
             <div class="control-label">Simulation Speed: <span id="valSpeed">1.0x</span></div>
@@ -324,7 +330,7 @@
 
     <script>
         const canvas = document.getElementById('mainCanvas');
-        const MAX_P = 250000;
+        const MAX_P = 5000000; // Supports Extreme Mode up to 5,000,000 live particles on GPU
         let N = 120000;
         let scenario = 'galaxy';
         let scenarioId = 0;
@@ -754,7 +760,13 @@
             output.position = vec4<f32>(clipX, clipY, 0.0, 1.0);
 
             let speed = length(vel) * 22.0;
-            output.pointSize = clamp(2.2 - speed * 0.1, 1.2, 3.2);
+            var ptScale: f32 = 1.0;
+            if (params.numParticles > 1500000u) {
+                ptScale = 0.45;
+            } else if (params.numParticles > 400000u) {
+                ptScale = 0.65;
+            }
+            output.pointSize = clamp((2.2 - speed * 0.1) * ptScale, 0.75, 3.2);
 
             let cCyan = vec3<f32>(0.0, 0.94, 1.0);     // #00F0FF (Near-Field P2P)
             let cPurple = vec3<f32>(0.64, 0.44, 0.97);  // #A371F7 (Far-Field M2L)
@@ -971,7 +983,7 @@
             vec2 clipSpace = vec2(pos.x * 2.0 - 1.0, 1.0 - pos.y * 2.0);
             gl_Position = vec4(clipSpace, 0.0, 1.0);
             float speedNorm = length(filteredVel) * 22.0;
-            gl_PointSize = clamp(2.2 - speedNorm * 0.1, 1.2, 3.2);
+            gl_PointSize = clamp(2.0 - speedNorm * 0.1, 0.8, 3.0);
 
             vec3 cCyan = vec3(0.0, 0.94, 1.0);
             vec3 cPurple = vec3(0.64, 0.44, 0.97);
@@ -1090,7 +1102,17 @@
                             } catch (_) {}
                         }
 
-                        webgpuDevice = await adapter.requestDevice();
+                        const requiredLimits = {};
+                        if (adapter.limits) {
+                            if (adapter.limits.maxStorageBufferBindingSize) {
+                                requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+                            }
+                            if (adapter.limits.maxBufferSize) {
+                                requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+                            }
+                        }
+
+                        webgpuDevice = await adapter.requestDevice({ requiredLimits });
                         webgpuContext = canvas.getContext('webgpu');
 
                         const format = navigator.gpu.getPreferredCanvasFormat();
@@ -1595,6 +1617,10 @@
         document.getElementById('sliderParticles').addEventListener('input', (e) => {
             N = parseInt(e.target.value);
             document.getElementById('valParticles').innerText = N.toLocaleString();
+            document.getElementById('inputCustomParticles').value = N;
+            document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
+                if (b.id.startsWith('btnPreset')) b.classList.remove('active');
+            });
             resetSimulation();
         });
 
@@ -1610,20 +1636,33 @@
 
         // Presets
         const setPreset = (val, btn) => {
-            N = val;
+            N = Math.min(MAX_P, Math.max(1000, val));
             document.getElementById('valParticles').innerText = N.toLocaleString();
             document.getElementById('sliderParticles').value = N;
+            document.getElementById('inputCustomParticles').value = N;
             document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
                 if (b.id.startsWith('btnPreset')) b.classList.remove('active');
             });
-            btn.classList.add('active');
+            if (btn) btn.classList.add('active');
             resetSimulation();
         };
 
-        document.getElementById('btnPreset15k').addEventListener('click', (e) => setPreset(15000, e.target));
         document.getElementById('btnPreset35k').addEventListener('click', (e) => setPreset(35000, e.target));
-        document.getElementById('btnPreset70k').addEventListener('click', (e) => setPreset(70000, e.target));
         document.getElementById('btnPreset120k').addEventListener('click', (e) => setPreset(120000, e.target));
+        document.getElementById('btnPreset500k').addEventListener('click', (e) => setPreset(500000, e.target));
+        document.getElementById('btnPreset2_5M').addEventListener('click', (e) => setPreset(2500000, e.target));
+
+        // Custom Count Apply Button & Enter Key
+        const applyCustomCount = () => {
+            const inputVal = parseInt(document.getElementById('inputCustomParticles').value);
+            if (!isNaN(inputVal) && inputVal > 0) {
+                setPreset(inputVal, null);
+            }
+        };
+        document.getElementById('btnApplyCustom').addEventListener('click', applyCustomCount);
+        document.getElementById('inputCustomParticles').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') applyCustomCount();
+        });
 
         // Toggles
         document.getElementById('btn1Euro').addEventListener('click', (e) => {
