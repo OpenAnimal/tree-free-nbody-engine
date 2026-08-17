@@ -413,10 +413,12 @@
                 } else if (scenario === 'sph') {
                     scenarioId = 3;
                     // SPH Dam Break initial column on the left
-                    px = 0.05 + Math.random() * 0.32;
-                    py = 0.15 + Math.random() * 0.75;
-                    vx = (Math.random() - 0.5) * 0.005;
-                    vy = 0.02 + Math.random() * 0.02;
+                    px = 0.05 + Math.random() * 0.28;
+                    py = 0.15 + Math.random() * 0.72;
+                    // Lower particles burst outward right due to initial hydrostatic column pressure
+                    const depth = Math.max(0.0, py - 0.20);
+                    vx = Math.sqrt(depth * 0.003) * (0.8 + Math.random() * 0.4);
+                    vy = (Math.random() - 0.5) * 0.01;
                     grp = 0.0;
                     state = 0.0;
                 }
@@ -557,11 +559,56 @@
                 farMultipoleIntensity += 0.4;
 
             } else if (params.scenario == 3u) {
-                // SPH Dam Break Gravity
-                fy += 0.22;
-                if (py > 0.94) { fy -= (py - 0.94) * 28.0; vy *= 0.85; nearP2PIntensity += 0.8; }
-                if (px < 0.04) { fx += (0.04 - px) * 28.0; vx *= 0.85; nearP2PIntensity += 0.8; }
-                if (px > 0.96) { fx -= (px - 0.96) * 28.0; vx *= 0.85; nearP2PIntensity += 0.8; }
+                // SPH Hydrodynamic Dam Break Simulation
+                fy += 0.32; // Gravity downwards
+
+                // Dynamic Hydrodynamic Wave & Sloshing Field
+                let wavePhase = params.simTime * 1.6;
+                let sloshWave = sin(px * 4.712 + wavePhase) * 0.08 * exp(-min(params.simTime * 0.04, 2.0));
+                let baseSurfaceY = 0.68 - sloshWave;
+
+                // Hydrostatic buoyancy & bulk fluid incompressibility
+                if (py > baseSurfaceY) {
+                    let depth = py - baseSurfaceY;
+                    fy -= depth * 3.8; // Upward hydrostatic pressure preventing 1D flat line collapse
+                    let surgeDir = select(0.8, -0.8, px > 0.5);
+                    fx += surgeDir * depth * 1.5;
+                    farMultipoleIntensity += depth * 2.5;
+                }
+
+                // Stagnation Splash against Container Walls
+                if (px > 0.86 && vx > 0.02 && py > 0.50) {
+                    fy -= vx * 4.5; // Right-wall upward wave splash
+                    fx -= 0.18;
+                    nearP2PIntensity += 1.0;
+                }
+                if (px < 0.14 && vx < -0.02 && py > 0.50) {
+                    fy -= abs(vx) * 4.5; // Left-wall reflection splash
+                    fx += 0.18;
+                    nearP2PIntensity += 1.0;
+                }
+
+                // Container floor with volumetric liquid stacking (floor at y = 0.92)
+                let floorY = 0.92;
+                if (py > floorY) {
+                    let pen = py - floorY;
+                    fy -= pen * 38.0;
+                    vy *= 0.70;
+                    fx += select(-0.03, 0.03, px > 0.5);
+                    nearP2PIntensity += 0.9;
+                }
+                if (px < 0.04) {
+                    let pen = 0.04 - px;
+                    fx += pen * 38.0;
+                    vx *= -0.35;
+                    nearP2PIntensity += 0.8;
+                }
+                if (px > 0.96) {
+                    let pen = px - 0.96;
+                    fx -= pen * 38.0;
+                    vx *= -0.35;
+                    nearP2PIntensity += 0.8;
+                }
             }
 
             // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH)
@@ -592,15 +639,20 @@
                             farMultipoleIntensity += 0.2;
                         }
                     } else if (params.scenario == 3u) {
-                        // SPH Fluid Repulsion & Viscosity
-                        if (r2 < 0.0012) {
-                            let inv_r = inverseSqrt(r2);
-                            let rep = (0.035 - sqrt(r2)) * 1.5;
-                            fx += diffX * inv_r * rep;
-                            fy += diffY * inv_r * rep;
-                            fx += (other.vel.x - vx) * 0.015;
-                            fy += (other.vel.y - vy) * 0.015;
-                            nearP2PIntensity += 0.3;
+                        // SPH Fluid Incompressibility & Viscous Shear (Spiky pressure kernel)
+                        if (r2 < 0.0016) {
+                            let r = sqrt(r2);
+                            let h = 0.040;
+                            if (r < h) {
+                                let q = 1.0 - r / h;
+                                let rep = q * q * 1.8;
+                                let inv_r = 1.0 / max(r, 1e-4);
+                                fx += diffX * inv_r * rep;
+                                fy += diffY * inv_r * rep;
+                                fx += (other.vel.x - vx) * q * 0.035;
+                                fy += (other.vel.y - vy) * q * 0.035;
+                                nearP2PIntensity += q * 0.5;
+                            }
                         }
                     }
                 }
@@ -832,10 +884,52 @@
                 fx.x += (a_group > 0.5) ? 0.06 : -0.06;
                 farM2L = 0.5;
             } else if (u_scenario == 3) {
-                fx.y += 0.22;
-                if (pos.y > 0.94) { fx.y -= (pos.y - 0.94) * 28.0; vel.y *= 0.85; nearP2P = 0.8; }
-                if (pos.x < 0.04) { fx.x += (0.04 - pos.x) * 28.0; vel.x *= 0.85; nearP2P = 0.8; }
-                if (pos.x > 0.96) { fx.x -= (pos.x - 0.96) * 28.0; vel.x *= 0.85; nearP2P = 0.8; }
+                // SPH Dam Break
+                fx.y += 0.32;
+
+                float wavePhase = u_simTime * 1.6;
+                float sloshWave = sin(pos.x * 4.712 + wavePhase) * 0.08 * exp(-min(u_simTime * 0.04, 2.0));
+                float baseSurfaceY = 0.68 - sloshWave;
+
+                if (pos.y > baseSurfaceY) {
+                    float depth = pos.y - baseSurfaceY;
+                    fx.y -= depth * 3.8;
+                    float surgeDir = (pos.x > 0.5) ? -0.8 : 0.8;
+                    fx.x += surgeDir * depth * 1.5;
+                    farM2L = depth * 2.5;
+                }
+
+                if (pos.x > 0.86 && vel.x > 0.02 && pos.y > 0.50) {
+                    fx.y -= vel.x * 4.5;
+                    fx.x -= 0.18;
+                    nearP2P = 1.0;
+                }
+                if (pos.x < 0.14 && vel.x < -0.02 && pos.y > 0.50) {
+                    fx.y -= abs(vel.x) * 4.5;
+                    fx.x += 0.18;
+                    nearP2P = 1.0;
+                }
+
+                float floorY = 0.92;
+                if (pos.y > floorY) {
+                    float pen = pos.y - floorY;
+                    fx.y -= pen * 38.0;
+                    vel.y *= 0.70;
+                    fx.x += (pos.x > 0.5) ? 0.03 : -0.03;
+                    nearP2P = 0.9;
+                }
+                if (pos.x < 0.04) {
+                    float pen = 0.04 - pos.x;
+                    fx.x += pen * 38.0;
+                    vel.x *= -0.35;
+                    nearP2P = 0.8;
+                }
+                if (pos.x > 0.96) {
+                    float pen = pos.x - 0.96;
+                    fx.x -= pen * 38.0;
+                    vel.x *= -0.35;
+                    nearP2P = 0.8;
+                }
             }
 
             // Mouse forces
