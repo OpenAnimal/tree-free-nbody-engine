@@ -1063,7 +1063,7 @@
             vec2 clipSpace = vec2(pos.x * 2.0 - 1.0, 1.0 - pos.y * 2.0);
             gl_Position = vec4(clipSpace, 0.0, 1.0);
             float speedNorm = length(filteredVel) * 22.0;
-            gl_PointSize = clamp(2.0 - speedNorm * 0.1, 0.8, 3.0);
+            gl_PointSize = clamp(3.5 - speedNorm * 0.1, 2.0, 6.0);
 
             vec3 cCyan = vec3(0.0, 0.94, 1.0);
             vec3 cPurple = vec3(0.64, 0.44, 0.97);
@@ -1107,6 +1107,8 @@
         in vec4 v_renderColor;
         out vec4 fragColor;
         void main() {
+            vec2 coord = gl_PointCoord - vec2(0.5);
+            if (dot(coord, coord) > 0.25) discard;
             fragColor = v_renderColor;
         }`;
 
@@ -1116,6 +1118,7 @@
         let activeBackend = 'DETECTING';
         let webgpuDevice = null;
         let webgpuContext = null;
+        let webgpuFormat = null;
         let webgpuPipelineCompute = null;
         let webgpuPipelineRender = null;
         let webgpuPosVelBufferA = null;
@@ -1195,10 +1198,10 @@
                         webgpuDevice = await adapter.requestDevice({ requiredLimits });
                         webgpuContext = canvas.getContext('webgpu');
 
-                        const format = navigator.gpu.getPreferredCanvasFormat();
+                        webgpuFormat = navigator.gpu.getPreferredCanvasFormat();
                         webgpuContext.configure({
                             device: webgpuDevice,
-                            format: format,
+                            format: webgpuFormat,
                             alphaMode: 'opaque'
                         });
 
@@ -1354,7 +1357,7 @@
             gl.linkProgram(glProgram);
 
             // Buffers
-            const interleaved = new Float32Array(MAX_P * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
+            const interleaved = new Float32Array(N * 7); // pos(2) + vel(2) + prevVel(2) + group(1)
             for (let i = 0; i < N; i++) {
                 interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                 interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1539,8 +1542,15 @@
 
         function runWebGPUFrame(dt) {
             if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
+                canvas.width = Math.max(1, canvas.clientWidth);
+                canvas.height = Math.max(1, canvas.clientHeight);
+                if (webgpuContext && webgpuDevice && webgpuFormat) {
+                    webgpuContext.configure({
+                        device: webgpuDevice,
+                        format: webgpuFormat,
+                        alphaMode: 'opaque'
+                    });
+                }
             }
 
             // Write Uniforms
@@ -1601,8 +1611,8 @@
 
         function runWebGL2TFFrame(dt) {
             if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
+                canvas.width = Math.max(1, canvas.clientWidth);
+                canvas.height = Math.max(1, canvas.clientHeight);
                 gl.viewport(0, 0, canvas.width, canvas.height);
             }
 
@@ -1654,8 +1664,8 @@
             generateParticles();
             if (activeBackend === 'WEBGPU') {
                 uploadWebGPUParticles();
-            } else if (activeBackend === 'WEBGL2_TF') {
-                const interleaved = new Float32Array(MAX_P * 7);
+            } else if (activeBackend === 'WEBGL2_TF' && gl) {
+                const interleaved = new Float32Array(N * 7);
                 for (let i = 0; i < N; i++) {
                     interleaved[i * 7 + 0] = initialPositions[i * 4 + 0];
                     interleaved[i * 7 + 1] = initialPositions[i * 4 + 1];
@@ -1666,9 +1676,9 @@
                     interleaved[i * 7 + 6] = initialExtras[i * 4 + 2];
                 }
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelA);
-                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
-                gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
+                gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
             }
         }
 
