@@ -558,10 +558,10 @@
                 farMultipoleIntensity += 0.5;
 
             } else if (params.scenario == 2u) {
-                // Hydrodynamic Continuous Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
+                // Hydrodynamic Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
                 let yDist = py - 0.50;
-                let shearVel = tanh(yDist / 0.10) * 0.065;
-                fx += (shearVel - vx) * 0.15; // Continuous viscous shear velocity drive
+                let shearVel = tanh(yDist / 0.12) * 0.075;
+                fx += (shearVel - vx) * 0.18; // Continuous viscous shear velocity drive
 
                 // Multi-Center Biot-Savart rotational vortex induction across the interface
                 for (var k: u32 = 0u; k < 3u; k = k + 1u) {
@@ -569,44 +569,44 @@
                     let vCoreY = 0.50 + sin(vCoreX * 6.283 + params.simTime * 1.3) * 0.04;
                     let vdx = px - vCoreX;
                     let vdy = py - vCoreY;
-                    let vr_sq = vdx * vdx + vdy * vdy + 0.0050; // Core radius smoothing prevents thin filament collapse
-                    let gamma = 0.038;
+                    let vr_sq = vdx * vdx + vdy * vdy + 0.0080; // Expanded core smoothing prevents 1D filament collapse
+                    let gamma = 0.045;
                     fx += (-vdy / vr_sq) * gamma;
                     fy += (vdx / vr_sq) * gamma;
                 }
 
-                // Fluid Viscous diffusion preventing 1D thin curve collapse
-                let diffY = sin(px * 12.566 + params.simTime * 2.0) * 0.015;
-                fy += diffY * exp(-abs(yDist) * 15.0);
+                // Fluid Viscous cross-stream diffusion ensuring thick, billowing vortex cloud
+                let diffY = sin(px * 12.566 + params.simTime * 2.0) * 0.020;
+                fy += diffY * exp(-abs(yDist) * 10.0);
                 farMultipoleIntensity += 0.6;
 
             } else if (params.scenario == 3u) {
                 // SPH Hydrodynamic Dam Break Simulation (Snappy High-Gravity Fluid Dynamics)
-                fy += 0.85; // Snappy realistic downward gravity
+                fy += 1.65; // Snappy realistic downward gravity (significantly increased)
 
                 // Dynamic Hydrodynamic Wave & Sloshing Field
-                let wavePhase = params.simTime * 2.2;
-                let sloshWave = sin(px * 4.712 + wavePhase) * 0.10 * exp(-min(params.simTime * 0.05, 1.8));
-                let baseSurfaceY = 0.66 - sloshWave;
+                let wavePhase = params.simTime * 2.5;
+                let sloshWave = sin(px * 4.712 + wavePhase) * 0.12 * exp(-min(params.simTime * 0.05, 1.8));
+                let baseSurfaceY = 0.65 - sloshWave;
 
                 // Hydrostatic buoyancy & bulk fluid incompressibility
                 if (py > baseSurfaceY) {
                     let depth = py - baseSurfaceY;
-                    fy -= depth * 6.8; // Upward hydrostatic pressure balancing snappy gravity
-                    let surgeDir = select(1.2, -1.2, px > 0.5);
-                    fx += surgeDir * depth * 2.8;
+                    fy -= depth * 11.5; // Upward hydrostatic pressure balancing heavy gravity
+                    let surgeDir = select(1.5, -1.5, px > 0.5);
+                    fx += surgeDir * depth * 4.2;
                     farMultipoleIntensity += depth * 2.5;
                 }
 
                 // High-Velocity Stagnation Splash against Container Walls
-                if (px > 0.84 && vx > 0.02 && py > 0.45) {
-                    fy -= vx * 7.5; // Upward right-wall wave splash
-                    fx -= 0.25;
+                if (px > 0.82 && vx > 0.02 && py > 0.40) {
+                    fy -= vx * 12.0; // Snappy upward wall wave splash
+                    fx -= 0.35;
                     nearP2PIntensity += 1.0;
                 }
-                if (px < 0.16 && vx < -0.02 && py > 0.45) {
-                    fy -= abs(vx) * 7.5; // Left-wall reflection splash
-                    fx += 0.25;
+                if (px < 0.18 && vx < -0.02 && py > 0.40) {
+                    fy -= abs(vx) * 12.0; // Left-wall reflection splash
+                    fx += 0.35;
                     nearP2PIntensity += 1.0;
                 }
 
@@ -614,26 +614,26 @@
                 let floorY = 0.92;
                 if (py > floorY) {
                     let pen = py - floorY;
-                    fy -= pen * 55.0;
-                    vy *= 0.65;
-                    fx += select(-0.04, 0.04, px > 0.5);
+                    fy -= pen * 75.0;
+                    vy *= 0.60;
+                    fx += select(-0.06, 0.06, px > 0.5);
                     nearP2PIntensity += 0.9;
                 }
                 if (px < 0.04) {
                     let pen = 0.04 - px;
-                    fx += pen * 55.0;
-                    vx *= -0.40;
+                    fx += pen * 75.0;
+                    vx *= -0.45;
                     nearP2PIntensity += 0.8;
                 }
                 if (px > 0.96) {
                     let pen = px - 0.96;
-                    fx -= pen * 55.0;
-                    vx *= -0.40;
+                    fx -= pen * 75.0;
+                    vx *= -0.45;
                     nearP2PIntensity += 0.8;
                 }
             }
 
-            // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH)
+            // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH / Vortex)
             let sample_start = (gid * 37u) % n;
             let sample_count = min(64u, n);
             for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
@@ -660,6 +660,21 @@
                             fy -= diffY * 0.015;
                             farMultipoleIntensity += 0.2;
                         }
+                    } else if (params.scenario == 2u) {
+                        // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing
+                        if (r2 < 0.0030) {
+                            let r = sqrt(r2);
+                            let q = max(0.0, 1.0 - r / 0.055);
+                            fx += (other.vel.x - vx) * q * 0.040;
+                            fy += (other.vel.y - vy) * q * 0.040;
+                            // Dispersion pressure preventing 1D thin curve clumping
+                            if (r2 < 0.0008) {
+                                let inv_r = inverseSqrt(r2);
+                                fx += diffX * inv_r * 0.018;
+                                fy += diffY * inv_r * 0.018;
+                            }
+                            nearP2PIntensity += q * 0.4;
+                        }
                     } else if (params.scenario == 3u) {
                         // SPH Fluid Incompressibility & Viscous Shear (Spiky pressure kernel)
                         if (r2 < 0.0016) {
@@ -667,12 +682,12 @@
                             let h = 0.040;
                             if (r < h) {
                                 let q = 1.0 - r / h;
-                                let rep = q * q * 1.8;
+                                let rep = q * q * 2.5;
                                 let inv_r = 1.0 / max(r, 1e-4);
                                 fx += diffX * inv_r * rep;
                                 fy += diffY * inv_r * rep;
-                                fx += (other.vel.x - vx) * q * 0.035;
-                                fy += (other.vel.y - vy) * q * 0.035;
+                                fx += (other.vel.x - vx) * q * 0.045;
+                                fy += (other.vel.y - vy) * q * 0.045;
                                 nearP2PIntensity += q * 0.5;
                             }
                         }
@@ -910,66 +925,67 @@
                 fx += (subC - pos) * 0.035;
                 farM2L = 0.8;
             } else if (u_scenario == 2) {
+                // Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
                 float yDist = pos.y - 0.50;
-                float shearVel = tanh(yDist / 0.10) * 0.065;
-                fx.x += (shearVel - vel.x) * 0.15;
+                float shearVel = tanh(yDist / 0.12) * 0.075;
+                fx.x += (shearVel - vel.x) * 0.18;
 
                 for (int k = 0; k < 3; k++) {
                     float vCoreX = 0.20 + float(k) * 0.30 + sin(u_simTime * 0.9 + float(k) * 1.5) * 0.05;
                     float vCoreY = 0.50 + sin(vCoreX * 6.283 + u_simTime * 1.3) * 0.04;
                     vec2 vd = pos - vec2(vCoreX, vCoreY);
-                    float vr_sq = dot(vd, vd) + 0.0050;
-                    float gamma = 0.038;
+                    float vr_sq = dot(vd, vd) + 0.0080;
+                    float gamma = 0.045;
                     fx += vec2(-vd.y, vd.x) * (gamma / vr_sq);
                 }
-                float diffY = sin(pos.x * 12.566 + u_simTime * 2.0) * 0.015;
-                fx.y += diffY * exp(-abs(yDist) * 15.0);
+                float diffY = sin(pos.x * 12.566 + u_simTime * 2.0) * 0.020;
+                fx.y += diffY * exp(-abs(yDist) * 10.0);
                 farM2L = 0.6;
             } else if (u_scenario == 3) {
-                // SPH Dam Break (Snappy High-Gravity)
-                fx.y += 0.85;
+                // SPH Dam Break (Snappy High-Gravity Fluid Dynamics)
+                fx.y += 1.65;
 
-                float wavePhase = u_simTime * 2.2;
-                float sloshWave = sin(pos.x * 4.712 + wavePhase) * 0.10 * exp(-min(u_simTime * 0.05, 1.8));
-                float baseSurfaceY = 0.66 - sloshWave;
+                float wavePhase = u_simTime * 2.5;
+                float sloshWave = sin(pos.x * 4.712 + wavePhase) * 0.12 * exp(-min(u_simTime * 0.05, 1.8));
+                float baseSurfaceY = 0.65 - sloshWave;
 
                 if (pos.y > baseSurfaceY) {
                     float depth = pos.y - baseSurfaceY;
-                    fx.y -= depth * 6.8;
-                    float surgeDir = (pos.x > 0.5) ? -1.2 : 1.2;
-                    fx.x += surgeDir * depth * 2.8;
+                    fx.y -= depth * 11.5;
+                    float surgeDir = (pos.x > 0.5) ? -1.5 : 1.5;
+                    fx.x += surgeDir * depth * 4.2;
                     farM2L = depth * 2.5;
                 }
 
-                if (pos.x > 0.84 && vel.x > 0.02 && pos.y > 0.45) {
-                    fx.y -= vel.x * 7.5;
-                    fx.x -= 0.25;
+                if (pos.x > 0.82 && vel.x > 0.02 && pos.y > 0.40) {
+                    fx.y -= vel.x * 12.0;
+                    fx.x -= 0.35;
                     nearP2P = 1.0;
                 }
-                if (pos.x < 0.16 && vel.x < -0.02 && pos.y > 0.45) {
-                    fx.y -= abs(vel.x) * 7.5;
-                    fx.x += 0.25;
+                if (pos.x < 0.18 && vel.x < -0.02 && pos.y > 0.40) {
+                    fx.y -= abs(vel.x) * 12.0;
+                    fx.x += 0.35;
                     nearP2P = 1.0;
                 }
 
                 float floorY = 0.92;
                 if (pos.y > floorY) {
                     float pen = pos.y - floorY;
-                    fx.y -= pen * 55.0;
-                    vel.y *= 0.65;
-                    fx.x += (pos.x > 0.5) ? 0.04 : -0.04;
+                    fx.y -= pen * 75.0;
+                    vel.y *= 0.60;
+                    fx.x += (pos.x > 0.5) ? 0.06 : -0.06;
                     nearP2P = 0.9;
                 }
                 if (pos.x < 0.04) {
                     float pen = 0.04 - pos.x;
-                    fx.x += pen * 55.0;
-                    vel.x *= -0.40;
+                    fx.x += pen * 75.0;
+                    vel.x *= -0.45;
                     nearP2P = 0.8;
                 }
                 if (pos.x > 0.96) {
                     float pen = pos.x - 0.96;
-                    fx.x -= pen * 55.0;
-                    vel.x *= -0.40;
+                    fx.x -= pen * 75.0;
+                    vel.x *= -0.45;
                     nearP2P = 0.8;
                 }
             }
@@ -1401,7 +1417,7 @@
                 items = [
                     { color: 'var(--accent-cyan)', label: 'Low Speed (< 0.03)' },
                     { color: 'var(--accent-purple)', label: 'Cruising Speed (0.03 – 0.08)' },
-                    { color: 'var(--accent-pink)', label: 'High Acceleration (> 0.08)' }
+                    { color: 'var(--accent-pink)', label: 'High Speed (> 0.08)' }
                 ];
             } else if (colorMode === 1) {
                 title = `${sName} — FMM & 1€ Dynamics`;
