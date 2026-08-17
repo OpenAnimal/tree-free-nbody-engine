@@ -616,12 +616,12 @@
                 // High-Velocity Stagnation Splash against Vertical Container Walls
                 if (px > 0.86 && vx > 0.03 && py > 0.40) {
                     fy -= vx * 9.0; // High upward splash on right wall
-                    fx -= 0.30;
+                    fx.x -= 0.30;
                     nearP2PIntensity += 1.0;
                 }
                 if (px < 0.14 && vx < -0.03 && py > 0.40) {
                     fy -= abs(vx) * 9.0; // Reflection splash on left wall
-                    fx += 0.30;
+                    fx.x += 0.30;
                     nearP2PIntensity += 1.0;
                 }
 
@@ -641,7 +641,7 @@
                 }
                 if (px > 0.96) {
                     let pen = px - 0.96;
-                    fx -= pen * 70.0;
+                    fx.x -= pen * 70.0;
                     vx *= -0.35;
                     nearP2PIntensity += 0.8;
                 }
