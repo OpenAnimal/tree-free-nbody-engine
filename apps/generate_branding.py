@@ -70,7 +70,7 @@ def generate_banner():
     cit.set_path_effects(stroke_bg)
 
     # Lock-free specs line with elegant O(log(1/ε)) notation
-    specs = ax.text(x_pos, 1.18, "100% Lock-Free CAS  |  O(1) and O(log(1/ε)) Bounds  |  250k+ Real-Time Particles",
+    specs = ax.text(x_pos, 1.18, "100% Lock-Free CAS  |  O(1) and O(log(1/ε)) Bounds  |  5M+ Real-Time Particles",
                     fontsize=11.0, fontweight='normal', color='#8B949E', fontfamily='sans-serif', zorder=4)
     specs.set_path_effects(stroke_bg)
 
