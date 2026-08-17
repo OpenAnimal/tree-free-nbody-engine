@@ -635,7 +635,7 @@
             g2y: f32,
         };
 
-        @group(0) @binding(3) var<uniform> params: SimParams;
+        @group(0) @binding(0) var<uniform> params: SimParams;
 
         @vertex
         fn vs_main(
@@ -825,17 +825,49 @@
         let lastFpsTime = performance.now();
         let frameCount = 0;
 
+        function formatWebGLRenderer(raw) {
+            if (!raw) return 'WebGL 2.0 Accelerated GPU';
+            // Clean up ANGLE strings: "ANGLE (Microsoft, NVIDIA GeForce RTX 4070 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)"
+            const match = raw.match(/ANGLE\s*\([^,]+,\s*([^,]+?)(?:\s+Direct3D|\s+D3D|\s+vulkan|\s+gl|\s+\(|$)/i);
+            if (match && match[1]) {
+                let cleanName = match[1].trim();
+                if (raw.includes('Direct3D12') || raw.includes('D3D12')) {
+                    cleanName += ' (Direct3D 12)';
+                } else if (raw.includes('Direct3D11') || raw.includes('D3D11')) {
+                    cleanName += ' (Direct3D 11)';
+                } else if (raw.includes('Vulkan')) {
+                    cleanName += ' (Vulkan)';
+                }
+                return cleanName;
+            }
+            if (raw.includes('Basic Render Driver') || raw.includes('Software')) {
+                return 'Microsoft Basic Render Driver (Software Fallback)';
+            }
+            return raw;
+        }
+
         async function initEngine() {
             generateParticles();
 
             // 1. Try WebGPU Native Compute Pipeline
             if (navigator.gpu) {
                 try {
-                    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+                    let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+                    if (!adapter) {
+                        adapter = await navigator.gpu.requestAdapter();
+                    }
                     if (adapter) {
-                        const info = await adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : (adapter.info || {});
-                        const gpuDescription = info.description || info.vendor || 'High-Performance Discrete GPU';
-                        const architecture = info.architecture ? ` (${info.architecture})` : '';
+                        let gpuDescription = 'High-Performance Discrete GPU';
+                        if (adapter.info && (adapter.info.description || adapter.info.vendor)) {
+                            gpuDescription = adapter.info.description || adapter.info.vendor;
+                            if (adapter.info.architecture) gpuDescription += ` (${adapter.info.architecture})`;
+                        } else if (typeof adapter.requestAdapterInfo === 'function') {
+                            try {
+                                const info = await adapter.requestAdapterInfo();
+                                gpuDescription = info.description || info.vendor || gpuDescription;
+                                if (info.architecture) gpuDescription += ` (${info.architecture})`;
+                            } catch (_) {}
+                        }
 
                         webgpuDevice = await adapter.requestDevice();
                         webgpuContext = canvas.getContext('webgpu');
@@ -939,16 +971,15 @@
                             ]
                         });
 
-                        // The render shader also declares the simulation uniform. Its
-                        // bind group is distinct from the compute pipeline's auto layout.
+                        // Render bind group (binding 0: uniform params)
                         webgpuRenderBindGroup = webgpuDevice.createBindGroup({
                             layout: webgpuPipelineRender.getBindGroupLayout(0),
-                            entries: [{ binding: 3, resource: { buffer: webgpuUniformBuffer } }]
+                            entries: [{ binding: 0, resource: { buffer: webgpuUniformBuffer } }]
                         });
 
                         activeBackend = 'WEBGPU';
                         document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGPU WGSL Compute (Zero-Copy)';
-                        document.getElementById('gpuName').innerText = `${gpuDescription}${architecture}`;
+                        document.getElementById('gpuName').innerText = gpuDescription;
                         document.getElementById('vramMode').innerText = '100% On-Chip GPU VRAM';
                         requestAnimationFrame(frameLoop);
                         return;
@@ -978,7 +1009,8 @@
             }
 
             const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-            const gpuRenderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'WebGL 2.0 Accelerated GPU';
+            const rawRenderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'WebGL 2.0 Accelerated GPU';
+            const gpuRenderer = formatWebGLRenderer(rawRenderer);
 
             // Shaders
             const vs = gl.createShader(gl.VERTEX_SHADER);
