@@ -2,12 +2,14 @@
 High-Performance, End-to-End Differentiable JAX Tree-Free FMM Engine
 =====================================================================
 Combines Vectorized Non-Reordering Open Addressing Hash (Farach-Colton et al. 2025)
-with Complex Harmonic Multipole Kernels (P2M, M2L, L2P, P2P) and Autodiff Gradients.
+with Carrier, Greengard, & Rokhlin (1988) Multipole Kernels (P2M, M2M, M2L, L2L, L2P, P2P)
+and JAX Autodiff Gradients.
 """
 
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Union
 import numpy as np
 import time
+import math
 
 try:
     import jax
@@ -15,6 +17,8 @@ try:
     from jax import jit, vmap, grad
     HAS_JAX = True
 except ImportError:
+    jax = None
+    jnp = None
     HAS_JAX = False
 
 
@@ -48,17 +52,11 @@ if HAS_JAX:
         seeds_b: jnp.ndarray,
         num_levels: int = 4
     ) -> jnp.ndarray:
-        """
-        Batched parallel probe lookup across multi-level geometric sub-arrays
-        with bounded O(log 1/delta) worst-case search complexity.
-        """
         def probe_single(key):
             result = -1
-            # Probe sequentially through geometric funnel levels
-            for lvl in range(4): # Unrolled 4 levels
+            for lvl in range(4):
                 offset = level_offsets[lvl]
                 size = level_sizes[lvl]
-                # Try primary and secondary probes per level
                 for att in range(2):
                     h = jnp.bitwise_and(key * seeds_a[lvl, att] + seeds_b[lvl, att] + att * 2654435761, 0x7FFFFFFF) % size
                     pos = offset + h
@@ -69,48 +67,90 @@ if HAS_JAX:
         return vmap(probe_single)(query_keys)
 
     # ---------------------------------------------------------------------------
-    # 2. Differentiable Multipole Operators in Complex Representation
+    # 2. Differentiable CGR88 Multipole Operators in Complex Representation
     # ---------------------------------------------------------------------------
     @jit
     def jax_p2m_expansion(points: jnp.ndarray, charges: jnp.ndarray, center: jnp.ndarray, order: int = 6) -> jnp.ndarray:
         """
-        P2M: Particle-to-Multipole expansion:
+        P2M: Particle-to-Multipole expansion (CGR88 Eq. 2.1 - 2.2):
         a_0 = sum(q_i)
         a_k = - sum(q_i * (z_i - z_0)^k) / k  for k=1..order
         """
         z_pts = points[:, 0] + 1j * points[:, 1]
         z_c = center[0] + 1j * center[1]
-        dz = z_pts - z_c # (N,)
+        dz = z_pts - z_c
 
         a0 = jnp.sum(charges)
         powers = jnp.arange(1, order + 1)
-        dz_pow = dz[:, None] ** powers[None, :] # (N, order)
+        dz_pow = dz[:, None] ** powers[None, :]
         ak = -jnp.sum(charges[:, None] * dz_pow, axis=0) / powers
         return jnp.concatenate([jnp.array([a0]), ak])
 
     @jit
+    def jax_m2m_translation(m_coeffs: jnp.ndarray, center_child: jnp.ndarray, center_parent: jnp.ndarray, order: int = 6) -> jnp.ndarray:
+        """
+        M2M: Multipole-to-Multipole translation (CGR88 Theorem 2.2).
+        b_0 = a_0
+        b_l = - a_0 * delta^l / l + sum_{k=1}^l a_k * binom(l-1, k-1) * delta^(l-k)
+        """
+        delta = (center_child[0] - center_parent[0]) + 1j * (center_child[1] - center_parent[1])
+        b0 = m_coeffs[0]
+        
+        # Build binomial coefficient matrix on host or static
+        # For JIT, we compute terms
+        b_list = [b0]
+        for l in range(1, order + 1):
+            term = -b0 * (delta ** l) / l
+            for k in range(1, l + 1):
+                binom_val = math.comb(l - 1, k - 1)
+                term = term + m_coeffs[k] * binom_val * (delta ** (l - k))
+            b_list.append(term)
+        return jnp.stack(b_list)
+
+    @jit
     def jax_m2l_translation(multipole_coeffs: jnp.ndarray, center_src: jnp.ndarray, center_tgt: jnp.ndarray, order: int = 6) -> jnp.ndarray:
         """
-        M2L: Multipole-to-Local translation:
-        Translates distant multipole moments into a local Taylor series expansion at target center.
+        M2L: Multipole-to-Local translation (CGR88 Theorem 2.3).
+        delta = center_tgt - center_src
+        c_0 = a_0 * ln(delta) + sum_{k=1}^p a_k / delta^k
+        c_l = (a_0 * (-1)^(l-1)) / (l * delta^l) + sum_{k=1}^p [ (-1)^l * binom(k+l-1, l) * a_k ] / delta^(k+l)
         """
-        z0 = (center_src[0] - center_tgt[0]) + 1j * (center_src[1] - center_tgt[1])
+        delta = (center_tgt[0] - center_src[0]) + 1j * (center_tgt[1] - center_src[1])
         a0 = multipole_coeffs[0]
         ak = multipole_coeffs[1:order + 1]
 
-        # Match the NumPy M2L convention used by core.tree_free_fmm.m2l.
-        neg_z0 = -z0
-        b0 = a0 * jnp.log(neg_z0) + jnp.sum(ak / (neg_z0 ** jnp.arange(1, order + 1)))
-        l = jnp.arange(1, order + 1)
-        k = jnp.arange(1, order + 1)
-        monopole_terms = ((-1) ** l) * a0 / (l * (z0 ** l))
-        higher_terms = jnp.sum(ak[None, :] / (neg_z0 ** (k[:, None] + l[None, :])), axis=1)
-        return jnp.concatenate([jnp.asarray([b0]), monopole_terms + higher_terms])
+        k_idx = jnp.arange(1, order + 1)
+        c0 = a0 * jnp.log(delta) + jnp.sum(ak / (delta ** k_idx))
+
+        c_list = [c0]
+        for l in range(1, order + 1):
+            term = a0 * ((-1.0) ** (l - 1)) / (l * (delta ** l))
+            for k in range(1, order + 1):
+                binom_factor = ((-1.0) ** l) * float(math.comb(k + l - 1, l))
+                term = term + binom_factor * ak[k - 1] / (delta ** (k + l))
+            c_list.append(term)
+        return jnp.stack(c_list)
+
+    @jit
+    def jax_l2l_translation(local_coeffs: jnp.ndarray, center_src: jnp.ndarray, center_dst: jnp.ndarray, order: int = 6) -> jnp.ndarray:
+        """
+        L2L: Local-to-Local translation (CGR88 Theorem 2.4).
+        d_l = sum_{k=l}^p c_k * binom(k, l) * delta^(k-l)
+        """
+        delta = (center_dst[0] - center_src[0]) + 1j * (center_dst[1] - center_src[1])
+        d_list = []
+        for l in range(order + 1):
+            term = 0.0 + 0.0j
+            for k in range(l, order + 1):
+                binom_val = float(math.comb(k, l))
+                term = term + local_coeffs[k] * binom_val * (delta ** (k - l))
+            d_list.append(term)
+        return jnp.stack(d_list)
 
     @jit
     def jax_l2p_evaluation(local_coeffs: jnp.ndarray, points: jnp.ndarray, center_tgt: jnp.ndarray, order: int = 6) -> jnp.ndarray:
         """
-        L2P: Local-to-Particle potential evaluation from local Taylor series.
+        L2P: Local-to-Particle potential evaluation: Phi(z) = Re( sum_{l=0}^p c_l * (z - z_0)^l ).
         """
         z_pts = points[:, 0] + 1j * points[:, 1]
         z_c = center_tgt[0] + 1j * center_tgt[1]
@@ -120,6 +160,23 @@ if HAS_JAX:
         dz_pow = dz[:, None] ** powers[None, :]
         phi_complex = jnp.sum(local_coeffs[None, :] * dz_pow, axis=-1)
         return jnp.real(phi_complex)
+
+    @jit
+    def jax_l2p_force_evaluation(local_coeffs: jnp.ndarray, points: jnp.ndarray, center_tgt: jnp.ndarray, order: int = 6) -> jnp.ndarray:
+        """
+        L2P Vector Force evaluation: F = ( -Re(Psi'), Im(Psi') )
+        where Psi'(z) = sum_{l=1}^p l * c_l * (z - z0)^(l-1).
+        """
+        z_pts = points[:, 0] + 1j * points[:, 1]
+        z_c = center_tgt[0] + 1j * center_tgt[1]
+        dz = z_pts - z_c
+
+        l_idx = jnp.arange(1, order + 1)
+        dz_pow = dz[:, None] ** (l_idx[None, :] - 1)
+        deriv = jnp.sum(l_idx[None, :] * local_coeffs[None, 1:order + 1] * dz_pow, axis=-1)
+        fx = -jnp.real(deriv)
+        fy = jnp.imag(deriv)
+        return jnp.stack([fx, fy], axis=-1)
 
     @jit
     def jax_p2p_near_field(points_tgt: jnp.ndarray, points_src: jnp.ndarray, charges_src: jnp.ndarray, softening: float = 1e-4) -> jnp.ndarray:
@@ -149,10 +206,9 @@ if HAS_JAX:
         """Computes all-pairs forces F = -grad(Phi_total) via reverse-mode autodiff."""
         def total_potential_energy(pos):
             return jnp.sum(jax_direct_nbody_reference(pos, charges))
-        # The per-particle reference potentials count every pair twice.
         return -0.5 * grad(total_potential_energy)(positions)
 
-    # API Aliases for benchmark suite compatibility
+    # API Aliases
     jax_direct_nbody = jax_direct_nbody_reference
     jax_elastic_probe_lookup = jax_multi_level_probe_lookup
 else:
@@ -160,8 +216,11 @@ else:
     jax_multi_level_probe_lookup = None
     jax_elastic_probe_lookup = None
     jax_p2m_expansion = None
+    jax_m2m_translation = None
     jax_m2l_translation = None
+    jax_l2l_translation = None
     jax_l2p_evaluation = None
+    jax_l2p_force_evaluation = None
     jax_p2p_near_field = None
     jax_direct_nbody_reference = None
     jax_direct_nbody = None
@@ -216,7 +275,3 @@ def benchmark_jax_engine():
     t_grad = (time.perf_counter() - t0) * 1000.0
     print(f"[-] JAX Reverse-Mode Autodiff Forces (500 pts): {t_grad:.2f} ms | Shape: {forces.shape}")
     print("=" * 70)
-
-
-if __name__ == "__main__":
-    benchmark_jax_engine()

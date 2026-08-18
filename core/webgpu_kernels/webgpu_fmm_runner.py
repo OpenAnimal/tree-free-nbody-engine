@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, Tuple
 import numpy as np
 
 WGSL_SOURCE_PATH = os.path.join(os.path.dirname(__file__), "tree_free_fmm.wgsl")
+ADAPTIVE_CGR88_WGSL_SOURCE_PATH = os.path.join(os.path.dirname(__file__), "adaptive_cgr88.wgsl")
 
 try:
     import wgpu
@@ -24,6 +25,12 @@ except ImportError:
 def get_wgsl_source() -> str:
     """Returns WGSL source code for browser / client integration."""
     with open(WGSL_SOURCE_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def get_adaptive_cgr88_wgsl_source() -> str:
+    """Return the staged flat adaptive CGR88 WGSL kernel source."""
+    with open(ADAPTIVE_CGR88_WGSL_SOURCE_PATH, "r", encoding="utf-8") as f:
         return f.read()
 
 

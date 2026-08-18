@@ -1,16 +1,27 @@
 """
 Tree-Free Fast Multipole Method (FMM) in JAX & Python
-Powered by Elastic Non-Reordering Spatial Hash Table (Farach-Colton et al. 2025).
+Powered by Elastic Non-Reordering Spatial Hash Table (Farach-Colton et al. 2025)
+and Carrier, Greengard, & Rokhlin (1988) / Greengard & Rokhlin (1987) mathematical formulations.
 
 Implements:
 1. Spatial Morton 2D/3D z-order encoding
-2. P2M: Particle to Multipole Expansion (2D multipoles via complex series / moments)
-3. M2M: Multipole to Multipole translation across spatial scales
-4. M2L: Multipole to Local translation (Far-field interaction lookup via Elastic Hash Table)
-5. L2P & P2P: Local to Particle evaluation and Direct Near-Field summation
+2. P2M: Particle to Multipole Expansion (CGR88 Eq. 2.1 - 2.2)
+3. M2M: Multipole to Multipole translation across spatial scales (CGR88 Theorem 2.2)
+4. M2L: Multipole to Local translation (CGR88 Theorem 2.3)
+5. L2L: Local to Local translation (CGR88 Theorem 2.4)
+6. L2P & P2P: Local to Particle evaluation and Direct Near-Field summation
+7. TreeFreeFMM: Non-reordering elastic spatial hash FMM
+8. CGR88AdaptiveFMM: Exact adaptive quadtree FMM
+9. GreengardRokhlin87RegularFMM: Exact uniform quadtree FMM
 """
 
+from __future__ import annotations
 import numpy as np
+import math
+import cmath
+import time
+from typing import Tuple, List, Dict, Optional, Union
+
 try:
     import jax
     import jax.numpy as jnp
@@ -19,12 +30,52 @@ except ImportError:
     jax = None
     jnp = None
     HAS_JAX = False
-import time
-from typing import Tuple, List, Dict
+
 try:
     from .elastic_hash import ElasticHashTable
+    from .cgr88_adaptive_fmm import (
+        CGR88AdaptiveFMM,
+        TreeFreeElasticAdaptiveFMM,
+        GreengardRokhlin87RegularFMM,
+        AdaptiveQuadTree,
+        morton_encode_box,
+        decode_morton_box,
+        exact_direct_nbody_2d,
+        exact_direct_nbody_forces_2d,
+        p2m as cgr88_p2m,
+        m2m as cgr88_m2m,
+        m2l as cgr88_m2l,
+        l2l as cgr88_l2l,
+        l2p as cgr88_l2p,
+        l2p_force as cgr88_l2p_force,
+        p2l as cgr88_p2l,
+        m2p as cgr88_m2p,
+        p2p_potential_and_force
+    )
 except ImportError:
     from elastic_hash import ElasticHashTable
+    from cgr88_adaptive_fmm import (
+        CGR88AdaptiveFMM,
+        TreeFreeElasticAdaptiveFMM,
+        GreengardRokhlin87RegularFMM,
+        AdaptiveQuadTree,
+        morton_encode_box,
+        decode_morton_box,
+        exact_direct_nbody_2d,
+        exact_direct_nbody_forces_2d,
+        p2m as cgr88_p2m,
+        m2m as cgr88_m2m,
+        m2l as cgr88_m2l,
+        l2l as cgr88_l2l,
+        l2p as cgr88_l2p,
+        l2p_force as cgr88_l2p_force,
+        p2l as cgr88_p2l,
+        m2p as cgr88_m2p,
+        p2p_potential_and_force
+    )
+
+ORDER = 8  # Default expansion order
+
 
 # -------------------------------------------------------------
 # 1. Morton / Spatial Indexing
@@ -35,12 +86,12 @@ def morton_encode_2d(x: float, y: float, depth: int = 4) -> int:
     ix = min(grid_res - 1, max(0, int(x * grid_res)))
     iy = min(grid_res - 1, max(0, int(y * grid_res)))
     
-    # Interleave bits
     key = 0
     for i in range(depth):
         key |= ((ix >> i) & 1) << (2 * i)
         key |= ((iy >> i) & 1) << (2 * i + 1)
-    return (depth << 24) | key  # Prepend depth level
+    return (depth << 24) | key
+
 
 def decode_morton_2d(code: int) -> Tuple[int, int, int]:
     depth = code >> 24
@@ -51,247 +102,233 @@ def decode_morton_2d(code: int) -> Tuple[int, int, int]:
         iy |= ((raw >> (2 * i + 1)) & 1) << i
     return depth, ix, iy
 
+
 def get_box_center_2d(depth: int, ix: int, iy: int) -> Tuple[float, float]:
     box_size = 1.0 / (1 << depth)
     cx = (ix + 0.5) * box_size
     cy = (iy + 0.5) * box_size
     return cx, cy
 
-# -------------------------------------------------------------
-# 2. Multipole & Field Kernels (2D 2D-Potential: phi = sum q_i * log |r - r_i|)
-# -------------------------------------------------------------
-# In 2D complex plane: phi(z) = Re[ a_0 * log(z - z0) - sum_{k=1}^P (a_k / k) * (z - z0)^(-k) ]
-ORDER = 6  # Multipole expansion order
 
+def morton_key_from_indices(depth: int, ix: int, iy: int) -> int:
+    """Canonical level-tagged Morton key for integer box coordinates."""
+    return morton_encode_2d((ix + 0.5) / (1 << depth),
+                            (iy + 0.5) / (1 << depth), depth)
+
+
+# -------------------------------------------------------------
+# 2. Multipole & Field Kernels (CGR88 Complex Logarithmic Series)
+# -------------------------------------------------------------
 def p2m(points: np.ndarray, charges: np.ndarray, center: complex, order: int = ORDER) -> np.ndarray:
-    """P2M: Particle to Multipole expansion around center."""
-    coeffs = np.zeros(order + 1, dtype=np.complex128)
-    # a_0 = sum(q_i)
-    coeffs[0] = np.sum(charges)
-    # a_k = - sum q_i * (z_i - z0)^k / k
-    dz = (points[:, 0] + 1j * points[:, 1]) - center
-    for k in range(1, order + 1):
-        coeffs[k] = -np.sum(charges * (dz ** k)) / k
-    return coeffs
+    return cgr88_p2m(points, charges, center, p=order)
+
+
+def m2m(m_coeffs: np.ndarray, child_center: complex, parent_center: complex, order: int = ORDER) -> np.ndarray:
+    return cgr88_m2m(m_coeffs, child_center, parent_center, p=order)
+
+
+def l2l(l_coeffs: np.ndarray, parent_center: complex, child_center: complex, order: int = ORDER) -> np.ndarray:
+    return cgr88_l2l(l_coeffs, parent_center, child_center, p=order)
+
 
 def m2l(m_coeffs: np.ndarray, src_center: complex, dst_center: complex, order: int = ORDER) -> np.ndarray:
-    """M2L: Multipole to Local expansion translation."""
-    z0 = src_center - dst_center
-    l_coeffs = np.zeros(order + 1, dtype=np.complex128)
-    
-    # l_0 = a_0 * log(-z0) + sum_{k=1}^P a_k / (-z0)^k
-    l_coeffs[0] = m_coeffs[0] * np.log(-z0)
-    for k in range(1, order + 1):
-        l_coeffs[0] += (m_coeffs[k] / ((-z0) ** k))
-        
-    for l in range(1, order + 1):
-        term = (-1)**l * m_coeffs[0] / (l * (z0 ** l))
-        for k in range(1, order + 1):
-            # Binomial scaling approximation for translation
-            term += m_coeffs[k] / ((-z0) ** (k + l))
-        l_coeffs[l] = term
-    return l_coeffs
+    return cgr88_m2l(m_coeffs, src_center, dst_center, p=order)
 
-def eval_local(l_coeffs: np.ndarray, target_pt: complex, center: complex) -> float:
-    """L2P: Evaluates potential from local expansion at target point."""
-    dz = target_pt - center
-    pot = np.real(l_coeffs[0])
-    for l in range(1, len(l_coeffs)):
-        pot += np.real(l_coeffs[l] * (dz ** l))
-    return pot
+
+def eval_local(l_coeffs: np.ndarray, target_pt: complex, center: complex, order: int = ORDER) -> float:
+    return cgr88_l2p(l_coeffs, target_pt, center, p=order)
+
+
+def eval_local_force(l_coeffs: np.ndarray, target_pt: complex, center: complex, order: int = ORDER) -> Tuple[float, float]:
+    return cgr88_l2p_force(l_coeffs, target_pt, center, p=order)
+
 
 # -------------------------------------------------------------
 # 3. Complete Tree-Free FMM using Elastic Non-Reordering Hash
 # -------------------------------------------------------------
 class TreeFreeFMM:
-    def __init__(self, depth: int = 4, order: int = 6):
+    def __init__(self, depth: int = 4, order: int = ORDER, softening: float = 0.0):
+        if depth < 0 or order < 0:
+            raise ValueError("depth and order must be non-negative")
         self.depth = depth
         self.order = order
-        # Total potential boxes across grid
-        max_boxes = (1 << (2 * depth))
-        # Optimal Non-reordering Hash Table
-        self.hash_table = ElasticHashTable(capacity=max_boxes * 2, delta=0.05)
+        self.softening = softening
+        self.hash_table = ElasticHashTable(capacity=(1 << (2 * depth)) * 2, delta=0.05)
         self.boxes: Dict[int, Dict] = {}
+        self.levels: Dict[int, Dict[int, Dict]] = {}
+        self.far_field = np.empty(0)
+        self.near_field = np.empty(0)
 
     def build_hash_octree(self, positions: np.ndarray, charges: np.ndarray):
-        """Indexes all particles into leaf boxes and stores multipoles in the Elastic Hash Table."""
         positions = np.asarray(positions, dtype=np.float64)
         charges = np.asarray(charges, dtype=np.float64)
         if positions.ndim != 2 or positions.shape[1] != 2:
             raise ValueError("positions must have shape (N, 2)")
         if charges.ndim != 1 or len(charges) != len(positions):
             raise ValueError("charges must have shape (N,) matching positions")
-
-        # Rebuilding an engine must replace the previous spatial state. Without
-        # clearing these containers, repeated evaluations mix old particles and
-        # accumulate stale local expansions.
-        self.hash_table = ElasticHashTable(
-            capacity=(1 << (2 * self.depth)) * 2,
-            delta=0.05,
-        )
+            
+        self.hash_table = ElasticHashTable(capacity=(1 << (2 * self.depth)) * 2, delta=0.05)
         self.boxes.clear()
-
-        N = len(positions)
-        # Step 1: Assign particles to spatial leaf buckets
-        box_particle_map = {}
-        for i in range(N):
-            m_key = morton_encode_2d(positions[i, 0], positions[i, 1], depth=self.depth)
-            if m_key not in box_particle_map:
-                box_particle_map[m_key] = []
-            box_particle_map[m_key].append(i)
-
-        # Step 2: For each active leaf box, compute P2M and insert into Elastic Hash Table
-        box_idx = 0
-        for m_key, p_indices in box_particle_map.items():
-            _, ix, iy = decode_morton_2d(m_key)
-            cx, cy = get_box_center_2d(self.depth, ix, iy)
-            center = complex(cx, cy)
+        self.levels.clear()
+        
+        leaf_map: Dict[int, List[int]] = {}
+        for i, point in enumerate(positions):
+            key = morton_encode_2d(point[0], point[1], self.depth)
+            leaf_map.setdefault(key, []).append(i)
             
-            box_pts = positions[p_indices]
-            box_q = charges[p_indices]
-            m_coeffs = p2m(box_pts, box_q, center, self.order)
+        for leaf_key, indices in leaf_map.items():
+            _, ix, iy = decode_morton_2d(leaf_key)
+            for level in range(self.depth + 1):
+                shift = self.depth - level
+                px, py = ix >> shift, iy >> shift
+                key = morton_key_from_indices(level, px, py)
+                node = self.levels.setdefault(level, {}).get(key)
+                if node is None:
+                    center = complex(*get_box_center_2d(level, px, py))
+                    node = {
+                        'key': key,
+                        'level': level,
+                        'ix': px,
+                        'iy': py,
+                        'center': center,
+                        'indices': [],
+                        'm_coeffs': np.zeros(self.order + 1, dtype=np.complex128),
+                        'l_coeffs': np.zeros(self.order + 1, dtype=np.complex128)
+                    }
+                    self.levels[level][key] = node
+                node['indices'].extend(indices)
+                
+        # Leaves use P2M; parents use M2M
+        for node in self.levels.get(self.depth, {}).values():
+            node['m_coeffs'] = p2m(positions[node['indices']], charges[node['indices']], node['center'], self.order)
+            self.boxes[node['key']] = node
+            self.hash_table.insert(node['key'], node['key'])
             
-            # Record box data
-            self.boxes[m_key] = {
-                'key': m_key,
-                'center': center,
-                'indices': p_indices,
-                'm_coeffs': m_coeffs,
-                'l_coeffs': np.zeros(self.order + 1, dtype=np.complex128),
-                'ix': ix,
-                'iy': iy
-            }
-            # Insert into the Farach-Colton / Kuszmaul Elastic Hash Table
-            self.hash_table.insert(m_key, m_key)
-            box_idx += 1
+        for level in range(self.depth - 1, -1, -1):
+            for node in self.levels[level].values():
+                node['m_coeffs'].fill(0.0)
+                for child in self.levels[level + 1].values():
+                    if (child['ix'] >> 1) == node['ix'] and (child['iy'] >> 1) == node['iy']:
+                        node['m_coeffs'] += m2m(child['m_coeffs'], child['center'], node['center'], self.order)
 
-    def compute_far_and_near_field(self, positions: np.ndarray, charges: np.ndarray) -> np.ndarray:
-        """Evaluates potentials using M2L for far boxes and direct P2P for neighbors."""
+    def compute_field_contributions(self, positions: np.ndarray, charges: np.ndarray):
         positions = np.asarray(positions, dtype=np.float64)
         charges = np.asarray(charges, dtype=np.float64)
-        if positions.ndim != 2 or positions.shape[1] != 2:
-            raise ValueError("positions must have shape (N, 2)")
-        if charges.ndim != 1 or len(charges) != len(positions):
-            raise ValueError("charges must have shape (N,) matching positions")
         if len(positions) == 0:
-            return np.empty(0, dtype=np.float64)
-        # Re-index on every evaluation so positions/charges cannot diverge from
-        # the cached box membership supplied by a prior call.
+            self.far_field = self.near_field = np.empty(0, dtype=np.float64)
+            return self.far_field.copy(), self.near_field.copy()
+            
         self.build_hash_octree(positions, charges)
-
-        # Local expansions are per-evaluation state; never accumulate them when
-        # the same engine is evaluated repeatedly.
-        for box in self.boxes.values():
-            box['l_coeffs'].fill(0.0)
-
         N = len(positions)
-        potentials = np.zeros(N)
-        grid_res = 1 << self.depth
+        far = np.zeros(N, dtype=np.float64)
+        near = np.zeros(N, dtype=np.float64)
         
-        # 1. Compute M2L interactions across all leaf boxes
-        for key_tgt, tgt_box in self.boxes.items():
-            tx, ty = tgt_box['ix'], tgt_box['iy']
-            
-            # Loop over all active source boxes via hash table interaction list
-            for key_src, src_box in self.boxes.items():
-                sx, sy = src_box['ix'], src_box['iy']
-                # Check if well-separated (distance in grid > 1)
-                if abs(tx - sx) > 1 or abs(ty - sy) > 1:
-                    # Far-field: M2L
-                    l_delta = m2l(src_box['m_coeffs'], src_box['center'], tgt_box['center'], self.order)
-                    tgt_box['l_coeffs'] += l_delta
-
-        # 2. Evaluate Potentials: L2P (Far-field) + P2P (Near-field direct)
-        for key_tgt, tgt_box in self.boxes.items():
-            tx, ty = tgt_box['ix'], tgt_box['iy']
-            tgt_indices = tgt_box['indices']
-            
-            # (A) Far-Field: Local expansion evaluation (L2P)
-            for idx in tgt_indices:
-                z_tgt = complex(positions[idx, 0], positions[idx, 1])
-                potentials[idx] += eval_local(tgt_box['l_coeffs'], z_tgt, tgt_box['center'])
-                
-            # (B) Near-Field: Direct summation from neighbor boxes (P2P)
-            # Find neighbors using O(1) probe into the Elastic Hash Table
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    nx, ny = tx + dx, ty + dy
-                    if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                        n_key = (self.depth << 24) | morton_encode_2d(
-                            (nx + 0.5) / grid_res, (ny + 0.5) / grid_res, depth=self.depth
-                        ) & 0xFFFFFF
+        # M2L translation for well-separated boxes at each level
+        for level in range(1, self.depth + 1):
+            nodes = list(self.levels[level].values())
+            for target in nodes:
+                for source in nodes:
+                    if max(abs(target['ix'] - source['ix']), abs(target['iy'] - source['iy'])) <= 1:
+                        continue
+                    tp = self.levels[level - 1].get(morton_key_from_indices(level - 1, target['ix'] >> 1, target['iy'] >> 1))
+                    sp = self.levels[level - 1].get(morton_key_from_indices(level - 1, source['ix'] >> 1, source['iy'] >> 1))
+                    if tp is not None and sp is not None and max(abs(tp['ix'] - sp['ix']), abs(tp['iy'] - sp['iy'])) <= 1:
+                        target['l_coeffs'] += m2l(source['m_coeffs'], source['center'], target['center'], self.order)
                         
-                        val, _ = self.hash_table.lookup(n_key)
-                        if val is not None and n_key in self.boxes:
-                            src_box = self.boxes[n_key]
-                            # Direct P2P calculation
-                            for t_idx in tgt_indices:
-                                pt = positions[t_idx]
-                                for s_idx in src_box['indices']:
-                                    if t_idx == s_idx:
-                                        continue
-                                    ps = positions[s_idx]
-                                    r = np.linalg.norm(pt - ps) + 1e-12
-                                    potentials[t_idx] += charges[s_idx] * np.log(r)
+        # Downward L2L propagation
+        for level in range(1, self.depth + 1):
+            for child in self.levels[level].values():
+                parent_key = morton_key_from_indices(level - 1, child['ix'] >> 1, child['iy'] >> 1)
+                parent = self.levels[level - 1].get(parent_key)
+                if parent is not None:
+                    child['l_coeffs'] += l2l(parent['l_coeffs'], parent['center'], child['center'], self.order)
+                    
+        grid = 1 << self.depth
+        eps2 = self.softening * self.softening
+        for target in self.boxes.values():
+            for ti in target['indices']:
+                far[ti] = eval_local(target['l_coeffs'], complex(*positions[ti]), target['center'], self.order)
+                tx, ty = target['ix'], target['iy']
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        nx, ny = tx + dx, ty + dy
+                        key = morton_encode_2d((nx + 0.5) / grid, (ny + 0.5) / grid, self.depth) if 0 <= nx < grid and 0 <= ny < grid else None
+                        source = self.boxes.get(key)
+                        if source is not None:
+                            for si in source['indices']:
+                                if si != ti:
+                                    r2 = np.sum((positions[ti] - positions[si]) ** 2) + eps2
+                                    near[ti] += charges[si] * 0.5 * np.log(max(r2, 1e-28))
                                     
-        return potentials
+        self.far_field, self.near_field = far, near
+        return far.copy(), near.copy()
+
+    def compute_far_and_near_field(self, positions: np.ndarray, charges: np.ndarray, return_components: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        far, near = self.compute_field_contributions(positions, charges)
+        return (far, near) if return_components else far + near
+
+    def evaluate(self, positions: np.ndarray, charges: np.ndarray) -> np.ndarray:
+        return self.compute_far_and_near_field(positions, charges, return_components=False)
 
 
 # -------------------------------------------------------------
-# 4. Exact O(N^2) Direct Evaluator for Verification
+# 4. Exact O(N^2) Direct Evaluators
 # -------------------------------------------------------------
-def exact_direct_nbody(positions: np.ndarray, charges: np.ndarray) -> np.ndarray:
-    N = len(positions)
-    pot = np.zeros(N)
-    for i in range(N):
-        diff = positions[i] - positions
-        r = np.linalg.norm(diff, axis=1) + 1e-12
-        r[i] = 1.0  # Avoid self-interaction
-        pot[i] = np.sum(charges * np.log(r))
-    return pot
+def exact_direct_nbody(positions: np.ndarray, charges: np.ndarray, softening: float = 0.0) -> np.ndarray:
+    return exact_direct_nbody_2d(positions, charges, softening=softening)
 
 
-# -------------------------------------------------------------
-# 5. Benchmark & Validation Run
-# -------------------------------------------------------------
+def exact_direct_forces(positions: np.ndarray, charges: np.ndarray, softening: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
+    return exact_direct_nbody_forces_2d(positions, charges, softening=softening)
+
+
 if __name__ == '__main__':
     np.random.seed(42)
     N_PARTICLES = 1000
-    print(f"==================================================================")
-    print(f" TREE-FREE FAST MULTIPOLE METHOD (FMM) + ELASTIC NON-REORDERING HASH")
-    print(f" Farach-Colton / Krapivin / Kuszmaul (2025) Spatial Acceleration")
-    print(f"==================================================================")
-    print(f"Generating {N_PARTICLES} 2D particles in unit domain [0, 1]x[0, 1]...")
+    print("=" * 70)
+    print(" CGR88 ADAPTIVE & REGULAR FAST MULTIPOLE METHOD (FMM) TEST SUITE")
+    print(" Carrier, Greengard, & Rokhlin (1988) / Greengard & Rokhlin (1987)")
+    print("=" * 70)
     
     pos = np.random.uniform(0.05, 0.95, size=(N_PARTICLES, 2))
     charges = np.random.uniform(-1.0, 1.0, size=N_PARTICLES)
     
     # 1. Exact Reference
     t0 = time.perf_counter()
-    exact_pot = exact_direct_nbody(pos, charges)
+    exact_pot = exact_direct_nbody_2d(pos, charges)
+    fx_exact, fy_exact = exact_direct_nbody_forces_2d(pos, charges)
     t_exact = time.perf_counter() - t0
-    print(f"[-] Exact O(N^2) Direct Calculation Time: {t_exact*1000:.2f} ms")
+    print(f"[-] Exact O(N^2) Direct Summation Time: {t_exact*1000:.2f} ms")
     
-    # 2. Tree-Free FMM with Optimal Non-Reordering Hash
+    # 2. CGR88 Adaptive FMM
     t0 = time.perf_counter()
-    fmm = TreeFreeFMM(depth=4, order=6)
-    fmm.build_hash_octree(pos, charges)
-    fmm_pot = fmm.compute_far_and_near_field(pos, charges)
-    t_fmm = time.perf_counter() - t0
-    print(f"[-] Tree-Free Hash FMM Calculation Time:   {t_fmm*1000:.2f} ms")
+    cgr_fmm = CGR88AdaptiveFMM(max_leaf_particles=20, max_depth=6, p=10)
+    cgr_pot, cgr_fx, cgr_fy = cgr_fmm.evaluate(pos, charges, compute_forces=True)
+    t_cgr = time.perf_counter() - t0
+    print(f"[-] CGR88 Adaptive FMM Time:           {t_cgr*1000:.2f} ms")
     
-    # 3. Error Metrics
-    rel_l2_error = np.linalg.norm(fmm_pot - exact_pot) / np.linalg.norm(exact_pot)
-    max_abs_err = np.max(np.abs(fmm_pot - exact_pot))
+    # 3. Regular FMM
+    t0 = time.perf_counter()
+    reg_fmm = GreengardRokhlin87RegularFMM(depth=4, p=10)
+    reg_pot, reg_fx, reg_fy = reg_fmm.evaluate(pos, charges, compute_forces=True)
+    t_reg = time.perf_counter() - t0
+    print(f"[-] Greengard-Rokhlin 87 Regular FMM Time: {t_reg*1000:.2f} ms")
     
-    print(f"\n[Accuracy Verification]")
-    print(f"[-] Relative L2 Error: {rel_l2_error:.2e}")
-    print(f"[-] Max Absolute Error: {max_abs_err:.2e}")
+    # 4. Tree-Free Hash FMM
+    t0 = time.perf_counter()
+    tf_fmm = TreeFreeFMM(depth=4, order=8)
+    tf_pot = tf_fmm.evaluate(pos, charges)
+    t_tf = time.perf_counter() - t0
+    print(f"[-] Tree-Free Elastic Hash FMM Time:   {t_tf*1000:.2f} ms")
     
-    # 4. Hash Table Probe Statistics
-    print(f"\n[Elastic Hash Table (Farach-Colton / Krapivin / Kuszmaul) Stats]")
-    print(f"[-] Table Capacity: {fmm.hash_table.capacity}")
-    print(f"[-] Occupied Slots: {fmm.hash_table.count}")
-    print(f"[-] Load Factor:    {fmm.hash_table.count / fmm.hash_table.capacity * 100:.1f}%")
-    print(f"[-] Reordering Occurrences: 0 (Strict Zero-Reordering Guarantee)")
-    print(f"==================================================================")
+    # Accuracy Metrics
+    err_cgr_pot = np.linalg.norm(cgr_pot - exact_pot) / np.linalg.norm(exact_pot)
+    err_cgr_f = np.linalg.norm(cgr_fx - fx_exact) / np.linalg.norm(fx_exact)
+    err_reg_pot = np.linalg.norm(reg_pot - exact_pot) / np.linalg.norm(exact_pot)
+    err_tf_pot = np.linalg.norm(tf_pot - exact_pot) / np.linalg.norm(exact_pot)
+    
+    print("\n[Cross-Validation Accuracy]")
+    print(f"[-] CGR88 Adaptive FMM  -> Rel Pot Error: {err_cgr_pot:.3e}, Rel Force Error: {err_cgr_f:.3e}")
+    print(f"[-] Regular FMM (1987)  -> Rel Pot Error: {err_reg_pot:.3e}")
+    print(f"[-] Tree-Free Hash FMM  -> Rel Pot Error: {err_tf_pot:.3e}")
+    print("=" * 70)

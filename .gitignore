@@ -14,3 +14,10 @@ Thumbs.db
 # Zig native build outputs
 native/zig/zig-out/
 native/zig/.zig-cache/
+
+# Node.js
+node_modules/
+
+# Local HTML backups
+index.before-fmm.html
+

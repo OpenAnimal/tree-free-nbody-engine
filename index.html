@@ -301,6 +301,24 @@
             <input type="range" id="sliderRadius" min="0.01" max="0.08" step="0.005" value="0.035">
         </div>
 
+        <div class="control-group">
+            <div class="control-label">FMM Expansion Order: <span id="valOrder">p=2 (Quadrupole CGR88)</span></div>
+            <select id="selectFmmOrder">
+                <option value="0">p = 0 (Monopole O(N))</option>
+                <option value="1">p = 1 (Dipole O(N))</option>
+                <option value="2" selected>p = 2 (Quadrupole CGR88 O(N))</option>
+                <option value="4">p = 4 (Hexadecapole CGR88 O(N))</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">FMM Mode: <span id="valFmmMode">Fixed-Grid (2-Level)</span></div>
+            <select id="selectFmmMode">
+                <option value="fixed" selected>Fixed-Grid (2-Level Hash)</option>
+                <option value="adaptive">Adaptive CGR88 (Multi-Level)</option>
+            </select>
+        </div>
+
         <div class="section-title">Controls & Filtering</div>
         <div class="btn-grid">
             <button id="btn1Euro" class="active">1€ Filter: ON</button>
@@ -317,6 +335,17 @@
             <div class="metric-row"><span>Active Particles:</span> <span id="valActiveParticles" class="metric-val">120,000</span></div>
             <div class="metric-row"><span>Step Latency:</span> <span id="valComputeTime" class="metric-val">0.3 ms</span></div>
             <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">12.0M parts/sec</span></div>
+            <div class="metric-row"><span>GPU Buffers:</span> <span id="valGpuMemory" class="metric-val">Calculating...</span></div>
+            <div class="metric-row"><span>GPU Buffer Limit:</span> <span id="valGpuLimit" class="metric-val">Querying...</span></div>
+            <div class="metric-row"><span>FMM Hash Load:</span> <span id="valFmmHash" class="metric-val">Inactive</span></div>
+            <div class="metric-row"><span>P2P Budget:</span> <span id="valP2pBudget" class="metric-val">Adaptive</span></div>
+            <div class="metric-row"><span>FMM Build:</span> <span id="valFmmBuild" class="metric-val">—</span></div>
+            <div class="metric-row"><span>FMM M2L:</span> <span id="valFmmM2l" class="metric-val">—</span></div>
+            <div class="metric-row"><span>FMM L2P:</span> <span id="valFmmL2p" class="metric-val">—</span></div>
+            <div class="metric-row"><span>Main Compute:</span> <span id="valMainCompute" class="metric-val">—</span></div>
+            <div class="metric-row"><span>Render Pass:</span> <span id="valRenderPass" class="metric-val">—</span></div>
+            <div class="metric-row"><span>Total GPU:</span> <span id="valTotalGpu" class="metric-val">—</span></div>
+            <div class="metric-row"><span>GPU Complete:</span> <span id="valGpuComplete" class="metric-val">—</span></div>
             <div class="metric-row"><span>VRAM Buffer Mode:</span> <span id="vramMode" class="metric-val" style="color:var(--accent-green)">Zero-Copy GPU Buffer</span></div>
         </div>
     </div>
@@ -338,6 +367,7 @@
         let use1Euro = true;
         let simSpeed = 1.0;
         let p2pRadius = 0.035;
+        let fmmOrder = 2; // 0: Monopole, 1: Dipole, 2: Quadrupole CGR88, 4: Hexadecapole
         let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
         let mouseX = -1, mouseY = -1, isMouseDown = false;
 
@@ -497,12 +527,83 @@
             g1y: f32,
             g2x: f32,
             g2y: f32,
+            fmmEnabled: u32,
+            adaptiveMode: u32,
+            _uniformPadding: vec2<u32>,
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
         @group(0) @binding(1) var<storage, read_write> posVelOut: array<Particle>;
         @group(0) @binding(2) var<storage, read_write> extras: array<ParticleExtra>;
         @group(0) @binding(3) var<uniform> params: SimParams;
+        @group(0) @binding(4) var<storage, read_write> fmmKeys: array<atomic<u32>>;
+        @group(0) @binding(5) var<storage, read_write> fmmHeads: array<atomic<u32>>;
+        @group(0) @binding(6) var<storage, read_write> fmmNext: array<u32>;
+        @group(0) @binding(7) var<storage, read_write> fmmField: array<vec4<f32>>;
+        @group(0) @binding(8) var<storage, read> fmmCellSlots: array<u32>;
+        const HASH_EMPTY: u32 = 0xffffffffu;
+        const HASH_CAPACITY: u32 = 16384u;
+        fn leafIndex(p: vec2<f32>) -> u32 {
+            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * 64.0), 63u);
+            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * 64.0), 63u);
+            return cy * 64u + cx;
+        }
+        fn hashSlot(key: u32, level: u32, attempt: u32) -> u32 {
+            var a: u32 = 1u; var b: u32 = 0u; var size: u32 = 1024u; var offset: u32 = 15360u;
+            let si = attempt % 4u;
+            if (level == 0u) { if (si == 0u) { a=1608637543u; b=88409749u; } else if (si == 1u) { a=1273642420u; b=242285876u; } else if (si == 2u) { a=1935803229u; b=2018247425u; } else { a=787846415u; b=953477463u; } }
+            else if (level == 1u) { if (si == 0u) { a=996406379u; b=1427830251u; } else if (si == 1u) { a=1201263688u; b=1883569565u; } else if (si == 2u) { a=423734973u; b=911989541u; } else { a=415968277u; b=3344769u; } }
+            else if (level == 2u) { if (si == 0u) { a=670094951u; b=780932287u; } else if (si == 1u) { a=1914837114u; b=2114032571u; } else if (si == 2u) { a=669991379u; b=787716372u; } else { a=429389015u; b=504579232u; } }
+            else if (level == 3u) { if (si == 0u) { a=249467211u; b=1306710475u; } else if (si == 1u) { a=1972458955u; b=479546681u; } else if (si == 2u) { a=1572714584u; b=106328085u; } else { a=1433267573u; b=30349564u; } }
+            else { if (si == 0u) { a=434285668u; b=1855189739u; } else if (si == 1u) { a=613608296u; b=99052376u; } else if (si == 2u) { a=893664920u; b=1250819632u; } else { a=648061059u; b=106406362u; } }
+            if (level == 0u) { size = 8192u; offset = 0u; }
+            else if (level == 1u) { size = 4096u; offset = 8192u; }
+            else if (level == 2u) { size = 2048u; offset = 12288u; }
+            else if (level == 3u) { size = 1024u; offset = 14336u; }
+            let raw = (key * a + b + attempt * 2654435761u) & 0x7fffffffu;
+            return offset + raw % size;
+        }
+        fn findHashSlot(key: u32) -> u32 {
+            for (var level = 0u; level < 5u; level = level + 1u) {
+                var maxAttempts = 4u + level * 2u;
+                if (level == 0u) { maxAttempts = min(maxAttempts, 4096u); }
+                else if (level == 1u) { maxAttempts = min(maxAttempts, 2048u); }
+                else if (level == 2u) { maxAttempts = min(maxAttempts, 1024u); }
+                else { maxAttempts = min(maxAttempts, 512u); }
+                for (var attempt = 0u; attempt < maxAttempts; attempt = attempt + 1u) {
+                    let slot = hashSlot(key, level, attempt);
+                    let existing = atomicLoad(&fmmKeys[slot]);
+                    if (existing == key) { return slot; }
+                }
+            }
+            let start = key & 0x7fffffffu;
+            for (var i = 0u; i < 32u; i = i + 1u) {
+                let slot = (start + i) % HASH_CAPACITY;
+                if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
+            }
+            return HASH_EMPTY;
+        }
+        fn claimHashSlot(key: u32) -> u32 {
+            for (var level = 0u; level < 5u; level = level + 1u) {
+                var maxAttempts = 4u + level * 2u;
+                if (level == 0u) { maxAttempts = min(maxAttempts, 4096u); }
+                else if (level == 1u) { maxAttempts = min(maxAttempts, 2048u); }
+                else if (level == 2u) { maxAttempts = min(maxAttempts, 1024u); }
+                else { maxAttempts = min(maxAttempts, 512u); }
+                for (var attempt = 0u; attempt < maxAttempts; attempt = attempt + 1u) {
+                    let slot = hashSlot(key, level, attempt);
+                    let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
+                    if (result.exchanged || result.old_value == key) { return slot; }
+                }
+            }
+            let start = key & 0x7fffffffu;
+            for (var i = 0u; i < 32u; i = i + 1u) {
+                let slot = (start + i) % HASH_CAPACITY;
+                let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
+                if (result.exchanged || result.old_value == key) { return slot; }
+            }
+            return HASH_EMPTY;
+        }
 
         @compute @workgroup_size(256, 1, 1)
         fn main(
@@ -553,12 +654,65 @@
                 let f2 = 0.00075 * inv_r2_3;
                 fx += d2x * f2; fy += d2y * f2;
 
-                let r1 = sqrt(r1_sq);
-                let r2 = sqrt(r2_sq);
-                let p2p1 = max(0.0, 1.0 - r1 / 0.09);
-                let p2p2 = max(0.0, 1.0 - r2 / 0.09);
-                nearP2PIntensity = clamp(p2p1 + p2p2, 0.0, 1.0);
-                farMultipoleIntensity = clamp(1.0 - nearP2PIntensity * 0.7, 0.0, 1.0);
+                if (params.fmmEnabled == 1u) {
+                // Unified self-gravity constant: one galaxy (N/2 particles) must
+                // exert the same total pull as one analytic core (GM = 0.00075),
+                // so Gp = 0.0015 / N keeps the calibrated disk rotation valid
+                // while making the P2P near field and FMM far field consistent.
+                let Gp = 0.0015 / f32(max(params.numParticles, 1u));
+
+                // FMM far field (mass-count units). Fixed-grid L2P additionally
+                // evaluates the leaf ring (Chebyshev 2..3 cells) via leaf
+                // multipoles; multi-level L2P evaluates the List 1 near field
+                // directly, so no substitute sampling is needed here.
+                let far = fmmField[gid].xy;
+                fx += far.x * Gp;
+                fy += far.y * Gp;
+                farMultipoleIntensity = clamp(length(far) * Gp * 400.0, 0.0, 1.0);
+
+                if (params.adaptiveMode == 1u) {
+                    // Near field is handled exactly by the multi-level L2P
+                    // (List 1 adjacent-leaf P2P with softening).
+                } else {
+                // Fixed-grid mode: hash-based P2P restricted to the 3x3 leaf
+                // neighborhood. Together with the leaf-ring M2P in l2p and the
+                // parent-level M2L exclusion zone this forms an exact partition:
+                // |leaf offset| <= 1 -> P2P, 2..3 -> leaf M2P, >= 4 -> parent M2L.
+                let leaf = leafIndex(vec2(px, py));
+                let cx = leaf % 64u; let cy = leaf / 64u;
+                // Clamp the cutoff so it never exceeds the guaranteed 3x3-zone
+                // coverage of 2 leaf cells (2 / 64 = 0.03125); this keeps the
+                // near field seamless with the leaf-ring M2P.
+                let rc = min(params.p2pRadius, 0.031);
+                let rcSq = rc * rc;
+                var p2pBudgetPerCell = 24u;
+                if (params.numParticles > 500000u) { p2pBudgetPerCell = 12u; }
+                if (params.numParticles > 2000000u) { p2pBudgetPerCell = 6u; }
+                for (var oy: i32 = -1; oy <= 1; oy++) { for (var ox: i32 = -1; ox <= 1; ox++) {
+                    let nx = i32(cx) + ox; let ny = i32(cy) + oy;
+                    if (nx >= 0 && nx < 64 && ny >= 0 && ny < 64) {
+                        let neighborKey = u32(ny) * 64u + u32(nx);
+                        let neighborSlot = fmmCellSlots[neighborKey];
+                        var other = HASH_EMPTY;
+                        if (neighborSlot != HASH_EMPTY) { other = atomicLoad(&fmmHeads[neighborSlot]); }
+                        var skip = (gid * 7u + neighborKey * 13u) % p2pBudgetPerCell;
+                        while (skip > 0u && other != HASH_EMPTY) { other = fmmNext[other]; skip = skip - 1u; }
+                        var budget = p2pBudgetPerCell;
+                        loop {
+                            if (other == HASH_EMPTY || budget == 0u) { break; }
+                            let candidate = other;
+                            other = fmmNext[candidate];
+                            budget = budget - 1u;
+                            if (candidate != gid) {
+                                let q = posVelIn[candidate]; let d = vec2(px, py) - q.pos; let r2 = dot(d, d) + 0.00004;
+                                if (r2 < rcSq) { let inv = inverseSqrt(r2); let w = Gp * inv * inv; fx += d.x * w; fy += d.y * w; nearP2PIntensity += 0.02; }
+                            }
+                        }
+                    }
+                } }
+                nearP2PIntensity = clamp(nearP2PIntensity, 0.0, 1.0);
+                } // end if (params.adaptiveMode == 1u) else
+                }
 
             } else if (params.scenario == 1u) {
                 // Boids Swarm: Global Far-Field Murmuration Vortex Draft
@@ -764,14 +918,585 @@
             posVelOut[gid].vel = vec2<f32>(filteredVx, filteredVy);
             extras[gid].prevVel = vec2<f32>(filteredVx, filteredVy);
             
-            // Encode state: exact bitfield packing 8-bit channels for P2P, M2L Far-Field, and 1-Euro Filter
-            let p2pByte = u32(clamp(nearP2PIntensity, 0.0, 1.0) * 255.0);
-            let farByte = u32(clamp(farMultipoleIntensity, 0.0, 1.0) * 255.0);
-            let fltByte = u32(clamp(filterDamping, 0.0, 1.0) * 255.0);
-            let packedState = p2pByte | (farByte << 8u) | (fltByte << 16u);
-            extras[gid].state = bitcast<f32>(packedState);
+            // Encode state: low-byte near-field, mid-byte far-field, high-byte filter
+            extras[gid].state = clamp(nearP2PIntensity, 0.0, 1.0) * 1.0 + clamp(farMultipoleIntensity, 0.0, 1.0) * 2.0 + clamp(filterDamping, 0.0, 1.0) * 4.0;
         }
         `;
+
+        // Galaxy-only fixed-depth cell-list FMM resources. The WebGL path intentionally
+        // remains the non-FMM compatibility fallback for every scenario.
+        const wgslFmmSource = `
+        struct FmmParticle { pos: vec2<f32>, vel: vec2<f32> };
+        struct FmmParams { numParticles: u32, massFixed: u32, invMassScale: f32, order: u32 };
+        @group(0) @binding(0) var<storage, read> fmmPos: array<FmmParticle>;
+        @group(0) @binding(1) var<storage, read_write> fmmKeys: array<atomic<u32>>;
+        @group(0) @binding(2) var<storage, read_write> fmmHeads: array<atomic<u32>>;
+        @group(0) @binding(3) var<storage, read_write> fmmNext: array<u32>;
+        @group(0) @binding(4) var<storage, read_write> fmmLeafMass: array<atomic<u32>>;
+        @group(0) @binding(5) var<storage, read_write> fmmLeafMom: array<vec4<f32>>; // 3 vec4s per leaf: complex a0..a4
+        @group(0) @binding(6) var<storage, read_write> fmmParentMom: array<vec4<f32>>; // 3 vec4s per parent: complex a0..a4
+        @group(0) @binding(7) var<storage, read_write> fmmParentField: array<vec4<f32>>; // 3 vec4s per parent: local c0..c4
+        @group(0) @binding(8) var<storage, read_write> fmmField: array<vec4<f32>>;
+        @group(0) @binding(9) var<uniform> fmmParams: FmmParams;
+        @group(0) @binding(10) var<storage, read_write> fmmCellSlots: array<u32>;
+        const HASH_EMPTY: u32 = 0xffffffffu;
+        const HASH_CAPACITY: u32 = 16384u;
+        fn leafIndex(p: vec2<f32>) -> u32 {
+            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * 64.0), 63u);
+            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * 64.0), 63u);
+            return cy * 64u + cx;
+        }
+        fn hashSlot(key: u32, level: u32, attempt: u32) -> u32 {
+            var a: u32 = 1u; var b: u32 = 0u; var size: u32 = 1024u; var offset: u32 = 15360u;
+            let si = attempt % 4u;
+            if (level == 0u) { if (si == 0u) { a=1608637543u; b=88409749u; } else if (si == 1u) { a=1273642420u; b=242285876u; } else if (si == 2u) { a=1935803229u; b=2018247425u; } else { a=787846415u; b=953477463u; } }
+            else if (level == 1u) { if (si == 0u) { a=996406379u; b=1427830251u; } else if (si == 1u) { a=1201263688u; b=1883569565u; } else if (si == 2u) { a=423734973u; b=911989541u; } else { a=415968277u; b=3344769u; } }
+            else if (level == 2u) { if (si == 0u) { a=670094951u; b=780932287u; } else if (si == 1u) { a=1914837114u; b=2114032571u; } else if (si == 2u) { a=669991379u; b=787716372u; } else { a=429389015u; b=504579232u; } }
+            else if (level == 3u) { if (si == 0u) { a=249467211u; b=1306710475u; } else if (si == 1u) { a=1972458955u; b=479546681u; } else if (si == 2u) { a=1572714584u; b=106328085u; } else { a=1433267573u; b=30349564u; } }
+            else { if (si == 0u) { a=434285668u; b=1855189739u; } else if (si == 1u) { a=613608296u; b=99052376u; } else if (si == 2u) { a=893664920u; b=1250819632u; } else { a=648061059u; b=106406362u; } }
+            if (level == 0u) { size = 8192u; offset = 0u; }
+            else if (level == 1u) { size = 4096u; offset = 8192u; }
+            else if (level == 2u) { size = 2048u; offset = 12288u; }
+            else if (level == 3u) { size = 1024u; offset = 14336u; }
+            return offset + ((key * a + b + attempt * 2654435761u) & 0x7fffffffu) % size;
+        }
+        fn claimHashSlot(key: u32) -> u32 {
+            for (var level = 0u; level < 5u; level = level + 1u) {
+                let attempts = 4u + level * 2u;
+                for (var attempt = 0u; attempt < attempts; attempt = attempt + 1u) {
+                    let slot = hashSlot(key, level, attempt);
+                    let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
+                    if (result.exchanged || result.old_value == key) { return slot; }
+                }
+            }
+            for (var i = 0u; i < 32u; i = i + 1u) {
+                let slot = (key + i) % HASH_CAPACITY;
+                let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
+                if (result.exchanged || result.old_value == key) { return slot; }
+            }
+            return HASH_EMPTY;
+        }
+        fn findHashSlot(key: u32) -> u32 {
+            for (var level = 0u; level < 5u; level = level + 1u) {
+                let attempts = 4u + level * 2u;
+                for (var attempt = 0u; attempt < attempts; attempt = attempt + 1u) {
+                    let slot = hashSlot(key, level, attempt);
+                    if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
+                }
+            }
+            for (var i = 0u; i < 32u; i = i + 1u) {
+                let slot = (key + i) % HASH_CAPACITY;
+                if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
+            }
+            return HASH_EMPTY;
+        }
+        @compute @workgroup_size(256)
+        fn clear_cells(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x < HASH_CAPACITY) { atomicStore(&fmmKeys[id.x], HASH_EMPTY); atomicStore(&fmmHeads[id.x], HASH_EMPTY); }
+            if (id.x < 4096u) { atomicStore(&fmmLeafMass[id.x], 0u); fmmCellSlots[id.x] = HASH_EMPTY; }
+            if (id.x < 12288u) { fmmLeafMom[id.x] = vec4(0.0); }
+            if (id.x < 3072u) { fmmParentMom[id.x] = vec4(0.0); fmmParentField[id.x] = vec4(0.0); }
+        }
+        @compute @workgroup_size(256)
+        fn build_cells(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= fmmParams.numParticles) { return; }
+            let cell = leafIndex(fmmPos[id.x].pos);
+            var slot = fmmCellSlots[cell];
+            if (slot == HASH_EMPTY) {
+                slot = claimHashSlot(cell);
+                if (slot == HASH_EMPTY) { fmmNext[id.x] = HASH_EMPTY; return; }
+                fmmCellSlots[cell] = slot;
+            }
+            let old = atomicExchange(&fmmHeads[slot], id.x);
+            fmmNext[id.x] = old;
+            atomicAdd(&fmmLeafMass[cell], fmmParams.massFixed);
+        }
+        fn cadd(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return a + b; }
+        fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x); }
+        fn cscale(a: vec2<f32>, s: f32) -> vec2<f32> { return a * s; }
+        fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+            let den = max(dot(b, b), 1e-20);
+            return vec2<f32>((a.x*b.x+a.y*b.y)/den, (a.y*b.x-a.x*b.y)/den);
+        }
+        fn clog(a: vec2<f32>) -> vec2<f32> { return vec2<f32>(0.5 * log(max(dot(a,a), 1e-20)), atan2(a.y, a.x)); }
+        fn coeffRead(buf: ptr<storage, array<vec4<f32>>, read_write>, cell: u32, k: u32) -> vec2<f32> {
+            if (k == 0u) { return (*buf)[cell * 3u].xy; }
+            if (k == 1u) { return (*buf)[cell * 3u].zw; }
+            if (k == 2u) { return (*buf)[cell * 3u + 1u].xy; }
+            if (k == 3u) { return (*buf)[cell * 3u + 1u].zw; }
+            return (*buf)[cell * 3u + 2u].xy;
+        }
+        fn coeffWrite(buf: ptr<storage, array<vec4<f32>>, read_write>, cell: u32, k: u32, value: vec2<f32>) {
+            if (k == 0u) {
+                let v = (*buf)[cell * 3u];
+                (*buf)[cell * 3u] = vec4<f32>(value.x, value.y, v.z, v.w);
+            } else if (k == 1u) {
+                let v = (*buf)[cell * 3u];
+                (*buf)[cell * 3u] = vec4<f32>(v.x, v.y, value.x, value.y);
+            } else if (k == 2u) {
+                let v = (*buf)[cell * 3u + 1u];
+                (*buf)[cell * 3u + 1u] = vec4<f32>(value.x, value.y, v.z, v.w);
+            } else if (k == 3u) {
+                let v = (*buf)[cell * 3u + 1u];
+                (*buf)[cell * 3u + 1u] = vec4<f32>(v.x, v.y, value.x, value.y);
+            } else {
+                let v = (*buf)[cell * 3u + 2u];
+                (*buf)[cell * 3u + 2u] = vec4<f32>(value.x, value.y, v.z, v.w);
+            }
+        }
+        @compute @workgroup_size(64)
+        fn build_moments(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= 4096u) { return; }
+            let cell = id.x;
+            let cx = cell % 64u; let cy = cell / 64u;
+            let center = vec2<f32>((f32(cx) + 0.5) / 64.0, (f32(cy) + 0.5) / 64.0);
+            let slot = fmmCellSlots[cell];
+            var p = HASH_EMPTY;
+            if (slot != HASH_EMPTY) { p = atomicLoad(&fmmHeads[slot]); }
+            var a0 = 0.0; var a1 = vec2<f32>(0.0); var a2 = vec2<f32>(0.0); var a3 = vec2<f32>(0.0); var a4 = vec2<f32>(0.0);
+            loop {
+                if (p == HASH_EMPTY) { break; }
+                let dz = vec2<f32>(fmmPos[p].pos.x - center.x, fmmPos[p].pos.y - center.y);
+                var power = vec2<f32>(1.0, 0.0);
+                a0 += 1.0;
+                if (fmmParams.order >= 1u) { power = cmul(power, dz); a1 -= power; }
+                if (fmmParams.order >= 2u) { power = cmul(power, dz); a2 -= power * 0.5; }
+                if (fmmParams.order >= 3u) { power = cmul(power, dz); a3 -= power / 3.0; }
+                if (fmmParams.order >= 4u) { power = cmul(power, dz); a4 -= power * 0.25; }
+                p = fmmNext[p];
+            }
+            coeffWrite(&fmmLeafMom, cell, 0u, vec2<f32>(a0, 0.0));
+            coeffWrite(&fmmLeafMom, cell, 1u, a1);
+            coeffWrite(&fmmLeafMom, cell, 2u, a2);
+            coeffWrite(&fmmLeafMom, cell, 3u, a3);
+            coeffWrite(&fmmLeafMom, cell, 4u, a4);
+        }
+        @compute @workgroup_size(64)
+        fn parent_moments(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= 1024u) { return; }
+            let cell = id.x;
+            let px = cell % 32u; let py = cell / 32u;
+            let parent_center = vec2<f32>((f32(px) + 0.5) / 32.0, (f32(py) + 0.5) / 32.0);
+            for (var k = 0u; k <= 4u; k = k + 1u) {
+                var acc = vec2<f32>(0.0);
+                for (var oy = 0u; oy < 2u; oy = oy + 1u) {
+                    for (var ox = 0u; ox < 2u; ox = ox + 1u) {
+                        let child = (py * 2u + oy) * 64u + px * 2u + ox;
+                        let child_center = vec2<f32>((f32(px * 2u + ox) + 0.5) / 64.0, (f32(py * 2u + oy) + 0.5) / 64.0);
+                        let delta = child_center - parent_center;
+                        let mc = coeffRead(&fmmLeafMom, child, k);
+                        var translated = mc;
+                        if (k > 0u) {
+                            translated = vec2<f32>(0.0);
+                            for (var j = 0u; j <= k; j = j + 1u) {
+                                let mj = coeffRead(&fmmLeafMom, child, j);
+                                var dp = vec2<f32>(1.0, 0.0);
+                                for (var n = 0u; n < k - j; n = n + 1u) { dp = cmul(dp, delta); }
+                                var binom = 1.0;
+                                if (j > 0u) {
+                                    binom = 1.0;
+                                    for (var b = 1u; b < j; b = b + 1u) { binom *= f32(k - b) / f32(b); }
+                                }
+                                translated += mj * binom * dp;
+                            }
+                        }
+                        acc += translated;
+                    }
+                }
+                coeffWrite(&fmmParentMom, cell, k, acc);
+            }
+        }
+        @compute @workgroup_size(64)
+        fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= 1024u) { return; }
+            let targetCell = id.x;
+            let tx = targetCell % 32u; let ty = targetCell / 32u;
+            let tc = vec2<f32>((f32(tx) + 0.5) / 32.0, (f32(ty) + 0.5) / 32.0);
+            for (var l = 0u; l <= 4u; l = l + 1u) {
+                var local = vec2<f32>(0.0);
+                for (var j = 0u; j < 1024u; j = j + 1u) {
+                    let sx = j % 32u; let sy = j / 32u;
+                    if (abs(i32(sx) - i32(tx)) <= 1 && abs(i32(sy) - i32(ty)) <= 1) { continue; }
+                    let sc = vec2<f32>((f32(sx) + 0.5) / 32.0, (f32(sy) + 0.5) / 32.0);
+                    let delta = tc - sc;
+                    var deltaPow = vec2<f32>(1.0, 0.0);
+                    for (var n = 0u; n < l; n = n + 1u) { deltaPow = cmul(deltaPow, delta); }
+                    let a0 = coeffRead(&fmmParentMom, j, 0u);
+                    if (l == 0u) {
+                        local += cmul(a0, clog(delta));
+                        for (var k = 1u; k <= 4u; k = k + 1u) {
+                            var dp = vec2<f32>(1.0, 0.0);
+                            for (var n = 0u; n < k; n = n + 1u) { dp = cmul(dp, delta); }
+                            local += cdiv(coeffRead(&fmmParentMom, j, k), dp);
+                        }
+                    } else {
+                        // Monopole term requires (-1)^(l+1)/l: +1 for odd l, -1 for even l.
+                        local += cdiv(a0 * (select(1.0, -1.0, (l & 1u) == 0u) / f32(l)), deltaPow);
+                        for (var k = 1u; k <= 4u; k = k + 1u) {
+                            var dp = deltaPow;
+                            for (var n = 0u; n < k; n = n + 1u) { dp = cmul(dp, delta); }
+                            var binom = 1.0;
+                            for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k + b - 1u) / f32(b); }
+                            let sign = select(1.0, -1.0, (l & 1u) == 1u);
+                            local += cdiv(coeffRead(&fmmParentMom, j, k) * (sign * binom), dp);
+                        }
+                    }
+                }
+                coeffWrite(&fmmParentField, targetCell, l, local);
+            }
+        }
+        @compute @workgroup_size(256)
+        fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= fmmParams.numParticles) { return; }
+            let pos = fmmPos[id.x].pos;
+            // Evaluate the local expansion of the CONTAINING parent cell only.
+            // (A previous version bilinearly blended the coefficients of the 4
+            // surrounding parent cells, which is invalid: each expansion is tied
+            // to its own center and exclusion zone, and the blend produced
+            // grid-aligned force artifacts at every cell boundary.)
+            let ix = min(u32(clamp(pos.x, 0.0, 0.999999) * 32.0), 31u);
+            let iy = min(u32(clamp(pos.y, 0.0, 0.999999) * 32.0), 31u);
+            let parentCell = iy * 32u + ix;
+            let center = vec2<f32>((f32(ix) + 0.5) / 32.0, (f32(iy) + 0.5) / 32.0);
+            let dz = pos - center;
+            var potential = vec2<f32>(0.0); var deriv = vec2<f32>(0.0);
+            for (var l = 0u; l <= 4u; l = l + 1u) {
+                if (l > fmmParams.order) { break; }
+                let c = coeffRead(&fmmParentField, parentCell, l);
+                var dp = vec2<f32>(1.0, 0.0);
+                for (var n = 0u; n < l; n = n + 1u) { dp = cmul(dp, dz); }
+                potential += cmul(c, dp);
+                if (l > 0u) {
+                    var derivativePower = vec2<f32>(1.0, 0.0);
+                    for (var n = 1u; n < l; n = n + 1u) { derivativePower = cmul(derivativePower, dz); }
+                    deriv += cmul(c * f32(l), derivativePower);
+                }
+            }
+            // Leaf ring: direct M2P from leaf multipoles for leaf cells at
+            // Chebyshev distance 2..3. This exactly covers the gap between the
+            // 3x3 P2P stencil (|offset| <= 1) and the parent M2L exclusion zone
+            // (parents within index distance 1 <=> |leaf offset| <= 3).
+            let lx = min(u32(clamp(pos.x, 0.0, 0.999999) * 64.0), 63u);
+            let ly = min(u32(clamp(pos.y, 0.0, 0.999999) * 64.0), 63u);
+            for (var oy: i32 = -3; oy <= 3; oy = oy + 1) { for (var ox: i32 = -3; ox <= 3; ox = ox + 1) {
+                if (ox >= -1 && ox <= 1 && oy >= -1 && oy <= 1) { continue; }
+                let nx = i32(lx) + ox; let ny = i32(ly) + oy;
+                if (nx < 0 || nx >= 64 || ny < 0 || ny >= 64) { continue; }
+                let cell = u32(ny) * 64u + u32(nx);
+                let a0 = coeffRead(&fmmLeafMom, cell, 0u);
+                if (a0.x == 0.0 && a0.y == 0.0) { continue; }
+                let delta = pos - vec2<f32>((f32(nx) + 0.5) / 64.0, (f32(ny) + 0.5) / 64.0);
+                potential += cmul(a0, clog(delta));
+                deriv += cdiv(a0, delta);
+                var power = vec2<f32>(1.0, 0.0);
+                for (var k = 1u; k <= 4u; k = k + 1u) {
+                    if (k > fmmParams.order) { break; }
+                    power = cmul(power, delta);
+                    let ak = coeffRead(&fmmLeafMom, cell, k);
+                    potential += cdiv(ak, power);
+                    deriv -= f32(k) * cdiv(ak, cmul(power, delta));
+                }
+            } }
+            fmmField[id.x] = vec4<f32>(-deriv.x, deriv.y, potential.x, 0.0);
+        }
+        `;
+
+        const wgslAdaptiveFmmSource = `
+// Flat adaptive CGR88 WebGPU kernel — full pipeline with M2M, L2L, M2L, P2L.
+struct Particle { pos: vec2<f32>, vel: vec2<f32> };
+struct FmmParams {
+    numParticles: u32,
+    nodeCount: u32,
+    expansionOrder: u32,
+    levelCount: u32,
+};
+
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read> nodeCenterSize: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> nodeParticleRange: array<vec2<u32>>;
+@group(0) @binding(3) var<storage, read> leafForParticle: array<u32>;
+@group(0) @binding(4) var<storage, read> particleIndices: array<u32>;
+@group(0) @binding(5) var<storage, read> listOffsets: array<vec4<u32>>;
+@group(0) @binding(6) var<storage, read> listCounts: array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read> listData: array<u32>;
+@group(0) @binding(8) var<storage, read_write> multipoles: array<vec4<f32>>;
+@group(0) @binding(9) var<storage, read_write> locals: array<vec4<f32>>;
+@group(0) @binding(10) var<storage, read_write> fields: array<vec4<f32>>;
+@group(0) @binding(11) var<uniform> params: FmmParams;
+@group(0) @binding(12) var<storage, read> nodeParent: array<u32>;
+@group(0) @binding(13) var<storage, read> nodeChildren: array<vec4<u32>>;
+@group(0) @binding(14) var<storage, read> nodeFlags: array<u32>;
+
+const INVALID: u32 = 0xFFFFFFFFu;
+const FLAG_TERMINAL: u32 = 1u;
+
+fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x);
+}
+fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let d = max(dot(b,b), 1e-20);
+    return vec2<f32>((a.x*b.x+a.y*b.y)/d, (a.y*b.x-a.x*b.y)/d);
+}
+fn clog(a: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(0.5 * log(max(dot(a,a), 1e-20)), atan2(a.y, a.x));
+}
+fn readc(buf: ptr<storage, array<vec4<f32>>, read_write>, node: u32, k: u32) -> vec2<f32> {
+    let b = node * 3u;
+    if (k == 0u) { return (*buf)[b].xy; }
+    if (k == 1u) { return (*buf)[b].zw; }
+    if (k == 2u) { return (*buf)[b+1u].xy; }
+    if (k == 3u) { return (*buf)[b+1u].zw; }
+    return (*buf)[b+2u].xy;
+}
+fn writec(buf: ptr<storage, array<vec4<f32>>, read_write>, node: u32, k: u32, z: vec2<f32>) {
+    let b = node * 3u;
+    if (k == 0u) {
+        let v = (*buf)[b];
+        (*buf)[b] = vec4<f32>(z.x, z.y, v.z, v.w);
+    } else if (k == 1u) {
+        let v = (*buf)[b];
+        (*buf)[b] = vec4<f32>(v.x, v.y, z.x, z.y);
+    } else if (k == 2u) {
+        let v = (*buf)[b+1u];
+        (*buf)[b+1u] = vec4<f32>(z.x, z.y, v.z, v.w);
+    } else if (k == 3u) {
+        let v = (*buf)[b+1u];
+        (*buf)[b+1u] = vec4<f32>(v.x, v.y, z.x, z.y);
+    } else {
+        let v = (*buf)[b+2u];
+        (*buf)[b+2u] = vec4<f32>(z.x, z.y, v.z, v.w);
+    }
+}
+fn isTerminal(node: u32) -> bool {
+    return (nodeFlags[node] & FLAG_TERMINAL) != 0u;
+}
+
+@compute @workgroup_size(256)
+fn clear(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= params.nodeCount * 3u) { return; }
+    multipoles[id.x] = vec4<f32>(0.0);
+    locals[id.x] = vec4<f32>(0.0);
+}
+
+@compute @workgroup_size(64)
+fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
+    let node = id.x;
+    if (node >= params.nodeCount) { return; }
+    if (!isTerminal(node)) { return; }
+    let range = nodeParticleRange[node];
+    let center = nodeCenterSize[node].xy;
+    var coeff = array<vec2<f32>, 5>(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0));
+    for (var n = 0u; n < range.y; n = n + 1u) {
+        let particle = particleIndices[range.x + n];
+        let dz = particles[particle].pos - center;
+        var power = vec2<f32>(1.0, 0.0);
+        coeff[0].x += 1.0;
+        for (var k = 1u; k <= 4u; k = k + 1u) {
+            power = cmul(power, dz);
+            if (k <= params.expansionOrder) { coeff[k] -= power / f32(k); }
+        }
+    }
+    for (var k = 0u; k <= 4u; k = k + 1u) { writec(&multipoles, node, k, coeff[k]); }
+}
+
+@compute @workgroup_size(64)
+fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
+    let node = id.x;
+    if (node >= params.nodeCount) { return; }
+    if (isTerminal(node)) { return; }
+    let center = nodeCenterSize[node].xy;
+    let children = nodeChildren[node];
+    for (var k = 0u; k <= 4u; k = k + 1u) {
+        var acc = vec2<f32>(0.0);
+        for (var slot = 0u; slot < 4u; slot = slot + 1u) {
+            let child = children[slot];
+            if (child == INVALID) { continue; }
+            let childCenter = nodeCenterSize[child].xy;
+            if (k == 0u) {
+                acc += readc(&multipoles, child, 0u);
+            } else {
+                let delta = childCenter - center;
+                var deltaPower = vec2<f32>(1.0, 0.0);
+                for (var n = 0u; n < k; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
+                let a0 = readc(&multipoles, child, 0u);
+                acc -= a0 * deltaPower / f32(k);
+                for (var j = 1u; j <= k; j = j + 1u) {
+                    var bj = 1.0;
+                    for (var b = 1u; b <= (j - 1u); b = b + 1u) { bj *= f32(k - b) / f32(b); }
+                    var dp = vec2<f32>(1.0, 0.0);
+                    for (var n = 0u; n < (k - j); n = n + 1u) { dp = cmul(dp, delta); }
+                    acc += readc(&multipoles, child, j) * bj * dp;
+                }
+            }
+        }
+        writec(&multipoles, node, k, acc);
+    }
+}
+
+@compute @workgroup_size(64)
+fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
+    let node = id.x;
+    if (node >= params.nodeCount) { return; }
+    let parent = nodeParent[node];
+    if (parent == INVALID) { return; }
+    let center = nodeCenterSize[node].xy;
+    let parentCenter = nodeCenterSize[parent].xy;
+    let delta = center - parentCenter;
+    for (var l = 0u; l <= 4u; l = l + 1u) {
+        if (l > params.expansionOrder) { break; }
+        var acc = vec2<f32>(0.0);
+        for (var k = l; k <= 4u; k = k + 1u) {
+            if (k > params.expansionOrder) { break; }
+            var binom = 1.0;
+            for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
+            var dp = vec2<f32>(1.0, 0.0);
+            for (var n = 0u; n < (k - l); n = n + 1u) { dp = cmul(dp, delta); }
+            acc += readc(&locals, parent, k) * binom * dp;
+        }
+        let existing = readc(&locals, node, l);
+        writec(&locals, node, l, existing + acc);
+    }
+}
+
+@compute @workgroup_size(64)
+fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
+    let targetNode = id.x;
+    if (targetNode >= params.nodeCount) { return; }
+    let targetCenter = nodeCenterSize[targetNode].xy;
+
+    let l2Offset = listOffsets[targetNode].y;
+    let l2Count = listCounts[targetNode].y;
+    for (var q = 0u; q < l2Count; q = q + 1u) {
+        let source = listData[l2Offset + q];
+        let delta = targetCenter - nodeCenterSize[source].xy;
+        for (var l = 0u; l <= 4u; l = l + 1u) {
+            if (l > params.expansionOrder) { break; }
+            var local = vec2<f32>(0.0);
+            let a0 = readc(&multipoles, source, 0u);
+            if (l == 0u) {
+                local += cmul(a0, clog(delta));
+                for (var k = 1u; k <= 4u; k = k + 1u) {
+                    if (k > params.expansionOrder) { break; }
+                    var power = vec2<f32>(1.0, 0.0);
+                    for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
+                    local += cdiv(readc(&multipoles, source, k), power);
+                }
+            } else {
+                var deltaPower = vec2<f32>(1.0, 0.0);
+                for (var n = 0u; n < l; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
+                let sign_a0 = select(1.0, -1.0, (l & 1u) == 0u);
+                let sign_ak = -sign_a0;
+                local += cdiv(a0 * (sign_a0 / f32(l)), deltaPower);
+                for (var k = 1u; k <= 4u; k = k + 1u) {
+                    if (k > params.expansionOrder) { break; }
+                    var power = deltaPower;
+                    for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
+                    var binom = 1.0;
+                    for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k + b - 1u) / f32(b); }
+                    local += cdiv(readc(&multipoles, source, k) * (sign_ak * binom), power);
+                }
+            }
+            let existing = readc(&locals, targetNode, l);
+            writec(&locals, targetNode, l, existing + local);
+        }
+    }
+
+    let l4Offset = listOffsets[targetNode].w;
+    let l4Count = listCounts[targetNode].w;
+    for (var q = 0u; q < l4Count; q = q + 1u) {
+        let sourceNode = listData[l4Offset + q];
+        let range = nodeParticleRange[sourceNode];
+        for (var n = 0u; n < range.y; n = n + 1u) {
+            let pIdx = particleIndices[range.x + n];
+            let d = targetCenter - particles[pIdx].pos;
+            let existing0 = readc(&locals, targetNode, 0u);
+            writec(&locals, targetNode, 0u, existing0 + clog(d));
+            for (var l = 1u; l <= 4u; l = l + 1u) {
+                if (l > params.expansionOrder) { break; }
+                let sign = select(1.0, -1.0, (l & 1u) == 0u);
+                var dp = vec2<f32>(1.0, 0.0);
+                for (var n2 = 0u; n2 < l; n2 = n2 + 1u) { dp = cmul(dp, d); }
+                let existing = readc(&locals, targetNode, l);
+                writec(&locals, targetNode, l, existing + cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
+            }
+        }
+    }
+}
+
+        @compute @workgroup_size(256)
+        fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
+            let particle = id.x;
+            if (particle >= params.numParticles) { return; }
+            let targetNode = leafForParticle[particle];
+            let center = nodeCenterSize[targetNode].xy;
+            let dz = particles[particle].pos - center;
+            var potential = 0.0;
+            var derivative = vec2<f32>(0.0);
+
+            for (var l = 0u; l <= 4u; l = l + 1u) {
+                if (l > params.expansionOrder) { break; }
+                let c = readc(&locals, targetNode, l);
+                var power = vec2<f32>(1.0, 0.0);
+                for (var n = 0u; n < l; n = n + 1u) { power = cmul(power, dz); }
+                // Potential is the REAL part of the complex product, not a
+                // vector dot product.
+                potential += cmul(c, power).x;
+                if (l > 0u) {
+                    var derivativePower = vec2<f32>(1.0, 0.0);
+                    for (var n = 1u; n < l; n = n + 1u) { derivativePower = cmul(derivativePower, dz); }
+                    derivative += cmul(c * f32(l), derivativePower);
+                }
+            }
+
+            let list3Offset = listOffsets[targetNode].z;
+            let list3Count = listCounts[targetNode].z;
+            for (var q = 0u; q < list3Count; q = q + 1u) {
+                let source = listData[list3Offset + q];
+                let delta = particles[particle].pos - nodeCenterSize[source].xy;
+                let a0 = readc(&multipoles, source, 0u);
+                let inv = cdiv(vec2<f32>(1.0, 0.0), delta);
+                potential += cmul(a0, clog(delta)).x;
+                derivative += cmul(a0, inv);
+                for (var k = 1u; k <= 4u; k = k + 1u) {
+                    if (k > params.expansionOrder) { break; }
+                    var power = vec2<f32>(1.0, 0.0);
+                    for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
+                    let ak = readc(&multipoles, source, k);
+                    potential += cdiv(ak, power).x;
+                    derivative -= f32(k) * cmul(ak, cdiv(vec2<f32>(1.0, 0.0), cmul(power, delta)));
+                }
+            }
+
+            // List 1: direct near-field interactions with adjacent leaves
+            // (softened, 1/r log-potential magnitude to match the FMM far
+            // field). Budgeted per leaf with an id-dependent stride so the
+            // sampled subset is decorrelated between particles.
+            var p2pForce = vec2<f32>(0.0);
+            let list1Offset = listOffsets[targetNode].x;
+            let list1Count = listCounts[targetNode].x;
+            var p2pBudget = 24u;
+            if (params.numParticles > 500000u) { p2pBudget = 12u; }
+            if (params.numParticles > 2000000u) { p2pBudget = 6u; }
+            for (var q = 0u; q < list1Count; q = q + 1u) {
+                let src = listData[list1Offset + q];
+                let range = nodeParticleRange[src];
+                if (range.y == 0u) { continue; }
+                let cnt = min(range.y, p2pBudget);
+                let skip = (particle * 2654435761u + src * 40503u) % range.y;
+                for (var n = 0u; n < cnt; n = n + 1u) {
+                    let j = particleIndices[range.x + ((skip + n) % range.y)];
+                    if (j == particle) { continue; }
+                    let d = particles[particle].pos - particles[j].pos;
+                    let r2 = dot(d, d) + 0.00004;
+                    let inv2 = inverseSqrt(r2);
+                    // Attraction toward j: -(d) * m / (r^2 + eps^2)
+                    p2pForce -= d * (inv2 * inv2);
+                }
+            }
+
+            fields[particle] = vec4<f32>(-derivative.x + p2pForce.x, derivative.y + p2pForce.y, potential, 0.0);
+        }
+`;
 
         const wgslRenderSource = `
         struct VertexOutput {
@@ -797,6 +1522,9 @@
             g1y: f32,
             g2x: f32,
             g2y: f32,
+            fmmEnabled: u32,
+            adaptiveMode: u32,
+            _uniformPadding: vec2<u32>,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -843,21 +1571,20 @@
                     col = mix(cPink, cGold, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
                 }
             } else if (params.colorMode == 1u) {
-                // 2. FMM & 1€ Dynamics (Purple = Far-Field M2L, Cyan = Near-Field P2P, Green = 1€ Filter)
-                let packedState = bitcast<u32>(state);
-                let p2p = f32(packedState & 255u) / 255.0;
-                let far = f32((packedState >> 8u) & 255u) / 255.0;
-                let filterAct = f32((packedState >> 16u) & 255u) / 255.0;
+                // 2. FMM & 1€ Dynamics (Cyan=Near, Purple=Far, Green=1€ Filter, Pink=Evasion)
+                let p2p = fract(state);
+                let far = fract(state * 0.5);
+                let filterAct = fract(state * 0.25);
 
-                // Continuous FMM Blend: Purple (Far M2L Multipole) smoothly transitions to Cyan (Near P2P Direct)
-                col = mix(cPurple, cCyan, clamp(p2p * 1.3, 0.0, 1.0));
-
-                // 1€ Adaptive Filter Active (Emerald Green overlay for velocity damping)
-                if (filterAct > 0.08) {
-                    col = mix(col, cGreen, clamp(filterAct * 2.0, 0.0, 1.0));
+                col = cPurple; // Default far-field base
+                if (p2p > 0.2) {
+                    col = mix(col, cCyan, clamp(p2p * 2.0, 0.0, 1.0));
                 }
-                if (speed > 1.6) {
-                    col = mix(col, cPink, clamp((speed - 1.6) * 1.5, 0.0, 1.0));
+                if (filterAct > 0.15) {
+                    col = mix(col, cGreen, clamp(filterAct * 2.5, 0.0, 1.0));
+                }
+                if (speed > 1.2) {
+                    col = mix(col, cPink, clamp((speed - 1.2) * 1.5, 0.0, 1.0));
                 }
             } else if (params.colorMode == 2u) {
                 // 3. Scenario Clusters
@@ -945,12 +1672,8 @@
                 float inv_r2 = 1.0 / sqrt(r2_sq);
                 fx += d2 * (0.00075 * inv_r2 * inv_r2 * inv_r2);
 
-                float r1 = sqrt(r1_sq);
-                float r2 = sqrt(r2_sq);
-                float p2p1 = max(0.0, 1.0 - r1 / 0.09);
-                float p2p2 = max(0.0, 1.0 - r2 / 0.09);
-                nearP2P = clamp(p2p1 + p2p2, 0.0, 1.0);
-                farM2L = clamp(1.0 - nearP2P * 0.7, 0.0, 1.0);
+                farM2L = 0.6;
+                nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
             } else if (u_scenario == 1) {
                 // Boids flocking
                 fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
@@ -1077,10 +1800,11 @@
                 else if (speedNorm < 1.0) col = mix(cPurple, cPink, (speedNorm - 0.5) * 2.0);
                 else col = mix(cPink, cGold, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
             } else if (u_colorMode == 1) {
-                // FMM & 1€ Dynamics (Purple=Far M2L Multipole, Cyan=Near P2P Direct, Green=1€ Filter)
-                col = mix(cPurple, cCyan, clamp(nearP2P * 1.3, 0.0, 1.0));
-                if (filterDamping > 0.08) col = mix(col, cGreen, clamp(filterDamping * 2.0, 0.0, 1.0));
-                if (speedNorm > 1.6) col = mix(col, cPink, clamp((speedNorm - 1.6) * 1.5, 0.0, 1.0));
+                // FMM & 1€ Dynamics
+                col = cPurple;
+                if (nearP2P > 0.2) col = mix(col, cCyan, clamp(nearP2P * 1.5, 0.0, 1.0));
+                if (filterDamping > 0.15) col = mix(col, cGreen, clamp(filterDamping * 2.5, 0.0, 1.0));
+                if (speedNorm > 1.2) col = mix(col, cPink, clamp((speedNorm - 1.2) * 1.5, 0.0, 1.0));
             } else if (u_colorMode == 2) {
                 // Scenario Clusters
                 if (u_scenario == 1) {
@@ -1115,14 +1839,44 @@
         let webgpuContext = null;
         let webgpuPipelineCompute = null;
         let webgpuPipelineRender = null;
+        let webgpuFmmPipelines = {};
+        let webgpuFmmEnabled = false;
+        let webgpuFmmBindGroupA = null, webgpuFmmBindGroupB = null;
         let webgpuPosVelBufferA = null;
         let webgpuPosVelBufferB = null;
         let webgpuExtraBuffer = null;
         let webgpuUniformBuffer = null;
+        let webgpuFmmKeys = null, webgpuFmmHeads = null, webgpuFmmNext = null, webgpuFmmLeafMass = null, webgpuFmmCellSlots = null;
+        let webgpuFmmLeafMom = null, webgpuFmmParentMom = null, webgpuFmmParentField = null, webgpuFmmField = null;
+        let webgpuFmmParams = null;
+        let webgpuBufferBytes = 0;
+        let webgpuBufferLimitBytes = 0;
+        let webgpuHashEntries = 0;
         let webgpuBindGroupA = null;
         let webgpuBindGroupB = null;
         let webgpuRenderBindGroup = null;
         let webgpuPingPong = 0;
+        // GPU timestamp query infrastructure for per-pass FMM timing
+        let webgpuTimestampQueryEnabled = false;
+        let webgpuQuerySet = null;
+        let webgpuQueryResolveBuffer = null;
+        // Triple-buffered readback: 0=free, 1=has-data, 2=mapping-in-progress
+        let webgpuQueryReadbackBufs = [null, null, null];
+        let webgpuQueryBufState = [0, 0, 0];
+        let webgpuQueryCopyIdx = 0;
+        let webgpuPassTimings = { fmmBuild: 0, fmmM2l: 0, fmmL2p: 0, mainCompute: 0, render: 0, totalGpu: 0 };
+        let webgpuGpuCompleteMs = 0; // Actual GPU completion time via fence
+
+        // Adaptive CGR88 FMM state
+        let webgpuAdaptiveEnabled = false;
+        let webgpuAdaptivePipelines = {};
+        let webgpuAdaptiveBindGroupA = null, webgpuAdaptiveBindGroupB = null;
+        let webgpuAdaptiveParams = null;
+        let webgpuAdaptiveBuffers = {};
+        let webgpuAdaptiveLayout = null;
+        let adaptiveMetadata = null;       // JS metadata object
+        let adaptiveDepth = 4;             // Regular quadtree depth for browser path (16x16 leaves)
+        let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
 
         let gl = null;
         let glProgram = null;
@@ -1134,6 +1888,55 @@
         let simTime = 0;
         let lastFpsTime = performance.now();
         let frameCount = 0;
+
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes) || bytes <= 0) return 'Unavailable';
+            const units = ['B', 'KiB', 'MiB', 'GiB'];
+            let value = bytes;
+            let unit = 0;
+            while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+            return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
+        }
+
+        function updateMemoryTelemetry() {
+            const gpuMemory = document.getElementById('valGpuMemory');
+            const gpuLimit = document.getElementById('valGpuLimit');
+            const fmmHash = document.getElementById('valFmmHash');
+            const p2pBudget = document.getElementById('valP2pBudget');
+            if (gpuMemory) gpuMemory.innerText = `${formatBytes(webgpuBufferBytes)} allocated`;
+            if (gpuLimit) gpuLimit.innerText = webgpuBufferLimitBytes ? formatBytes(webgpuBufferLimitBytes) : 'Browser query unavailable';
+            if (fmmHash) {
+                if (activeBackend === 'WEBGPU' && webgpuAdaptiveEnabled && useAdaptiveFmm && scenario === 'galaxy') {
+                    const md = adaptiveMetadata;
+                    fmmHash.innerText = md ? `${md.totalNodes} nodes / depth ${md.depth}` : 'Adaptive';
+                } else if (activeBackend === 'WEBGPU' && webgpuFmmEnabled && scenario === 'galaxy') {
+                    fmmHash.innerText = `≤4096 / 16,384 slots`;
+                } else {
+                    fmmHash.innerText = 'Inactive';
+                }
+            }
+            if (p2pBudget) {
+                const budget = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
+                p2pBudget.innerText = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${budget}/cell × 9 cells` : 'Scenario dependent';
+            }
+            // Per-pass GPU timing telemetry
+            const fmmBuildEl = document.getElementById('valFmmBuild');
+            const fmmM2lEl = document.getElementById('valFmmM2l');
+            const fmmL2pEl = document.getElementById('valFmmL2p');
+            const mainComputeEl = document.getElementById('valMainCompute');
+            const renderPassEl = document.getElementById('valRenderPass');
+            const fmmActive = activeBackend === 'WEBGPU' && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) && scenario === 'galaxy';
+            const tsActive = fmmActive && webgpuTimestampQueryEnabled;
+            if (fmmBuildEl) fmmBuildEl.innerText = fmmActive ? `${webgpuPassTimings.fmmBuild.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            if (fmmM2lEl) fmmM2lEl.innerText = fmmActive ? `${webgpuPassTimings.fmmM2l.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            if (fmmL2pEl) fmmL2pEl.innerText = fmmActive ? `${webgpuPassTimings.fmmL2p.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            if (mainComputeEl) mainComputeEl.innerText = fmmActive ? `${webgpuPassTimings.mainCompute.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            if (renderPassEl) renderPassEl.innerText = activeBackend === 'WEBGPU' ? `${webgpuPassTimings.render.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            const totalGpuEl = document.getElementById('valTotalGpu');
+            if (totalGpuEl) totalGpuEl.innerText = activeBackend === 'WEBGPU' && tsActive ? `${webgpuPassTimings.totalGpu.toFixed(3)} ms` : '—';
+            const gpuCompleteEl = document.getElementById('valGpuComplete');
+            if (gpuCompleteEl) gpuCompleteEl.innerText = activeBackend === 'WEBGPU' ? `${webgpuGpuCompleteMs.toFixed(3)} ms` : '—';
+        }
 
         function formatWebGLRenderer(raw) {
             if (!raw) return { name: 'WebGL 2.0 Accelerated GPU', isSoftware: false };
@@ -1154,6 +1957,201 @@
                 cleanName = 'Microsoft Basic Render Driver (Software Rasterizer)';
             }
             return { name: cleanName, isSoftware: isSoftware };
+        }
+
+        // =====================================================================
+        // Regular Quadtree Metadata Builder for Adaptive CGR88 FMM
+        // =====================================================================
+        // Builds a full regular quadtree of `depth` levels over [0,1]^2 and
+        // computes CGR88 interaction Lists 1 (adjacent leaves) and 2 (same-level
+        // well-separated).  Lists 3 and 4 are empty for a regular grid.
+        // Returns flat typed arrays ready for WebGPU storage buffer upload.
+
+        function buildAdaptiveMetadata(depth, positions) {
+            const pos = positions || initialPositions;
+            const numLevels = depth + 1;
+            const levelStart = new Uint32Array(numLevels);
+            const levelCount = new Uint32Array(numLevels);
+            let totalNodes = 0;
+            for (let l = 0; l < numLevels; l++) {
+                levelStart[l] = totalNodes;
+                levelCount[l] = (1 << (2 * l));
+                totalNodes += levelCount[l];
+            }
+
+            const INVALID = 0xFFFFFFFF;
+
+            // Node data arrays
+            const nodeCenterSize = new Float32Array(totalNodes * 4); // cx, cy, width, depth
+            const nodeParent = new Uint32Array(totalNodes);
+            const nodeChildren = new Uint32Array(totalNodes * 4);
+            const nodeFlags = new Uint32Array(totalNodes);
+            const nodeParticleRange = new Uint32Array(totalNodes * 2); // offset, count
+            const leafForParticle = new Uint32Array(N);
+
+            nodeParent.fill(INVALID);
+            nodeChildren.fill(INVALID);
+
+            // Build node geometry
+            for (let l = 0; l < numLevels; l++) {
+                const side = 1 << l;           // cells per axis at this level
+                const cellSize = 1.0 / side;
+                for (let iy = 0; iy < side; iy++) {
+                    for (let ix = 0; ix < side; ix++) {
+                        const idx = levelStart[l] + iy * side + ix;
+                        const cx = (ix + 0.5) * cellSize;
+                        const cy = (iy + 0.5) * cellSize;
+                        nodeCenterSize[idx * 4] = cx;
+                        nodeCenterSize[idx * 4 + 1] = cy;
+                        nodeCenterSize[idx * 4 + 2] = cellSize;
+                        nodeCenterSize[idx * 4 + 3] = l;
+                        if (l > 0) {
+                            const pix = ix >> 1, piy = iy >> 1;
+                            const parentIdx = levelStart[l - 1] + piy * (1 << (l - 1)) + pix;
+                            nodeParent[idx] = parentIdx;
+                            const childSlot = ((iy & 1) << 1) | (ix & 1);
+                            nodeChildren[parentIdx * 4 + childSlot] = idx;
+                        }
+                        if (l === depth) {
+                            nodeFlags[idx] = 1; // terminal
+                        }
+                    }
+                }
+            }
+
+            // Assign particles to leaf cells and build particle_indices
+            const leafSide = 1 << depth;
+            const bucketHeads = new Int32Array(leafSide * leafSide).fill(-1);
+            const bucketNext = new Int32Array(N).fill(-1);
+            const particleIndices = new Uint32Array(N);
+
+            for (let i = 0; i < N; i++) {
+                const px = Math.min(0.999999, Math.max(0.0, pos[i * 4]));
+                const py = Math.min(0.999999, Math.max(0.0, pos[i * 4 + 1]));
+                const ix = Math.min(leafSide - 1, Math.floor(px * leafSide));
+                const iy = Math.min(leafSide - 1, Math.floor(py * leafSide));
+                const cellIdx = iy * leafSide + ix;
+                bucketNext[i] = bucketHeads[cellIdx];
+                bucketHeads[cellIdx] = i;
+            }
+
+            // Flatten particle indices grouped by leaf cell
+            let flatOffset = 0;
+            for (let l = 0; l < numLevels; l++) {
+                const side = 1 << l;
+                for (let iy = 0; iy < side; iy++) {
+                    for (let ix = 0; ix < side; ix++) {
+                        const idx = levelStart[l] + iy * side + ix;
+                        if (l === depth) {
+                            const cellIdx = iy * leafSide + ix;
+                            let count = 0;
+                            let p = bucketHeads[cellIdx];
+                            while (p >= 0) {
+                                particleIndices[flatOffset + count] = p;
+                                leafForParticle[p] = idx;
+                                count++;
+                                p = bucketNext[p];
+                            }
+                            nodeParticleRange[idx * 2] = flatOffset;
+                            nodeParticleRange[idx * 2 + 1] = count;
+                            flatOffset += count;
+                        }
+                    }
+                }
+            }
+
+            // Build interaction lists
+            // List 1 (P2P): adjacent leaves (including self) — only at leaf level
+            // List 2 (M2L): children of parent's colleagues that are not adjacent — at levels 1..depth
+            // List 3 (M2P): empty for regular grid
+            // List 4 (P2L): empty for regular grid
+
+            const MAX_LIST = 64;
+            const listOffsets = new Uint32Array(totalNodes * 4);
+            const listCounts = new Uint32Array(totalNodes * 4);
+            const listDataArrays = [[], [], [], []]; // 4 lists
+            let listCursor = 0;
+
+            for (let l = 0; l < numLevels; l++) {
+                const side = 1 << l;
+                for (let iy = 0; iy < side; iy++) {
+                    for (let ix = 0; ix < side; ix++) {
+                        const idx = levelStart[l] + iy * side + ix;
+
+                        // List 1: adjacent leaves (only at deepest level)
+                        if (l === depth) {
+                            listOffsets[idx * 4] = listCursor;
+                            let cnt = 0;
+                            for (let dy = -1; dy <= 1; dy++) {
+                                for (let dx = -1; dx <= 1; dx++) {
+                                    const nx = ix + dx, ny = iy + dy;
+                                    if (nx < 0 || nx >= side || ny < 0 || ny >= side) continue;
+                                    const nidx = levelStart[l] + ny * side + nx;
+                                    listDataArrays[0].push(nidx);
+                                    listCursor++;
+                                    cnt++;
+                                }
+                            }
+                            listCounts[idx * 4] = cnt;
+                        }
+
+                        // List 2: children of parent's colleagues not adjacent to this node
+                        if (l >= 1) {
+                            listOffsets[idx * 4 + 1] = listCursor;
+                            const pix = ix >> 1, piy = iy >> 1;
+                            const pside = 1 << (l - 1);
+                            let cnt = 0;
+                            for (let pdy = -1; pdy <= 1; pdy++) {
+                                for (let pdx = -1; pdx <= 1; pdx++) {
+                                    const pnx = pix + pdx, pny = piy + pdy;
+                                    if (pnx < 0 || pnx >= pside || pny < 0 || pny >= pside) continue;
+                                    // For each child of this parent colleague
+                                    for (let cdy = 0; cdy < 2; cdy++) {
+                                        for (let cdx = 0; cdx < 2; cdx++) {
+                                            const cnx = (pnx << 1) + cdx;
+                                            const cny = (pny << 1) + cdy;
+                                            // Skip if adjacent to (ix, iy)
+                                            if (Math.abs(cnx - ix) <= 1 && Math.abs(cny - iy) <= 1) continue;
+                                            const cidx = levelStart[l] + cny * side + cnx;
+                                            listDataArrays[1].push(cidx);
+                                            listCursor++;
+                                            cnt++;
+                                        }
+                                    }
+                                }
+                            }
+                            listCounts[idx * 4 + 1] = cnt;
+                        }
+                    }
+                }
+            }
+
+            // Flatten list data into a single typed array
+            const listData = new Uint32Array(listCursor);
+            let copyOff = 0;
+            for (let li = 0; li < 4; li++) {
+                for (let j = 0; j < listDataArrays[li].length; j++) {
+                    listData[copyOff++] = listDataArrays[li][j];
+                }
+            }
+
+            return {
+                depth,
+                numLevels,
+                totalNodes,
+                levelStart,
+                levelCount,
+                nodeCenterSize,
+                nodeParent,
+                nodeChildren,
+                nodeFlags,
+                nodeParticleRange,
+                leafForParticle,
+                particleIndices,
+                listOffsets,
+                listCounts,
+                listData,
+            };
         }
 
         async function initEngine() {
@@ -1187,9 +2185,20 @@
                             if (adapter.limits.maxBufferSize) {
                                 requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
                             }
+                            if (adapter.limits.maxStorageBuffersPerShaderStage >= 10) {
+                                requiredLimits.maxStorageBuffersPerShaderStage = Math.min(16, adapter.limits.maxStorageBuffersPerShaderStage);
+                            }
                         }
 
-                        webgpuDevice = await adapter.requestDevice({ requiredLimits });
+                        webgpuBufferLimitBytes = adapter.limits?.maxBufferSize || 0;
+                        const requiredFeatures = [];
+                        if (adapter.features.has('timestamp-query')) {
+                            requiredFeatures.push('timestamp-query');
+                        }
+                        webgpuTimestampQueryEnabled = requiredFeatures.includes('timestamp-query');
+                        webgpuDevice = await adapter.requestDevice({ requiredLimits, requiredFeatures });
+                        webgpuDevice.addEventListener('uncapturederror', (event) => console.error(`WebGPU validation error: ${event.error?.name || 'Unknown'}: ${event.error?.message || event.error}`, event.error));
+                        webgpuDevice.lost.then((info) => console.error('WebGPU device lost:', info.message));
                         webgpuContext = canvas.getContext('webgpu');
 
                         const format = navigator.gpu.getPreferredCanvasFormat();
@@ -1202,16 +2211,151 @@
                         // Shader Modules
                         const computeModule = webgpuDevice.createShaderModule({ code: wgslComputeSource });
                         const renderModule = webgpuDevice.createShaderModule({ code: wgslRenderSource });
+                        const computeInfo = await computeModule.getCompilationInfo();
+                        const renderInfo = await renderModule.getCompilationInfo();
+                        const shaderErrors = [...computeInfo.messages, ...renderInfo.messages].filter((message) => message.type === 'error');
+                        if (shaderErrors.length > 0) throw new Error(`WGSL simulation/render compile failed: ${shaderErrors.map((message) => message.message).join(' | ')}`);
 
-                        // Compute Pipeline
-                        webgpuPipelineCompute = webgpuDevice.createComputePipeline({
-                            layout: 'auto',
-                            compute: { module: computeModule, entryPoint: 'main' }
-                        });
+                        const computeLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [webgpuDevice.createBindGroupLayout({ entries: [
+                            { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                            { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                        ] }) ] });
+                        const renderBindLayout = webgpuDevice.createBindGroupLayout({ entries: [
+                            { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
+                        ] });
+                        const renderLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [renderBindLayout] });
+                        const fmmLayout = webgpuDevice.createBindGroupLayout({ entries: [
+                            { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+                        ] });
+                        const fmmPipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [fmmLayout] });
+                        // Explicit layouts keep compute, FMM, and render bind groups compatible.
+                        webgpuPipelineCompute = webgpuDevice.createComputePipeline({ layout: computeLayout, compute: { module: computeModule, entryPoint: 'main' } });
+                        const fmmModule = webgpuDevice.createShaderModule({ code: wgslFmmSource });
+                        const fmmInfo = await fmmModule.getCompilationInfo();
+                        const fmmErrors = fmmInfo.messages.filter((message) => message.type === 'error');
+                        if (fmmErrors.length > 0) throw new Error(`WGSL FMM compile failed: ${fmmErrors.map((message) => message.message).join(' | ')}`);
+                        webgpuDevice.pushErrorScope('validation');
+                        for (const entryPoint of ['clear_cells', 'build_cells', 'build_moments', 'parent_moments', 'm2l', 'l2p']) {
+                            webgpuFmmPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FMM ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
+                        }
+                        const fmmPipelineError = await webgpuDevice.popErrorScope();
+                        if (fmmPipelineError) {
+                            console.error(`FMM pipeline disabled: ${fmmPipelineError.name}: ${fmmPipelineError.message}`);
+                            webgpuFmmPipelines = {};
+                        } else {
+                            webgpuFmmEnabled = true;
+                        }
+
+                        // ---- Adaptive CGR88 FMM Pipeline ----
+                        try {
+                            // Build metadata on CPU
+                            adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth);
+                            const md = adaptiveMetadata;
+                            const nn = md.totalNodes;
+
+                            // Bind group layout: 15 bindings (0-14)
+                            const adaptiveLayout = webgpuDevice.createBindGroupLayout({ entries: [
+                                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                                { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                                { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                                { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                                { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            ]});
+                            const adaptivePipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [adaptiveLayout] });
+
+                            const adaptiveModule = webgpuDevice.createShaderModule({ code: wgslAdaptiveFmmSource });
+                            const adaptiveInfo = await adaptiveModule.getCompilationInfo();
+                            const adaptiveErrors = adaptiveInfo.messages.filter(m => m.type === 'error');
+                            if (adaptiveErrors.length > 0) throw new Error(`Adaptive WGSL compile failed: ${adaptiveErrors.map(m => m.message).join(' | ')}`);
+
+                            webgpuDevice.pushErrorScope('validation');
+                            for (const ep of ['clear', 'p2m', 'm2m', 'l2l', 'm2l', 'l2p']) {
+                                webgpuAdaptivePipelines[ep] = webgpuDevice.createComputePipeline({
+                                    label: `Adaptive ${ep}`,
+                                    layout: adaptivePipelineLayout,
+                                    compute: { module: adaptiveModule, entryPoint: ep }
+                                });
+                            }
+                            const adaptivePipelineError = await webgpuDevice.popErrorScope();
+                            if (adaptivePipelineError) {
+                                console.error(`Adaptive FMM pipeline disabled: ${adaptivePipelineError.name}: ${adaptivePipelineError.message}`);
+                                webgpuAdaptivePipelines = {};
+                            } else {
+                                webgpuAdaptiveEnabled = true;
+                                console.log(`Adaptive CGR88 FMM enabled: depth=${adaptiveDepth}, nodes=${nn}, leaves=${md.levelCount[adaptiveDepth]}`);
+                            }
+
+                            // Create metadata buffers (static, uploaded once)
+                            const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+                            const rwStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+
+                            webgpuAdaptiveBuffers.nodeCenterSize = webgpuDevice.createBuffer({ size: md.nodeCenterSize.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeParticleRange = webgpuDevice.createBuffer({ size: md.nodeParticleRange.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.leafForParticle = webgpuDevice.createBuffer({ size: md.leafForParticle.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: md.particleIndices.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.listOffsets = webgpuDevice.createBuffer({ size: md.listOffsets.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.listCounts = webgpuDevice.createBuffer({ size: md.listCounts.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.listData = webgpuDevice.createBuffer({ size: md.listData.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeParent = webgpuDevice.createBuffer({ size: md.nodeParent.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeChildren = webgpuDevice.createBuffer({ size: md.nodeChildren.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeFlags = webgpuDevice.createBuffer({ size: md.nodeFlags.byteLength, usage: roStorage });
+
+                            // Dynamic buffers (cleared and rewritten each frame)
+                            webgpuAdaptiveBuffers.multipoles = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
+                            webgpuAdaptiveBuffers.locals = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
+                            // fields buffer is assigned later, after webgpuFmmField is created
+                            webgpuAdaptiveParams = webgpuDevice.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+                            // Upload static metadata
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParticleRange, 0, md.nodeParticleRange);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.leafForParticle, 0, md.leafForParticle);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.particleIndices, 0, md.particleIndices);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listOffsets, 0, md.listOffsets);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listCounts, 0, md.listCounts);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listData, 0, md.listData);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+
+                            // Store layout for bind group creation later (after webgpuFmmField exists)
+                            webgpuAdaptiveLayout = adaptiveLayout;
+                            // Bind groups created in initAdaptiveBindGroups() after fixed-grid buffers
+                        } catch (adaptiveErr) {
+                            console.error('Adaptive FMM init failed:', adaptiveErr);
+                            webgpuAdaptiveEnabled = false;
+                        }
 
                         // Render Pipeline
                         webgpuPipelineRender = webgpuDevice.createRenderPipeline({
-                            layout: 'auto',
+                            layout: renderLayout,
                             vertex: {
                                 module: renderModule,
                                 entryPoint: 'vs_main',
@@ -1264,9 +2408,40 @@
                             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
                         });
                         webgpuUniformBuffer = webgpuDevice.createBuffer({
-                            size: 64, // 16 floats = 64 bytes
+                            size: 96, // vec3 padding aligns the uniform struct to 96 bytes
                             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
                         });
+                        const fmmStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+                        webgpuFmmKeys = webgpuDevice.createBuffer({ size: 16384 * 4, usage: fmmStorage });
+                        webgpuFmmHeads = webgpuDevice.createBuffer({ size: 16384 * 4, usage: fmmStorage });
+                        webgpuFmmNext = webgpuDevice.createBuffer({ size: MAX_P * 4, usage: fmmStorage });
+                        webgpuFmmLeafMass = webgpuDevice.createBuffer({ size: 4096 * 4, usage: fmmStorage });
+                        webgpuFmmCellSlots = webgpuDevice.createBuffer({ size: 4096 * 4, usage: fmmStorage });
+                        // Three vec4 slots per cell store five complex CGR88 coefficients:
+                        // c0=(slot0.xy), c1=(slot0.zw), c2=(slot1.xy), c3=(slot1.zw), c4=(slot2.xy).
+                        webgpuFmmLeafMom = webgpuDevice.createBuffer({ size: 4096 * 3 * 16, usage: fmmStorage });
+                        webgpuFmmParentMom = webgpuDevice.createBuffer({ size: 1024 * 3 * 16, usage: fmmStorage });
+                        webgpuFmmParentField = webgpuDevice.createBuffer({ size: 1024 * 3 * 16, usage: fmmStorage });
+                        webgpuFmmField = webgpuDevice.createBuffer({ size: MAX_P * 16, usage: fmmStorage });
+                        webgpuFmmParams = webgpuDevice.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                        webgpuBufferBytes = (posVelBytes * 2) + extraBytes + (16384 * 4 * 2) + (MAX_P * 4) + (4096 * 4 * 2) + (4096 * 3 * 16) + (1024 * 3 * 16 * 2) + (MAX_P * 16) + 96;
+                        webgpuHashEntries = 16384;
+
+                        // GPU timestamp query set for per-pass FMM timing (5 passes × 2 timestamps = 10 slots)
+                        if (webgpuTimestampQueryEnabled) {
+                            webgpuQuerySet = webgpuDevice.createQuerySet({ type: 'timestamp', count: 10 });
+                            webgpuQueryResolveBuffer = webgpuDevice.createBuffer({
+                                size: 10 * 8,
+                                usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC
+                            });
+                            // Triple-buffered readback to avoid map/copy races
+                            for (let i = 0; i < 3; i++) {
+                                webgpuQueryReadbackBufs[i] = webgpuDevice.createBuffer({
+                                    size: 10 * 8,
+                                    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+                                });
+                            }
+                        }
 
                         uploadWebGPUParticles();
 
@@ -1278,6 +2453,11 @@
                                 { binding: 1, resource: { buffer: webgpuPosVelBufferB } },
                                 { binding: 2, resource: { buffer: webgpuExtraBuffer } },
                                 { binding: 3, resource: { buffer: webgpuUniformBuffer } },
+                                { binding: 4, resource: { buffer: webgpuFmmKeys } },
+                                { binding: 5, resource: { buffer: webgpuFmmHeads } },
+                                { binding: 6, resource: { buffer: webgpuFmmNext } },
+                                { binding: 7, resource: { buffer: webgpuFmmField } },
+                                { binding: 8, resource: { buffer: webgpuFmmCellSlots } },
                             ]
                         });
 
@@ -1288,29 +2468,51 @@
                                 { binding: 1, resource: { buffer: webgpuPosVelBufferA } },
                                 { binding: 2, resource: { buffer: webgpuExtraBuffer } },
                                 { binding: 3, resource: { buffer: webgpuUniformBuffer } },
+                                { binding: 4, resource: { buffer: webgpuFmmKeys } },
+                                { binding: 5, resource: { buffer: webgpuFmmHeads } },
+                                { binding: 6, resource: { buffer: webgpuFmmNext } },
+                                { binding: 7, resource: { buffer: webgpuFmmField } },
+                                { binding: 8, resource: { buffer: webgpuFmmCellSlots } },
                             ]
                         });
 
                         // Render bind group (binding 0: uniform params)
                         webgpuRenderBindGroup = webgpuDevice.createBindGroup({
-                            layout: webgpuPipelineRender.getBindGroupLayout(0),
+                            layout: renderBindLayout,
                             entries: [{ binding: 0, resource: { buffer: webgpuUniformBuffer } }]
                         });
+                        const fmmEntries = (source) => [
+                            { binding: 0, resource: { buffer: source } }, { binding: 1, resource: { buffer: webgpuFmmKeys } },
+                            { binding: 2, resource: { buffer: webgpuFmmHeads } }, { binding: 3, resource: { buffer: webgpuFmmNext } },
+                            { binding: 4, resource: { buffer: webgpuFmmLeafMass } }, { binding: 5, resource: { buffer: webgpuFmmLeafMom } },
+                            { binding: 6, resource: { buffer: webgpuFmmParentMom } }, { binding: 7, resource: { buffer: webgpuFmmParentField } },
+                            { binding: 8, resource: { buffer: webgpuFmmField } }, { binding: 9, resource: { buffer: webgpuFmmParams } },
+                            { binding: 10, resource: { buffer: webgpuFmmCellSlots } }
+                        ];
+                        webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: fmmLayout, entries: fmmEntries(webgpuPosVelBufferA) });
+                        webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: fmmLayout, entries: fmmEntries(webgpuPosVelBufferB) });
+
+                        // Adaptive bind groups (deferred until after webgpuFmmField is created)
+                        if (webgpuAdaptiveEnabled && webgpuAdaptiveLayout) {
+                            recreateAdaptiveBindGroups();
+                            if (webgpuAdaptiveEnabled) console.log('Multi-level FMM bind groups created successfully');
+                        }
 
                         activeBackend = 'WEBGPU';
                         document.getElementById('hwAccelWarning').style.display = 'none';
-                        document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGPU WGSL Compute (Zero-Copy)';
+                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${webgpuAdaptiveEnabled ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Elastic-Hash FMM' : 'WebGPU Analytic Fallback')}`;
                         document.getElementById('gpuName').innerText = gpuDescription;
-                        document.getElementById('vramMode').innerText = '100% On-Chip GPU VRAM';
+                        document.getElementById('vramMode').innerText = 'Estimated WebGPU buffer allocation';
+                        updateMemoryTelemetry();
                         requestAnimationFrame(frameLoop);
                         return;
                     }
                 } catch (e) {
-                    console.warn('WebGPU Init failed, falling back to WebGL2 Transform Feedback:', e);
+                    console.error('WebGPU initialization failed; falling back to WebGL2 Transform Feedback:', e);
                 }
             }
 
-            // 2. Fallback to WebGL 2.0 Transform Feedback GPU Pipeline
+            // 2. Fallback to WebGL 2.0 Transform Feedback (Non-FMM) Pipeline
             initWebGL2TF();
             requestAnimationFrame(frameLoop);
         }
@@ -1320,6 +2522,91 @@
             webgpuDevice.queue.writeBuffer(webgpuPosVelBufferA, 0, initialPositions.buffer, 0, N * 16);
             webgpuDevice.queue.writeBuffer(webgpuPosVelBufferB, 0, initialPositions.buffer, 0, N * 16);
             webgpuDevice.queue.writeBuffer(webgpuExtraBuffer, 0, initialExtras.buffer, 0, N * 16);
+        }
+
+        function recreateAdaptiveBindGroups() {
+            if (!webgpuAdaptiveLayout || !webgpuFmmField) return;
+            try {
+                webgpuAdaptiveBuffers.fields = webgpuFmmField;
+                const adaptiveEntries = (source) => [
+                    { binding: 0, resource: { buffer: source } },
+                    { binding: 1, resource: { buffer: webgpuAdaptiveBuffers.nodeCenterSize } },
+                    { binding: 2, resource: { buffer: webgpuAdaptiveBuffers.nodeParticleRange } },
+                    { binding: 3, resource: { buffer: webgpuAdaptiveBuffers.leafForParticle } },
+                    { binding: 4, resource: { buffer: webgpuAdaptiveBuffers.particleIndices } },
+                    { binding: 5, resource: { buffer: webgpuAdaptiveBuffers.listOffsets } },
+                    { binding: 6, resource: { buffer: webgpuAdaptiveBuffers.listCounts } },
+                    { binding: 7, resource: { buffer: webgpuAdaptiveBuffers.listData } },
+                    { binding: 8, resource: { buffer: webgpuAdaptiveBuffers.multipoles } },
+                    { binding: 9, resource: { buffer: webgpuAdaptiveBuffers.locals } },
+                    { binding: 10, resource: { buffer: webgpuAdaptiveBuffers.fields } },
+                    { binding: 11, resource: { buffer: webgpuAdaptiveParams } },
+                    { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeParent } },
+                    { binding: 13, resource: { buffer: webgpuAdaptiveBuffers.nodeChildren } },
+                    { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.nodeFlags } },
+                ];
+                webgpuAdaptiveBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuAdaptiveLayout, entries: adaptiveEntries(webgpuPosVelBufferA) });
+                webgpuAdaptiveBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuAdaptiveLayout, entries: adaptiveEntries(webgpuPosVelBufferB) });
+            } catch (bgErr) {
+                console.error('Adaptive bind group creation failed:', bgErr);
+                webgpuAdaptiveEnabled = false;
+            }
+        }
+
+        function uploadAdaptiveMetadata(md) {
+            // N-dependent buffers must be recreated when the particle count
+            // changes, otherwise writeBuffer would exceed the old buffer size.
+            if (!webgpuAdaptiveBuffers.leafForParticle ||
+                webgpuAdaptiveBuffers.leafForParticle.size !== md.leafForParticle.byteLength) {
+                if (webgpuAdaptiveBuffers.leafForParticle) webgpuAdaptiveBuffers.leafForParticle.destroy();
+                if (webgpuAdaptiveBuffers.particleIndices) webgpuAdaptiveBuffers.particleIndices.destroy();
+                const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+                webgpuAdaptiveBuffers.leafForParticle = webgpuDevice.createBuffer({ size: md.leafForParticle.byteLength, usage: roStorage });
+                webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: md.particleIndices.byteLength, usage: roStorage });
+                recreateAdaptiveBindGroups();
+            }
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParticleRange, 0, md.nodeParticleRange);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.leafForParticle, 0, md.leafForParticle);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.particleIndices, 0, md.particleIndices);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listOffsets, 0, md.listOffsets);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listCounts, 0, md.listCounts);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listData, 0, md.listData);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+        }
+
+        function rebuildAdaptiveMetadata(positions) {
+            if (!webgpuDevice || !webgpuAdaptiveEnabled) return;
+            adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth, positions);
+            uploadAdaptiveMetadata(adaptiveMetadata);
+        }
+
+        // Periodic live-position tree refresh: the quadtree particle
+        // assignment goes stale as the galaxies move, which would corrupt
+        // moments and local expansions. Every few frames the freshest GPU
+        // position buffer is copied to staging, mapped back, and used to
+        // rebuild + reupload the metadata.
+        let adaptiveRefreshPending = false;
+        let adaptiveFrameCounter = 0;
+        let adaptiveStagingBuffer = null;
+        let adaptiveStagingSize = 0;
+
+        function finishAdaptiveMetadataRefresh() {
+            const staging = adaptiveStagingBuffer;
+            adaptiveRefreshPending = true;
+            staging.mapAsync(GPUMapMode.READ).then(() => {
+                try {
+                    const live = new Float32Array(staging.getMappedRange().slice(0));
+                    rebuildAdaptiveMetadata(live);
+                } catch (err) {
+                    console.error('Adaptive metadata refresh failed:', err);
+                } finally {
+                    staging.unmap();
+                    adaptiveRefreshPending = false;
+                }
+            }).catch(() => { adaptiveRefreshPending = false; });
         }
 
         function initWebGL2TF() {
@@ -1371,8 +2658,12 @@
             gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.DYNAMIC_COPY);
 
             glTF = gl.createTransformFeedback();
+            webgpuBufferBytes = interleaved.byteLength * 2;
+            webgpuBufferLimitBytes = 0;
+            webgpuHashEntries = 0;
 
             activeBackend = 'WEBGL2_TF';
+            updateMemoryTelemetry();
             document.getElementById('gpuName').innerText = rendererInfo.name;
 
             if (rendererInfo.isSoftware) {
@@ -1380,11 +2671,11 @@
                 const gpuBadge = document.getElementById('gpuBadge');
                 gpuBadge.innerText = 'SOFTWARE FALLBACK';
                 gpuBadge.className = 'badge badge-warning';
-                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator" style="background-color:#FFA500; box-shadow:0 0 8px #FFA500;"></span>WebGL 2.0 (Software Emulation)';
+                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator" style="background-color:#FFA500; box-shadow:0 0 8px #FFA500;"></span>WebGL 2.0 (Non-FMM Software Fallback)';
                 document.getElementById('vramMode').innerText = 'Emulated CPU Memory (Low Perf)';
             } else {
                 document.getElementById('hwAccelWarning').style.display = 'none';
-                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGL 2.0 Transform Feedback GPU';
+                document.getElementById('engineBadge').innerHTML = '<span id="gpu-status-indicator"></span>WebGL 2.0 Transform Feedback (Non-FMM)';
                 document.getElementById('vramMode').innerText = 'GPU Transform Feedback Buffers';
             }
         }
@@ -1452,11 +2743,11 @@
                     { color: 'var(--accent-pink)', label: 'High Speed (> 0.08)' }
                 ];
             } else if (colorMode === 1) {
-                title = `${sName} — FMM Multipole Decomposition`;
+                title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM & 1€ Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
                 items = [
-                    { color: 'var(--accent-cyan)', label: 'Near-Field (P2P): Direct Core & Close Encounters' },
-                    { color: 'var(--accent-purple)', label: 'Far-Field (M2L): Multipole Expansions (Spiral Arms & Halo)' },
-                    { color: 'var(--accent-green)', label: '1€ Adaptive Filter: Jitter Damping Active' }
+                    { color: 'var(--accent-cyan)', label: 'Near-Field: Direct P2P (Separation / Repulsion)' },
+                    { color: 'var(--accent-purple)', label: 'Far-Field: Multipole M2L (Macro Cohesion)' },
+                    { color: 'var(--accent-green)', label: '1€ Filter: Adaptive Velocity Smoothing Active' }
                 ];
             } else if (colorMode === 2) {
                 title = `${sName} — Scenario Clusters`;
@@ -1519,7 +2810,7 @@
             }
 
             const stepMs = performance.now() - t0;
-            document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(2)} ms`;
+            document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(3)} ms`;
 
             frameCount++;
             const now = performance.now();
@@ -1539,9 +2830,10 @@
                 canvas.width = canvas.clientWidth;
                 canvas.height = canvas.clientHeight;
             }
+            let adaptiveRefreshDue = false;
 
             // Write Uniforms
-            const uniforms = new ArrayBuffer(64);
+            const uniforms = new ArrayBuffer(96);
             const floatView = new Float32Array(uniforms);
             const uintView = new Uint32Array(uniforms);
 
@@ -1561,28 +2853,140 @@
             floatView[13] = core1.y;
             floatView[14] = core2.x;
             floatView[15] = core2.y;
+            uintView[16] = (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) ? 1 : 0;
+            uintView[17] = (webgpuAdaptiveEnabled && useAdaptiveFmm) ? 1 : 0;
 
             webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, uniforms);
 
             const commandEncoder = webgpuDevice.createCommandEncoder();
 
-            // 1. Compute Pass
-            const computePass = commandEncoder.beginComputePass();
+            // CPU-side fallback timing (used when GPU timestamp queries are unavailable)
+            const cpuT0Fmm = performance.now();
+
+            // GPU timestamp query: 5 passes × (begin+end) = 10 slots
+            // Slots 0-1: FMM Build, 2-3: FMM M2L, 4-5: FMM L2P, 6-7: Main Compute, 8-9: Render
+            const tsOpts = (beginIdx, endIdx) => webgpuTimestampQueryEnabled
+                ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: beginIdx, endOfPassWriteIndex: endIdx } }
+                : {};
+
+            // Galaxy only: build atomic linked cell lists, leaf/parent moments, M2L, then L2P.
+            if (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm) {
+                const fmmParamData = new ArrayBuffer(16); const fmmU = new Uint32Array(fmmParamData); const fmmF = new Float32Array(fmmParamData);
+                fmmU[0] = N; fmmU[1] = Math.max(1, Math.floor(1000000 / Math.max(1, N))); fmmF[2] = 1.0 / 1000000.0; fmmU[3] = fmmOrder;
+                webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData);
+                const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
+                const runFmmInPass = (pass, name, groups) => { pass.setPipeline(webgpuFmmPipelines[name]); pass.setBindGroup(0, fmmGroup); pass.dispatchWorkgroups(groups); };
+
+                // Pass 1: FMM Build (clear + build cells + leaf moments + parent moments)
+                const fmmBuildPass = commandEncoder.beginComputePass(tsOpts(0, 1));
+                runFmmInPass(fmmBuildPass, 'clear_cells', 64);
+                runFmmInPass(fmmBuildPass, 'build_cells', Math.ceil(N / 256));
+                runFmmInPass(fmmBuildPass, 'build_moments', 64);
+                runFmmInPass(fmmBuildPass, 'parent_moments', 16);
+                fmmBuildPass.end();
+
+                // Pass 2: FMM M2L (parent-level far-field, 1024 cells × 1024 sources)
+                const m2lPass = commandEncoder.beginComputePass(tsOpts(2, 3));
+                runFmmInPass(m2lPass, 'm2l', 16);
+                m2lPass.end();
+
+                // Pass 3: FMM L2P (local-to-particle evaluation)
+                const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
+                runFmmInPass(l2pPass, 'l2p', Math.ceil(N / 256));
+                l2pPass.end();
+            }
+
+            // Adaptive CGR88 FMM: full multi-level pipeline with M2M/L2L/M2L/P2L
+            if (scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm) {
+                const md = adaptiveMetadata;
+                const nn = md.totalNodes;
+                const depth = md.depth;
+                const order = Math.min(4, Math.max(1, fmmOrder));
+
+                // Write adaptive params
+                const aParamData = new ArrayBuffer(16);
+                const aU = new Uint32Array(aParamData);
+                aU[0] = N; aU[1] = nn; aU[2] = order; aU[3] = md.numLevels;
+                webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, aParamData);
+
+                const aGroup = webgpuPingPong === 0 ? webgpuAdaptiveBindGroupA : webgpuAdaptiveBindGroupB;
+                const runAdaptive = (pass, name, groups) => {
+                    pass.setPipeline(webgpuAdaptivePipelines[name]);
+                    pass.setBindGroup(0, aGroup);
+                    pass.dispatchWorkgroups(groups);
+                };
+
+                // Pass 1: Clear multipoles and locals
+                const clearPass = commandEncoder.beginComputePass(tsOpts(0, 1));
+                runAdaptive(clearPass, 'clear', Math.ceil((nn * 3) / 256));
+                clearPass.end();
+
+                // Pass 2: P2M at terminal leaves
+                const p2mPass = commandEncoder.beginComputePass();
+                runAdaptive(p2mPass, 'p2m', Math.ceil(nn / 64));
+                p2mPass.end();
+
+                // Pass 3: M2M upward pass (deepest non-leaf level to root, with barriers)
+                for (let l = depth - 1; l >= 0; l--) {
+                    const lc = Math.ceil(md.levelCount[l] / 64);
+                    if (lc === 0) continue;
+                    const m2mPass = commandEncoder.beginComputePass();
+                    runAdaptive(m2mPass, 'm2m', lc);
+                    m2mPass.end();
+                }
+
+                // Pass 4: L2L + M2L downward pass (level 1 to depth, with barriers)
+                for (let l = 1; l <= depth; l++) {
+                    const lc = Math.ceil(md.levelCount[l] / 64);
+                    if (lc === 0) continue;
+                    // L2L and M2L in separate passes for correct memory ordering
+                    const l2lPass = commandEncoder.beginComputePass();
+                    runAdaptive(l2lPass, 'l2l', lc);
+                    l2lPass.end();
+                    const m2lPass = commandEncoder.beginComputePass();
+                    runAdaptive(m2lPass, 'm2l', lc);
+                    m2lPass.end();
+                }
+
+                // Pass 5: L2P at particles (includes List 3 M2P and List 1 P2P)
+                const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
+                runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256));
+                l2pPass.end();
+            }
+
+            const cpuT1Fmm = performance.now();
+
+            // Pass 4: Main Compute (physics integration + P2P near-field)
+            const cpuT0Main = performance.now();
+            const computePass = commandEncoder.beginComputePass(tsOpts(6, 7));
             computePass.setPipeline(webgpuPipelineCompute);
             computePass.setBindGroup(0, webgpuPingPong === 0 ? webgpuBindGroupA : webgpuBindGroupB);
             const workgroups = Math.ceil(N / 256);
             computePass.dispatchWorkgroups(workgroups);
             computePass.end();
+            const cpuT1Main = performance.now();
+
+            // CPU fallback: if no GPU timestamp queries, use CPU encoding time as rough estimate
+            if (!webgpuTimestampQueryEnabled) {
+                webgpuPassTimings.fmmBuild = cpuT1Fmm - cpuT0Fmm;
+                webgpuPassTimings.fmmM2l = 0;
+                webgpuPassTimings.fmmL2p = 0;
+                webgpuPassTimings.mainCompute = cpuT1Main - cpuT0Main;
+            }
 
             // 2. Render Pass
             const currentTexture = webgpuContext.getCurrentTexture().createView();
+            const renderTsOpts = webgpuTimestampQueryEnabled
+                ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: 8, endOfPassWriteIndex: 9 } }
+                : {};
             const renderPass = commandEncoder.beginRenderPass({
                 colorAttachments: [{
                     view: currentTexture,
                     clearValue: { r: 0.043, g: 0.055, b: 0.078, a: 1.0 },
                     loadOp: 'clear',
                     storeOp: 'store'
-                }]
+                }],
+                ...renderTsOpts
             });
             renderPass.setPipeline(webgpuPipelineRender);
             renderPass.setBindGroup(0, webgpuRenderBindGroup);
@@ -1592,8 +2996,56 @@
             renderPass.draw(N);
             renderPass.end();
 
+            // Resolve GPU timestamp queries and copy to a free readback buffer
+            if (webgpuTimestampQueryEnabled && webgpuQuerySet) {
+                commandEncoder.resolveQuerySet(webgpuQuerySet, 0, 10, webgpuQueryResolveBuffer, 0);
+                // Find a free buffer (state=0) to copy into
+                let copied = false;
+                for (let i = 0; i < 3; i++) {
+                    const idx = (webgpuQueryCopyIdx + i) % 3;
+                    if (webgpuQueryBufState[idx] === 0) {
+                        commandEncoder.copyBufferToBuffer(webgpuQueryResolveBuffer, 0, webgpuQueryReadbackBufs[idx], 0, 10 * 8);
+                        webgpuQueryBufState[idx] = 1; // has data
+                        webgpuQueryCopyIdx = (idx + 1) % 3;
+                        copied = true;
+                        break;
+                    }
+                }
+            }
+
+            const gpuSubmitTime = performance.now();
             webgpuDevice.queue.submit([commandEncoder.finish()]);
             webgpuPingPong = 1 - webgpuPingPong;
+
+            // Measure actual GPU completion time via onSubmittedWorkDone fence
+            webgpuDevice.queue.onSubmittedWorkDone().then(() => {
+                webgpuGpuCompleteMs = performance.now() - gpuSubmitTime;
+            });
+
+            // Async readback: map any buffer that has data (state=1), read timestamps, then free it
+            if (webgpuTimestampQueryEnabled && webgpuQuerySet) {
+                for (let i = 0; i < 3; i++) {
+                    if (webgpuQueryBufState[i] === 1) {
+                        webgpuQueryBufState[i] = 2; // mapping in progress
+                        const bufIdx = i;
+                        const buf = webgpuQueryReadbackBufs[bufIdx];
+                        buf.mapAsync(GPUMapMode.READ).then(() => {
+                            try {
+                                const data = new BigUint64Array(buf.getMappedRange());
+                                const nsToMs = (ns) => Number(ns) / 1e6;
+                                webgpuPassTimings.fmmBuild = nsToMs(data[1] - data[0]);
+                                webgpuPassTimings.fmmM2l = nsToMs(data[3] - data[2]);
+                                webgpuPassTimings.fmmL2p = nsToMs(data[5] - data[4]);
+                                webgpuPassTimings.mainCompute = nsToMs(data[7] - data[6]);
+                                webgpuPassTimings.render = nsToMs(data[9] - data[8]);
+                                webgpuPassTimings.totalGpu = nsToMs(data[9] - data[0]);
+                            } catch (_) {}
+                            buf.unmap();
+                            webgpuQueryBufState[bufIdx] = 0; // free
+                        }).catch(() => { webgpuQueryBufState[bufIdx] = 0; });
+                    }
+                }
+            }
         }
 
         function runWebGL2TFFrame(dt) {
@@ -1651,6 +3103,7 @@
             generateParticles();
             if (activeBackend === 'WEBGPU') {
                 uploadWebGPUParticles();
+                rebuildAdaptiveMetadata();
             } else if (activeBackend === 'WEBGL2_TF') {
                 const interleaved = new Float32Array(MAX_P * 7);
                 for (let i = 0; i < N; i++) {
@@ -1667,6 +3120,7 @@
                 gl.bindBuffer(gl.ARRAY_BUFFER, glBufPosVelB);
                 gl.bufferSubData(gl.ARRAY_BUFFER, 0, interleaved.subarray(0, N * 7));
             }
+            updateMemoryTelemetry();
         }
 
         // Mouse Listeners
@@ -1716,6 +3170,42 @@
             p2pRadius = parseFloat(e.target.value);
             document.getElementById('valRadius').innerText = p2pRadius.toFixed(3);
         });
+
+        const selectFmmOrderEl = document.getElementById('selectFmmOrder');
+        if (selectFmmOrderEl) {
+            selectFmmOrderEl.addEventListener('change', (e) => {
+                fmmOrder = parseInt(e.target.value);
+                const labels = {
+                    0: 'p=0 (Monopole)',
+                    1: 'p=1 (Dipole)',
+                    2: 'p=2 (Quadrupole CGR88)',
+                    4: 'p=4 (Hexadecapole CGR88)'
+                };
+                const valOrderEl = document.getElementById('valOrder');
+                if (valOrderEl) {
+                    valOrderEl.innerText = labels[fmmOrder] || `p=${fmmOrder}`;
+                }
+            });
+        }
+
+        const selectFmmModeEl = document.getElementById('selectFmmMode');
+        if (selectFmmModeEl) {
+            selectFmmModeEl.addEventListener('change', (e) => {
+                const useAdaptive = e.target.value === 'adaptive';
+                useAdaptiveFmm = useAdaptive && webgpuAdaptiveEnabled;
+                // When adaptive is selected but unavailable, keep fixed-grid
+                webgpuFmmEnabled = !useAdaptiveFmm;
+                const valFmmModeEl = document.getElementById('valFmmMode');
+                if (valFmmModeEl) {
+                    valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                }
+                // Update engine badge
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Elastic-Hash FMM' : 'WebGPU Analytic Fallback')}`;
+                }
+                updateMemoryTelemetry();
+            });
+        }
 
         // Presets
         const setPreset = (val, btn) => {
