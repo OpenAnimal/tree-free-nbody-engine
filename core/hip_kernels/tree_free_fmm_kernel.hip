@@ -1,59 +1,76 @@
 /**
  * Ultra-Fast Tree-Free Fast Multipole Method (FMM) AMD ROCm / HIP C++ Kernel
- * ===========================================================================
- * Native Heterogeneous-Compute Interface for Portability (HIP) implementation
- * providing full ATI/AMD Radeon GPU acceleration across consumer and enterprise architectures:
+ * =========================================================================
+ * Combines Lock-Free Non-Reordering Open Addressing Hash Table (Farach-Colton et al. 2025)
+ * with Carrier, Greengard, & Rokhlin (1988) Multipole Expansions (P2M, M2L, L2P)
+ * and Fused Shared-Memory / Local Data Share (LDS) P2P Interaction Tiles.
  *
  * Target Architectures:
- *  - AMD RDNA 4 (gfx1200 / RX 8000 Series)
- *  - AMD RDNA 3 (gfx1100 / gfx1101 / gfx1102 / RX 7900, 7800, 7700, 7600)
- *  - AMD RDNA 2 (gfx1030 / gfx1031 / gfx1032 / RX 6900, 6800, 6700, 6600)
- *  - AMD RDNA 1 (gfx1010 / gfx1012 / RX 5700, 5600, 5500)
- *  - AMD CDNA 1/2/3 (gfx908 / gfx90a / gfx940 / gfx942 / Instinct MI100, MI200, MI300)
- *  - AMD GCN 4/5 (gfx803 / gfx900 / Polaris RX 480/580, Vega 56/64)
- *
- * Features:
- *  - Dynamic Wavefront Size Detection (Wave32 for RDNA vs Wave64 for CDNA/GCN).
- *  - Non-Reordering Lock-Free Elastic Spatial Hash Table (Farach-Colton et al. 2025) via AMD Global Atomic CAS.
- *  - High-Throughput Fused All-Pairs P2P Interactions in AMD Local Data Share (LDS).
- *  - Cross-Lane Wavefront Shuffles (__shfl_down) for P2M Multipole Reductions.
+ *  - AMD RDNA 1/2/3/4 (gfx1010/gfx1030/gfx1100/gfx1200)
+ *  - AMD CDNA 1/2/3 (gfx906/gfx908/gfx90a/gfx940/gfx942)
  */
 
-#ifndef TREE_FREE_FMM_KERNEL_HIP
-#define TREE_FREE_FMM_KERNEL_HIP
-
-#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_NVIDIA__)
 #include <hip/hip_runtime.h>
-#else
-// Fallback for native compilation / linting
-#include <cuda_runtime.h>
-#endif
+#define WARP_SIZE 64
+#define AMD_WAVE_SIZE 64
 
 #include <stdint.h>
 #include <stdio.h>
 
-// Handle AMD Wavefront 32 (RDNA) vs Wavefront 64 (CDNA/GCN)
-#if defined(__AMDGCN_WAVEFRONT_SIZE)
-#define AMD_WAVE_SIZE __AMDGCN_WAVEFRONT_SIZE
-#elif defined(__HIP_PLATFORM_AMD__)
-#define AMD_WAVE_SIZE 64
-#else
-#define AMD_WAVE_SIZE 32
-#endif
-
-#define HIP_BLOCK_SIZE 256
+#define BLOCK_SIZE 256
 #define MAX_LEVELS 4
-#define ORDER 4
+#define MAX_ORDER 8
 
-// 16-byte aligned float4 particle structure matching AMD Radeon memory coalescing
-struct __align__(16) HipParticle {
+struct __align__(16) Particle3D {
     float x, y, z, q;
 };
 
-// ---------------------------------------------------------------------------
-// 1. AMD Device 3D Morton Coordinate Encoding
-// ---------------------------------------------------------------------------
-__device__ __forceinline__ uint32_t hip_expand_bits_3d(uint32_t v) {
+struct __align__(16) Particle2D {
+    float x, y;
+    float q;
+    float pad;
+};
+
+struct ComplexFloat {
+    float r, i;
+};
+
+__device__ __forceinline__ ComplexFloat c_make(float r, float i) {
+    ComplexFloat z; z.r = r; z.i = i; return z;
+}
+
+__device__ __forceinline__ ComplexFloat c_add(ComplexFloat a, ComplexFloat b) {
+    return c_make(a.r + b.r, a.i + b.i);
+}
+
+__device__ __forceinline__ ComplexFloat c_sub(ComplexFloat a, ComplexFloat b) {
+    return c_make(a.r - b.r, a.i - b.i);
+}
+
+__device__ __forceinline__ ComplexFloat c_mul(ComplexFloat a, ComplexFloat b) {
+    return c_make(a.r * b.r - a.i * b.i, a.r * b.i + a.i * b.r);
+}
+
+__device__ __forceinline__ ComplexFloat c_div(ComplexFloat a, ComplexFloat b) {
+    float den = b.r * b.r + b.i * b.i + 1e-18f;
+    return c_make((a.r * b.r + a.i * b.i) / den, (a.i * b.r - a.r * b.i) / den);
+}
+
+__device__ __forceinline__ ComplexFloat c_log(ComplexFloat a) {
+    float r = sqrtf(a.r * a.r + a.i * a.i + 1e-18f);
+    float theta = atan2f(a.i, a.r);
+    return c_make(logf(r), theta);
+}
+
+__device__ __forceinline__ uint32_t expand_bits_2d(uint32_t v) {
+    v = (v | (v << 8)) & 0x00FF00FF;
+    v = (v | (v << 4)) & 0x0F0F0F0F;
+    v = (v | (v << 2)) & 0x33333333;
+    v = (v | (v << 1)) & 0x55555555;
+    return v;
+}
+
+__device__ __forceinline__ uint32_t expand_bits_3d(uint32_t v) {
     v = (v | (v << 16)) & 0x030000FF;
     v = (v | (v << 8))  & 0x0300F00F;
     v = (v | (v << 4))  & 0x030C30C3;
@@ -61,29 +78,27 @@ __device__ __forceinline__ uint32_t hip_expand_bits_3d(uint32_t v) {
     return v;
 }
 
-__device__ __forceinline__ uint32_t hip_morton_encode_3d(float x, float y, float z, int depth) {
+__device__ __forceinline__ uint32_t morton_encode_2d_hip(float x, float y, int depth) {
     uint32_t grid_res = 1U << depth;
-    uint32_t ix = (uint32_t)fminf(fmaxf(x * (float)grid_res, 0.0f), (float)(grid_res - 1));
-    uint32_t iy = (uint32_t)fminf(fmaxf(y * (float)grid_res, 0.0f), (float)(grid_res - 1));
-    uint32_t iz = (uint32_t)fminf(fmaxf(z * (float)grid_res, 0.0f), (float)(grid_res - 1));
-    return hip_expand_bits_3d(ix) | (hip_expand_bits_3d(iy) << 1) | (hip_expand_bits_3d(iz) << 2);
+    uint32_t ix = fminf(fmaxf(x * grid_res, 0.0f), (float)(grid_res - 1));
+    uint32_t iy = fminf(fmaxf(y * grid_res, 0.0f), (float)(grid_res - 1));
+    return expand_bits_2d(ix) | (expand_bits_2d(iy) << 1);
 }
 
-// ---------------------------------------------------------------------------
-// 2. Lock-Free Non-Reordering Elastic Hash Table Insert (atomicCAS) on AMD GPU
-// ---------------------------------------------------------------------------
-__device__ __forceinline__ uint32_t hip_hash_probe(
-    uint32_t key,
-    uint32_t seed_a,
-    uint32_t seed_b,
-    uint32_t size,
-    int attempt
-) {
-    return ((key * seed_a + seed_b + (uint32_t)attempt * 2654435761U) & 0x7FFFFFFFU) % size;
+__device__ __forceinline__ uint32_t hip_morton_encode_3d(float x, float y, float z, int depth) {
+    uint32_t grid_res = 1U << depth;
+    uint32_t ix = fminf(fmaxf(x * grid_res, 0.0f), (float)(grid_res - 1));
+    uint32_t iy = fminf(fmaxf(y * grid_res, 0.0f), (float)(grid_res - 1));
+    uint32_t iz = fminf(fmaxf(z * grid_res, 0.0f), (float)(grid_res - 1));
+    return expand_bits_3d(ix) | (expand_bits_3d(iy) << 1) | (expand_bits_3d(iz) << 2);
+}
+
+__device__ __forceinline__ uint32_t hash_probe_hip(uint32_t key, uint32_t seed_a, uint32_t seed_b, uint32_t size, int attempt) {
+    return ((key * seed_a + seed_b + attempt * 2654435761U) & 0x7FFFFFFFU) % size;
 }
 
 __global__ void hip_insert_particles_elastic_hash_kernel(
-    const HipParticle* __restrict__ particles,
+    const Particle2D* __restrict__ particles,
     int num_particles,
     uint32_t* __restrict__ table_keys,
     int* __restrict__ table_head_indices,
@@ -94,13 +109,12 @@ __global__ void hip_insert_particles_elastic_hash_kernel(
     const uint32_t* __restrict__ seeds_b,
     int depth
 ) {
-    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     if (tid >= num_particles) return;
 
-    HipParticle p = particles[tid];
-    uint32_t key = hip_morton_encode_3d(p.x, p.y, p.z, depth);
+    Particle2D p = particles[tid];
+    uint32_t key = morton_encode_2d_hip(p.x, p.y, depth);
 
-    // Multi-level geometric probe without ANY reordering (Farach-Colton et al. 2025)
     bool inserted = false;
     for (int lvl = 0; lvl < MAX_LEVELS && !inserted; ++lvl) {
         uint32_t offset = level_offsets[lvl];
@@ -108,12 +122,9 @@ __global__ void hip_insert_particles_elastic_hash_kernel(
         int max_attempts = 4 + lvl * 2;
 
         for (int att = 0; att < max_attempts && !inserted; ++att) {
-            uint32_t slot = offset + hip_hash_probe(key, seeds_a[lvl * 4 + (att % 4)], seeds_b[lvl * 4 + (att % 4)], size, att);
-            
-            // Atomic lock-free slot claim via AMD global memory atomicCAS
+            uint32_t slot = offset + hash_probe_hip(key, seeds_a[lvl * 4 + (att % 4)], seeds_b[lvl * 4 + (att % 4)], size, att);
             uint32_t old_key = atomicCAS(&table_keys[slot], 0xFFFFFFFFU, key);
             if (old_key == 0xFFFFFFFFU || old_key == key) {
-                // Prepend particle to lock-free singly linked bucket list
                 int old_head = atomicExch(&table_head_indices[slot], tid);
                 particle_next_ptrs[tid] = old_head;
                 inserted = true;
@@ -122,67 +133,59 @@ __global__ void hip_insert_particles_elastic_hash_kernel(
     }
 }
 
-// ---------------------------------------------------------------------------
-// 3. Fused Near-Field P2P Interaction Kernel with AMD LDS Tiling
-// ---------------------------------------------------------------------------
 __global__ void hip_evaluate_near_field_p2p_kernel(
-    const HipParticle* __restrict__ particles,
+    const Particle3D* __restrict__ particles,
     int num_particles,
     float* __restrict__ out_potentials,
     float3* __restrict__ out_forces,
     float softening
 ) {
-    int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    if (tid >= num_particles) return;
+    __shared__ Particle3D lds_particles[BLOCK_SIZE];
+    int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
+    int lid = hipThreadIdx_x;
 
-    HipParticle p_i = particles[tid];
+    Particle3D my_p = (tid < num_particles) ? particles[tid] : Particle3D{0,0,0,0};
     float phi = 0.0f;
     float3 f = make_float3(0.0f, 0.0f, 0.0f);
     float eps_sq = softening * softening;
 
-    // Block-tiled execution using AMD Local Data Share (LDS)
-    __shared__ HipParticle lds_particles[HIP_BLOCK_SIZE];
-
-    int num_tiles = (num_particles + HIP_BLOCK_SIZE - 1) / HIP_BLOCK_SIZE;
-
+    int num_tiles = (num_particles + BLOCK_SIZE - 1) / BLOCK_SIZE;
     for (int t = 0; t < num_tiles; ++t) {
-        int load_idx = t * HIP_BLOCK_SIZE + threadIdx.x;
-        if (load_idx < num_particles) {
-            lds_particles[threadIdx.x] = particles[load_idx];
-        }
+        int load_idx = t * BLOCK_SIZE + lid;
+        lds_particles[lid] = (load_idx < num_particles) ? particles[load_idx] : Particle3D{0,0,0,0};
         __syncthreads();
 
-        int tile_limit = min(HIP_BLOCK_SIZE, num_particles - t * HIP_BLOCK_SIZE);
-        #pragma unroll 4
-        for (int j = 0; j < tile_limit; ++j) {
-            int global_j = t * HIP_BLOCK_SIZE + j;
-            if (global_j != tid) {
-                HipParticle p_j = lds_particles[j];
-                float dx = p_i.x - p_j.x;
-                float dy = p_i.y - p_j.y;
-                float dz = p_i.z - p_j.z;
-                float r_sq = dx * dx + dy * dy + dz * dz + eps_sq;
-                float inv_r = rsqrtf(r_sq);
-                float inv_r3 = inv_r * inv_r * inv_r;
-
-                phi += p_j.q * inv_r;
-                float force_scalar = p_i.q * p_j.q * inv_r3;
-                f.x += force_scalar * dx;
-                f.y += force_scalar * dy;
-                f.z += force_scalar * dz;
+        int tile_limit = min(BLOCK_SIZE, num_particles - t * BLOCK_SIZE);
+        if (tid < num_particles) {
+            #pragma unroll 4
+            for (int j = 0; j < tile_limit; ++j) {
+                int global_j = t * BLOCK_SIZE + j;
+                if (global_j != tid) {
+                    Particle3D pj = lds_particles[j];
+                    float dx = my_p.x - pj.x;
+                    float dy = my_p.y - pj.y;
+                    float dz = my_p.z - pj.z;
+                    float r_sq = dx * dx + dy * dy + dz * dz + eps_sq;
+                    float inv_r = rsqrtf(r_sq);
+                    float inv_r3 = inv_r * inv_r * inv_r;
+                    phi += pj.q * inv_r;
+                    float f_scalar = my_p.q * pj.q * inv_r3;
+                    f.x += f_scalar * dx;
+                    f.y += f_scalar * dy;
+                    f.z += f_scalar * dz;
+                }
             }
         }
         __syncthreads();
     }
 
-    out_potentials[tid] = phi;
-    out_forces[tid] = f;
+    if (tid < num_particles) {
+        out_potentials[tid] = phi;
+        out_forces[tid] = f;
+    }
 }
 
-// ---------------------------------------------------------------------------
-// 4. Wavefront-Level Multipole Expansion (P2M) for AMD ROCm
-// ---------------------------------------------------------------------------
-__device__ __forceinline__ float hip_wavefront_reduce_sum(float val) {
+__device__ __forceinline__ float hip_warp_reduce_sum(float val) {
     #pragma unroll
     for (int offset = AMD_WAVE_SIZE / 2; offset > 0; offset /= 2) {
         val += __shfl_down(val, offset, AMD_WAVE_SIZE);
@@ -191,33 +194,32 @@ __device__ __forceinline__ float hip_wavefront_reduce_sum(float val) {
 }
 
 __global__ void hip_compute_cluster_multipoles_kernel(
-    const HipParticle* __restrict__ particles,
+    const Particle3D* __restrict__ particles,
     const int* __restrict__ cluster_particle_indices,
     int num_particles_in_cluster,
     float3 cluster_center,
     float* __restrict__ out_monopole,
     float3* __restrict__ out_dipole
 ) {
-    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     float q_sum = 0.0f;
     float3 dipole = make_float3(0.0f, 0.0f, 0.0f);
 
     if (tid < num_particles_in_cluster) {
         int p_idx = cluster_particle_indices[tid];
-        HipParticle p = particles[p_idx];
+        Particle3D p = particles[p_idx];
         q_sum = p.q;
         dipole.x = p.q * (p.x - cluster_center.x);
         dipole.y = p.q * (p.y - cluster_center.y);
         dipole.z = p.q * (p.z - cluster_center.z);
     }
 
-    q_sum = hip_wavefront_reduce_sum(q_sum);
-    dipole.x = hip_wavefront_reduce_sum(dipole.x);
-    dipole.y = hip_wavefront_reduce_sum(dipole.y);
-    dipole.z = hip_wavefront_reduce_sum(dipole.z);
+    q_sum = hip_warp_reduce_sum(q_sum);
+    dipole.x = hip_warp_reduce_sum(dipole.x);
+    dipole.y = hip_warp_reduce_sum(dipole.y);
+    dipole.z = hip_warp_reduce_sum(dipole.z);
 
-    // Each wavefront leader atomically accumulates into global cluster multipoles
-    if ((threadIdx.x & (AMD_WAVE_SIZE - 1)) == 0) {
+    if ((hipThreadIdx_x & (AMD_WAVE_SIZE - 1)) == 0) {
         atomicAdd(out_monopole, q_sum);
         atomicAdd(&out_dipole->x, dipole.x);
         atomicAdd(&out_dipole->y, dipole.y);
@@ -225,4 +227,58 @@ __global__ void hip_compute_cluster_multipoles_kernel(
     }
 }
 
-#endif // TREE_FREE_FMM_KERNEL_HIP
+__global__ void hip_evaluate_cgr88_fmm_2d_kernel(
+    const Particle2D* __restrict__ particles,
+    int num_particles,
+    const ComplexFloat* __restrict__ cluster_local_coeffs,
+    const float2* __restrict__ cluster_centers,
+    const int* __restrict__ particle_cluster_ids,
+    float* __restrict__ out_potentials,
+    float2* __restrict__ out_forces,
+    int order,
+    float softening
+) {
+    int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
+    if (tid >= num_particles) return;
+
+    Particle2D p_i = particles[tid];
+    int c_id = particle_cluster_ids[tid];
+    float2 c_center = cluster_centers[c_id];
+
+    ComplexFloat dz = c_make(p_i.x - c_center.x, p_i.y - c_center.y);
+    ComplexFloat dz_k = c_make(1.0f, 0.0f);
+
+    ComplexFloat l0 = cluster_local_coeffs[c_id * (order + 1) + 0];
+    ComplexFloat pot_complex = l0;
+    ComplexFloat deriv_complex = c_make(0.0f, 0.0f);
+
+    for (int l = 1; l <= order; ++l) {
+        ComplexFloat coeff = cluster_local_coeffs[c_id * (order + 1) + l];
+        ComplexFloat term_deriv = c_mul(c_make((float)l, 0.0f), c_mul(coeff, dz_k));
+        deriv_complex = c_add(deriv_complex, term_deriv);
+        dz_k = c_mul(dz_k, dz);
+        pot_complex = c_add(pot_complex, c_mul(coeff, dz_k));
+    }
+
+    float phi = pot_complex.r;
+    float2 force = make_float2(-deriv_complex.r, deriv_complex.i);
+    float eps_sq = softening * softening;
+
+    for (int j = 0; j < num_particles; ++j) {
+        if (j != tid) {
+            Particle2D p_j = particles[j];
+            float dx = p_i.x - p_j.x;
+            float dy = p_i.y - p_j.y;
+            float r_sq = dx * dx + dy * dy + eps_sq;
+            if (r_sq < 0.0016f) {
+                float inv_r2 = 1.0f / (r_sq + 1e-12f);
+                phi += p_j.q * 0.5f * logf(r_sq + 1e-12f);
+                force.x -= p_j.q * dx * inv_r2;
+                force.y -= p_j.q * dy * inv_r2;
+            }
+        }
+    }
+
+    out_potentials[tid] = phi;
+    out_forces[tid] = force;
+}

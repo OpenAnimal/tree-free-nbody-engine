@@ -2,22 +2,53 @@
 Core Engine for Tree-Free N-Body & Spatial Field Computing
 ==========================================================
 Non-Reordering Open Addressing Hash (Farach-Colton et al. 2025)
-+ Fast Multipole Method (Greengard & Rokhlin, 1987)
++ Carrier, Greengard, & Rokhlin (1988) 2D Adaptive Fast Multipole Method
++ Greengard & Rokhlin (1987) Regular Fast Multipole Method
 """
 
 from .elastic_hash import (
     ElasticHashTable,
     jax_hash_probe,
 )
+from .adaptive_gpu_metadata import (
+    FlatAdaptiveMetadata,
+    build_flat_adaptive_metadata,
+    MAX_INTERACTIONS_PER_NODE,
+)
+from .cgr88_adaptive_fmm import (
+    CGR88AdaptiveFMM,
+    TreeFreeElasticAdaptiveFMM,
+    GreengardRokhlin87RegularFMM,
+    AdaptiveQuadTree,
+    QuadBox,
+    morton_encode_box,
+    decode_morton_box,
+    exact_direct_nbody_2d,
+    exact_direct_nbody_forces_2d,
+    p2m as cgr88_p2m,
+    m2m as cgr88_m2m,
+    m2l as cgr88_m2l,
+    l2l as cgr88_l2l,
+    l2p as cgr88_l2p,
+    l2p_force as cgr88_l2p_force,
+    p2l as cgr88_p2l,
+    m2p as cgr88_m2p,
+    p2p_potential_and_force,
+)
 from .tree_free_fmm import (
     morton_encode_2d,
     decode_morton_2d,
     get_box_center_2d,
+    morton_key_from_indices,
     TreeFreeFMM,
     p2m,
+    m2m,
     m2l,
+    l2l,
     eval_local,
+    eval_local_force,
     exact_direct_nbody,
+    exact_direct_forces,
 )
 from .fast_vectorized_fmm import (
     FastVectorizedFMM,
@@ -42,6 +73,7 @@ from .hip_kernels import (
 )
 from .webgpu_kernels import (
     get_wgsl_source,
+    get_adaptive_cgr88_wgsl_source,
     is_webgpu_available,
 )
 from .zig_backend import (
@@ -70,8 +102,11 @@ if HAS_JAX:
         jax_multi_level_probe_lookup,
         jax_elastic_probe_lookup,
         jax_p2m_expansion,
+        jax_m2m_translation,
         jax_m2l_translation,
+        jax_l2l_translation,
         jax_l2p_evaluation,
+        jax_l2p_force_evaluation,
         jax_p2p_near_field,
         jax_direct_nbody_reference,
         jax_direct_nbody,
@@ -82,19 +117,44 @@ else:
     jax_multi_level_probe_lookup = None
     jax_elastic_probe_lookup = None
     jax_p2m_expansion = None
+    jax_m2m_translation = None
     jax_m2l_translation = None
+    jax_l2l_translation = None
     jax_l2p_evaluation = None
+    jax_l2p_force_evaluation = None
     jax_p2p_near_field = None
     jax_direct_nbody_reference = None
     jax_direct_nbody = None
     compute_nbody_forces_jax = None
 
 __all__ = [
+    "FlatAdaptiveMetadata",
+    "build_flat_adaptive_metadata",
+    "MAX_INTERACTIONS_PER_NODE",
+    "CGR88AdaptiveFMM",
+    "TreeFreeElasticAdaptiveFMM",
+    "GreengardRokhlin87RegularFMM",
+    "AdaptiveQuadTree",
+    "QuadBox",
+    "morton_encode_box",
+    "decode_morton_box",
+    "exact_direct_nbody_2d",
+    "exact_direct_nbody_forces_2d",
+    "cgr88_p2m",
+    "cgr88_m2m",
+    "cgr88_m2l",
+    "cgr88_l2l",
+    "cgr88_l2p",
+    "cgr88_l2p_force",
+    "cgr88_p2l",
+    "cgr88_m2p",
+    "p2p_potential_and_force",
     "ElasticHashTable",
     "jax_hash_probe",
     "morton_encode_2d",
     "decode_morton_2d",
     "get_box_center_2d",
+    "morton_key_from_indices",
     "TreeFreeFMM",
     "FastVectorizedFMM",
     "BitboardMorton3D",
@@ -122,18 +182,26 @@ __all__ = [
     "opencl_morton_encode_3d",
     "get_hip_kernel_source",
     "get_wgsl_source",
+    "get_adaptive_cgr88_wgsl_source",
     "is_webgpu_available",
     "p2m",
+    "m2m",
     "m2l",
+    "l2l",
     "eval_local",
+    "eval_local_force",
     "exact_direct_nbody",
+    "exact_direct_forces",
     "HAS_JAX",
     "jax_morton_encode_2d",
     "jax_multi_level_probe_lookup",
     "jax_elastic_probe_lookup",
     "jax_p2m_expansion",
+    "jax_m2m_translation",
     "jax_m2l_translation",
+    "jax_l2l_translation",
     "jax_l2p_evaluation",
+    "jax_l2p_force_evaluation",
     "jax_p2p_near_field",
     "jax_direct_nbody_reference",
     "jax_direct_nbody",
