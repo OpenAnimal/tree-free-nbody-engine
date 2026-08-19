@@ -1,26 +1,18 @@
-// Flat adaptive CGR88 WebGPU kernel interface.
-// Metadata (nodes, terminal leaves, Lists 1-4) is supplied by
-// core.adaptive_gpu_metadata. GPU passes evaluate the supplied schedule.
-//
-// Coefficients use three vec4 slots per node:
-// slot 0 = (c0.re,c0.im,c1.re,c1.im)
-// slot 1 = (c2.re,c2.im,c3.re,c3.im)
-// slot 2 = (c4.re,c4.im,unused,unused)
-//
-// Full CGR88 pipeline:
-//   1. clear  – zero multipoles and locals
-//   2. p2m    – P2M at terminal leaves
-//   3. m2m    – M2M upward pass (dispatched deepest-to-shallowest, level barriers)
-//   4. l2l    – L2L downward pass (dispatched shallowest-to-deepest, level barriers)
-//   5. m2l    – M2L for List 2 + P2L for List 4 (accumulates on top of L2L)
-//   6. l2p    – L2P + List 3 M2P + List 1 P2P at particles
-
+// Flat adaptive CGR88 WebGPU kernel — full pipeline with M2M, L2L, M2L, P2L.
 struct Particle { pos: vec2<f32>, vel: vec2<f32> };
+// levelBase is the flat node offset of the level being dispatched. Nodes are
+// laid out with levelStart[l] = sum_{i<l} 4^i, so a dispatch of levelCount[l]
+// threads must address nodes as levelBase + id.x — plain id.x would cover the
+// WRONG level range (leaves missing M2L/L2L, other nodes accumulated 2-4x).
 struct FmmParams {
     numParticles: u32,
     nodeCount: u32,
     expansionOrder: u32,
     levelCount: u32,
+    levelBase: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -90,9 +82,6 @@ fn clear(@builtin(global_invocation_id) id: vec3<u32>) {
     locals[id.x] = vec4<f32>(0.0);
 }
 
-// P2M for terminal nodes. Source charge is one because the browser particle
-// representation has no independent charge channel; this can be replaced by a
-// charge buffer without changing the expansion operators.
 @compute @workgroup_size(64)
 fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
     let node = id.x;
@@ -114,11 +103,11 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var k = 0u; k <= 4u; k = k + 1u) { writec(&multipoles, node, k, coeff[k]); }
 }
 
-// M2M upward pass: for each non-terminal node, accumulate multipoles from children.
-// Dispatched level-by-level from deepest to shallowest with compute pass barriers.
 @compute @workgroup_size(64)
 fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
-    let node = id.x;
+    // Upward pass, dispatched per level: node = levelBase + id.x so the
+    // workgroup range covers exactly this level's nodes.
+    let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     if (isTerminal(node)) { return; }
     let center = nodeCenterSize[node].xy;
@@ -132,19 +121,17 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
             if (k == 0u) {
                 acc += readc(&multipoles, child, 0u);
             } else {
-                // M2M translation: b_l = -a_0 * delta^l / l + sum_{j=1}^{l} a_j * C(l-1,j-1) * delta^(l-j)
                 let delta = childCenter - center;
                 var deltaPower = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < k; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
                 let a0 = readc(&multipoles, child, 0u);
-                acc -= a0 * deltaPower / f32(k);
+                acc -= cmul(a0, deltaPower) / f32(k);
                 for (var j = 1u; j <= k; j = j + 1u) {
-                    // C(k-1, j-1) computed iteratively
                     var bj = 1.0;
                     for (var b = 1u; b <= (j - 1u); b = b + 1u) { bj *= f32(k - b) / f32(b); }
                     var dp = vec2<f32>(1.0, 0.0);
                     for (var n = 0u; n < (k - j); n = n + 1u) { dp = cmul(dp, delta); }
-                    acc += readc(&multipoles, child, j) * bj * dp;
+                    acc += cmul(readc(&multipoles, child, j), dp) * bj;
                 }
             }
         }
@@ -152,18 +139,16 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-// L2L downward pass: for each node with a parent, shift parent's local expansion
-// to this node and accumulate. Dispatched level-by-level from level 1 to max.
 @compute @workgroup_size(64)
 fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
-    let node = id.x;
+    // Downward pass, dispatched per level with exact level ranges.
+    let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     let parent = nodeParent[node];
     if (parent == INVALID) { return; }
     let center = nodeCenterSize[node].xy;
     let parentCenter = nodeCenterSize[parent].xy;
     let delta = center - parentCenter;
-    // d_l = sum_{k=l}^{p} c_k * C(k,l) * delta^(k-l)
     for (var l = 0u; l <= 4u; l = l + 1u) {
         if (l > params.expansionOrder) { break; }
         var acc = vec2<f32>(0.0);
@@ -173,22 +158,22 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
             for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
             var dp = vec2<f32>(1.0, 0.0);
             for (var n = 0u; n < (k - l); n = n + 1u) { dp = cmul(dp, delta); }
-            acc += readc(&locals, parent, k) * binom * dp;
+            acc += cmul(readc(&locals, parent, k), dp) * binom;
         }
-        // Accumulate on top of existing locals (which may have been zeroed by clear)
         let existing = readc(&locals, node, l);
         writec(&locals, node, l, existing + acc);
     }
 }
 
-// M2L for List 2 + P2L for List 4. Accumulates on top of L2L-shifted locals.
 @compute @workgroup_size(64)
 fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
-    let targetNode = id.x;
+    // M2L, dispatched per level with exact level ranges. Each node is
+    // processed exactly once per frame (locals were cleared by the clear
+    // pass), so the existing + accumulate semantics are correct.
+    let targetNode = params.levelBase + id.x;
     if (targetNode >= params.nodeCount) { return; }
     let targetCenter = nodeCenterSize[targetNode].xy;
 
-    // List 2: M2L
     let l2Offset = listOffsets[targetNode].y;
     let l2Count = listCounts[targetNode].y;
     for (var q = 0u; q < l2Count; q = q + 1u) {
@@ -209,9 +194,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             } else {
                 var deltaPower = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < l; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
-                // a0 term uses (-1)^(l-1), ak term uses (-1)^l
-                let sign_a0 = select(1.0, -1.0, (l & 1u) == 0u);  // (-1)^(l-1)
-                let sign_ak = -sign_a0;                            // (-1)^l
+                let sign_a0 = select(1.0, -1.0, (l & 1u) == 0u);
+                let sign_ak = -sign_a0;
                 local += cdiv(a0 * (sign_a0 / f32(l)), deltaPower);
                 for (var k = 1u; k <= 4u; k = k + 1u) {
                     if (k > params.expansionOrder) { break; }
@@ -222,13 +206,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     local += cdiv(readc(&multipoles, source, k) * (sign_ak * binom), power);
                 }
             }
-            // Accumulate
             let existing = readc(&locals, targetNode, l);
             writec(&locals, targetNode, l, existing + local);
         }
     }
 
-    // List 4: P2L (particles in distant large leaves -> local expansion)
     let l4Offset = listOffsets[targetNode].w;
     let l4Count = listCounts[targetNode].w;
     for (var q = 0u; q < l4Count; q = q + 1u) {
@@ -237,7 +219,6 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var n = 0u; n < range.y; n = n + 1u) {
             let pIdx = particleIndices[range.x + n];
             let d = targetCenter - particles[pIdx].pos;
-            // c_0 += q * log(d), c_l += q * (-1)^(l-1) / (l * d^l)
             let existing0 = readc(&locals, targetNode, 0u);
             writec(&locals, targetNode, 0u, existing0 + clog(d));
             for (var l = 1u; l <= 4u; l = l + 1u) {
@@ -252,7 +233,6 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-// L2P plus List 1 P2P and List 3 M2P direct particle/multipole evaluation.
 @compute @workgroup_size(256)
 fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let particle = id.x;
@@ -263,13 +243,14 @@ fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
     var potential = 0.0;
     var derivative = vec2<f32>(0.0);
 
-    // L2P: evaluate local expansion
     for (var l = 0u; l <= 4u; l = l + 1u) {
         if (l > params.expansionOrder) { break; }
         let c = readc(&locals, targetNode, l);
         var power = vec2<f32>(1.0, 0.0);
         for (var n = 0u; n < l; n = n + 1u) { power = cmul(power, dz); }
-        potential += dot(c, power);
+        // Potential is the REAL part of the complex product, not a
+        // vector dot product.
+        potential += cmul(c, power).x;
         if (l > 0u) {
             var derivativePower = vec2<f32>(1.0, 0.0);
             for (var n = 1u; n < l; n = n + 1u) { derivativePower = cmul(derivativePower, dz); }
@@ -277,7 +258,6 @@ fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    // List 3: direct M2P from smaller well-separated descendants.
     let list3Offset = listOffsets[targetNode].z;
     let list3Count = listCounts[targetNode].z;
     for (var q = 0u; q < list3Count; q = q + 1u) {
@@ -285,20 +265,44 @@ fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
         let delta = particles[particle].pos - nodeCenterSize[source].xy;
         let a0 = readc(&multipoles, source, 0u);
         let inv = cdiv(vec2<f32>(1.0, 0.0), delta);
-        potential += dot(a0, clog(delta));
+        potential += cmul(a0, clog(delta)).x;
         derivative += cmul(a0, inv);
         for (var k = 1u; k <= 4u; k = k + 1u) {
             if (k > params.expansionOrder) { break; }
             var power = vec2<f32>(1.0, 0.0);
             for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
             let ak = readc(&multipoles, source, k);
-            potential += dot(ak, cdiv(vec2<f32>(1.0, 0.0), power));
+            potential += cdiv(ak, power).x;
             derivative -= f32(k) * cmul(ak, cdiv(vec2<f32>(1.0, 0.0), cmul(power, delta)));
         }
     }
 
-    // List 1: direct near-field particle interactions.
-    // NOTE: In the browser visualization path, near-field P2P is handled by the
-    // main compute shader's budget-limited loop. This kernel outputs far-field only.
-    fields[particle] = vec4<f32>(-derivative.x, derivative.y, potential, 0.0);
+    // List 1: direct near-field interactions with adjacent leaves
+    // (softened, 1/r log-potential magnitude to match the FMM far
+    // field). Budgeted per leaf with an id-dependent stride so the
+    // sampled subset is decorrelated between particles.
+    var p2pForce = vec2<f32>(0.0);
+    let list1Offset = listOffsets[targetNode].x;
+    let list1Count = listCounts[targetNode].x;
+    var p2pBudget = 24u;
+    if (params.numParticles > 500000u) { p2pBudget = 12u; }
+    if (params.numParticles > 2000000u) { p2pBudget = 6u; }
+    for (var q = 0u; q < list1Count; q = q + 1u) {
+        let src = listData[list1Offset + q];
+        let range = nodeParticleRange[src];
+        if (range.y == 0u) { continue; }
+        let cnt = min(range.y, p2pBudget);
+        let skip = (particle * 2654435761u + src * 40503u) % range.y;
+        for (var n = 0u; n < cnt; n = n + 1u) {
+            let j = particleIndices[range.x + ((skip + n) % range.y)];
+            if (j == particle) { continue; }
+            let d = particles[particle].pos - particles[j].pos;
+            let r2 = dot(d, d) + 0.00004;
+            let inv2 = inverseSqrt(r2);
+            // Attraction toward j: -(d) * m / (r^2 + eps^2)
+            p2pForce -= d * (inv2 * inv2);
+        }
+    }
+
+    fields[particle] = vec4<f32>(-derivative.x + p2pForce.x, derivative.y + p2pForce.y, potential, 0.0);
 }

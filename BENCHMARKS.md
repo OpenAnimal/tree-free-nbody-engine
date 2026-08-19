@@ -154,14 +154,21 @@ skips in its own cross-check), not by the FMM itself.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (dense O(N^2))     70.02                     -  dense spatial RBF attention reference
-+elastichash (near+far centroid)   1820.41 (0.0x)      9.392e-02  near exact (3x3 funnel hash) + far per-cell centroid; lossy far-field centroid approximation
+standard (dense O(N^2))     84.24                     -  dense spatial RBF attention reference
++elastichash (near+far centroid)   1654.14 (0.1x)      9.392e-02  near exact (3x3 funnel hash) + far per-cell centroid; lossy far-field centroid approximation
++fmm (Taylor FGT)        1607.56 (0.1x)      4.685e-07  2D Gaussian Taylor FGT (core/gaussian2d_fgt.py), h=sigma*sqrt(2); exact spatial-only attention via per-column FGT + normalizer; NOT faster than direct at N=1500 (per-cell Python loop overhead)
 ```
 
 The near-exact/far-centroid attention is NOT faster than dense O(N^2) at
 N=1500 (per-cell Python loop overhead dominates) and pays a 9.4e-2 rel-L2
-far-field centroid cost; +fmm is omitted because the Gaussian RBF is not
-the 2D log kernel.
+far-field centroid cost. The new `+fmm (Taylor FGT)` row reaches 4.7e-7
+rel-L2 (the exact spatial-only attention, computed via the 2D Gaussian
+Taylor FGT in `core/gaussian2d_fgt.py` with h = sigma*sqrt(2) so the FGT
+kernel exp(-r^2/h^2) equals the app kernel exp(-r^2/(2 sigma^2)) exactly)
+but is also NOT faster than direct at N=1500 -- the per-column FGT loop
+(d_model+1 evaluations) plus the per-cell Python loop overhead puts it at
+0.1x. The asymptotic win needs larger N or a compiled kernel (Class D in
+[docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md)).
 
 ### App 4 -- Elastic-hash boids + 1euro (near-field boid rules)
 
@@ -196,6 +203,30 @@ derivative tensors dominates at this scale (Class D in
 needs larger N or a compiled kernel. This closes the round-3 Class C gap:
 the 3D Yukawa kernel is no longer "right kernel, 2D-only FMM" -- it now has
 a 3D FMM in `core/yukawa3d_fmm.py`.
+
+#### Yukawa3D error-vs-p convergence (round-4 task 4.8)
+
+`apps/app5_benchmark_variants.py:run_convergence` sweeps the expansion
+order p on the same protein distribution (N=2000, depth=6, kappa=2.0) and
+reports rel-L2 vs the exact direct reference:
+
+```
+   p         rel-L2   build+eval (s)                                     note
+--------------------------------------------------------------------------------
+   2     7.2735e-04           0.2788
+   4     6.6945e-05           0.3763                       ~9.20e-02x vs prev
+   6     6.2681e-05           1.1403                       ~9.36e-01x vs prev
+   8     6.2711e-05           3.5983           no improvement (floor reached)
+  10     6.2712e-05          12.0784           no improvement (floor reached)
+  12     6.2712e-05          28.8699           no improvement (floor reached)
+--------------------------------------------------------------------------------
+```
+
+The scheme converges sharply from p=2 to p=4 (~9.2e-2x, consistent with
+the order-(p+1) rate), then hits a floor at p=6 (~6.27e-5) set by the
+ring-2 near-field softening + f64 round-off. The table reports "no
+improvement (floor reached)" honestly for p>=8 rather than hiding the
+plateau. Run with `python -X utf8 apps/app5_benchmark_variants.py`.
 
 ### App 6 -- MuJoCo footpad proximity (3D nearest-point search)
 

@@ -102,5 +102,53 @@ def run_app5_variants(n_atoms: int = 3000):
     return bench.run()
 
 
+def run_convergence(n_atoms: int = 2000, ps=(2, 4, 6, 8, 10, 12), depth: int = 6,
+                    kappa: float = 2.0, seed: int = 42):
+    """Yukawa3D error-vs-p convergence table (round-4 task 4.8).
+
+    For each expansion order p in `ps`, run Yukawa3DFMM(depth, p, kappa) on
+    the app5 protein distribution and report rel-L2 vs the exact direct
+    O(N^2) screened-Coulomb reference. The table makes the convergence rate
+    visible: rel-L2 should drop by ~1e-2 per +2 in p (the scheme is
+    order-(p+1) in the cell radius). If the accuracy stops improving (the
+    floor set by the ring-2 near field + f64 round-off), that is reported
+    honestly in the note, not hidden.
+
+    Run standalone:  python -X utf8 apps/app5_benchmark_variants.py
+    """
+    from core import Yukawa3DFMM
+
+    coords, charges = _protein(n_atoms=n_atoms, seed=seed)
+    ref = _direct_debye_huckel(coords, charges, kappa=kappa)
+    ref_norm = float(np.linalg.norm(ref))
+    if ref_norm < 1e-300:
+        ref_norm = 1e-300
+
+    print(f"\n=== Yukawa3D error-vs-p convergence "
+          f"(N={n_atoms}, depth={depth}, kappa={kappa}, seed={seed}) ===")
+    print(f"{'p':>4} {'rel-L2':>14} {'build+eval (s)':>16} {'note':>40}")
+    print("-" * 80)
+    prev_rel = None
+    for p in ps:
+        import time as _time
+        t0 = _time.perf_counter()
+        fmm = Yukawa3DFMM(depth=depth, p=p, kappa=kappa)
+        est = fmm.evaluate(coords, charges)
+        dt = _time.perf_counter() - t0
+        rel = float(np.linalg.norm(est - ref) / ref_norm)
+        note = ""
+        if prev_rel is not None and rel >= prev_rel:
+            note = "no improvement (floor reached)"
+        elif prev_rel is not None:
+            note = f"~{rel / prev_rel:.2e}x vs prev"
+        print(f"{p:>4} {rel:>14.4e} {dt:>16.4f} {note:>40}")
+        prev_rel = rel
+    print("-" * 80)
+    print("Convergence rate: rel-L2 should drop ~1e-2 per +2 in p "
+          "(order-(p+1) in cell radius).")
+    return None
+
+
 if __name__ == "__main__":
     run_app5_variants()
+    run_convergence()

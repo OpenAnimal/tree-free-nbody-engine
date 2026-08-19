@@ -461,6 +461,10 @@
             <div class="metric-row"><span>Total GPU:</span> <span id="valTotalGpu" class="metric-val">—</span></div>
             <div class="metric-row"><span>GPU Complete:</span> <span id="valGpuComplete" class="metric-val">—</span></div>
             <div class="metric-row"><span>VRAM Buffer Mode:</span> <span id="vramMode" class="metric-val" style="color:var(--accent-green)">Zero-Copy GPU Buffer</span></div>
+            <div class="metric-row" id="row5mExtreme" style="display:none"><span>5M Extreme Mode:</span> <span id="val5mExtreme" class="metric-val" style="color:var(--accent-amber)">OFF</span></div>
+            <div class="metric-row" id="row5mBudget" style="display:none"><span>P2P Budget (5M):</span> <span id="val5mBudget" class="metric-val">—</span></div>
+            <div class="metric-row" id="row5mPeakStep" style="display:none"><span>Peak Step (5M):</span> <span id="val5mPeakStep" class="metric-val">—</span></div>
+            <div class="metric-row" id="row5mAvgStep" style="display:none"><span>Avg Step (5M, 60f):</span> <span id="val5mAvgStep" class="metric-val">—</span></div>
         </div>
     </div>
 
@@ -470,18 +474,22 @@
             <!-- Dynamically populated by updateOverlayLegend() -->
         </div>
 
-        <!-- Variant benchmark panel: same standard / +elastichash / +fmm /
+        <!-- Variant benchmark panel: same standard / +openaddr-hash / +fmm /
              +quantized_bitpacked / +adaptivefmm axes as core/benchmark_kit.py
              and the per-app benchmark_variants.py files. Static reference
              numbers below + a live in-browser micro-bench that toggles the
              axes the GPU shader actually exposes (FMM order, fixed/adaptive,
-             elastic hash, quantized state) and measures real per-frame step
-             latency + a far-field accuracy column. The 1euro filter is a UI
-             toggle only (boids) and is NOT a benchmark axis. -->
+             open-addressing hash (linear probe), quantized state) and measures
+             real per-frame step latency + a far-field accuracy column. The
+             1euro filter is a UI toggle only (boids) and is NOT a benchmark
+             axis. The GPU hash is generic open addressing (hashU32 + linear
+             probe), NOT the funnel schedule of core/elastic_hash.py; the
+             static reference table's +elastichash rows are Python results
+             pasted from BENCHMARKS.md and DO use the real funnel hash. -->
         <div id="bench-panel" class="collapsed">
             <div id="bench-header">
                 <span class="bench-title">Variant Benchmark</span>
-                <span class="bench-hint">standard / +elastichash / +fmm / +adaptivefmm / +quantized_bitpacked &middot; <a href="https://github.com/OpenAnimal/tree-free-nbody-engine/blob/main/BENCHMARKS.md" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">BENCHMARKS.md</a></span>
+                <span class="bench-hint">standard / +openaddr-hash (linear probe) / +fmm / +adaptivefmm / +quantized_bitpacked &middot; <a href="https://github.com/OpenAnimal/tree-free-nbody-engine/blob/main/BENCHMARKS.md" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">BENCHMARKS.md</a></span>
                 <button id="bench-run-btn">Run live GPU micro-bench</button>
                 <button id="bench-export-btn" disabled>Export JSON</button>
                 <span id="bench-live-status"></span>
@@ -2458,6 +2466,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuPassTimings = { fmmBuild: 0, fmmM2l: 0, fmmL2p: 0, mainCompute: 0, render: 0, totalGpu: 0 };
         let webgpuGpuCompleteMs = 0; // Actual GPU completion time via fence
 
+        // 5M-particle instrumentation (round 4 task 4.7). When N >= 5e6 the
+        // sidebar lights up a dedicated 5M Extreme block with the live P2P
+        // budget the L2P kernel actually selected, plus peak and rolling
+        // 60-frame average step latency. The peak/avg are reset whenever N
+        // changes so the readout always reflects the current workload.
+        const EXTREME_5M_THRESHOLD = 5_000_000;
+        let extreme5mActive = false;
+        let extreme5mPeakStep = 0;
+        let extreme5mStepWindow = []; // rolling 60-frame stepMs samples
+
         // Adaptive CGR88 FMM state
         let webgpuAdaptiveEnabled = false;
         let webgpuAdaptivePipelines = {};
@@ -2470,7 +2488,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
         // Benchmark axis flags (default off => validated counting-sort / f32
         // paths; toggled only by the live bench panel to measure the
-        // +elastichash / +quantized_bitpacked axes). See T3/T4.
+        // +openaddr-hash / +quantized_bitpacked axes). See T3/T4.
         let useElasticHash = false;        // open-addressing cell membership (vs counting sort)
         let useQuantized = false;          // f16-packed pos/vel state (vs f32)
         // Elastic-hash GPU buffers (T3). ehKeys/ehCount/ehCursor are atomic
@@ -2927,6 +2945,42 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (totalGpuEl) totalGpuEl.innerText = activeBackend === 'WEBGPU' && tsActive ? `${webgpuPassTimings.totalGpu.toFixed(3)} ms` : '—';
             const gpuCompleteEl = document.getElementById('valGpuComplete');
             if (gpuCompleteEl) gpuCompleteEl.innerText = activeBackend === 'WEBGPU' ? `${webgpuGpuCompleteMs.toFixed(3)} ms` : '—';
+        }
+
+        // 5M Extreme telemetry (round 4 task 4.7). Shows/hides the dedicated
+        // sidebar block and reports the L2P kernel's actual P2P budget at 5M,
+        // plus peak and rolling 60-frame average step latency. The P2P budget
+        // mirrors the WGSL l2p kernel's `p2pBudget` selection so the user can
+        // see exactly how many near-field samples per adjacent leaf each
+        // particle is doing at the extreme scale.
+        function updateExtreme5mTelemetry() {
+            const show = N >= EXTREME_5M_THRESHOLD;
+            const rowActive = document.getElementById('row5mExtreme');
+            const rowBudget = document.getElementById('row5mBudget');
+            const rowPeak = document.getElementById('row5mPeakStep');
+            const rowAvg = document.getElementById('row5mAvgStep');
+            const valActive = document.getElementById('val5mExtreme');
+            const valBudget = document.getElementById('val5mBudget');
+            const valPeak = document.getElementById('val5mPeakStep');
+            const valAvg = document.getElementById('val5mAvgStep');
+            if (rowActive) rowActive.style.display = show ? '' : 'none';
+            if (rowBudget) rowBudget.style.display = show ? '' : 'none';
+            if (rowPeak) rowPeak.style.display = show ? '' : 'none';
+            if (rowAvg) rowAvg.style.display = show ? '' : 'none';
+            if (!show) return;
+            if (valActive) valActive.innerText = activeBackend === 'WEBGPU' ? 'ACTIVE (WebGPU)' : 'ACTIVE (fallback)';
+            // Mirror the WGSL l2p p2pBudget ladder (adaptive_cgr88.wgsl).
+            let budget = 24;
+            if (N > 500000) budget = 12;
+            if (N > 2000000) budget = 6;
+            if (valBudget) valBudget.innerText = `${budget}/leaf`;
+            if (valPeak) valPeak.innerText = `${extreme5mPeakStep.toFixed(2)} ms`;
+            if (valAvg && extreme5mStepWindow.length > 0) {
+                const avg = extreme5mStepWindow.reduce((a, b) => a + b, 0) / extreme5mStepWindow.length;
+                valAvg.innerText = `${avg.toFixed(2)} ms (n=${extreme5mStepWindow.length})`;
+            } else if (valAvg) {
+                valAvg.innerText = '—';
+            }
         }
 
         function formatWebGLRenderer(raw) {
@@ -3981,6 +4035,24 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const stepMs = performance.now() - t0;
             document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(3)} ms`;
 
+            // 5M Extreme instrumentation (round 4 task 4.7): track peak and
+            // rolling 60-frame average step latency, refresh the sidebar
+            // block at 1 Hz alongside the rest of the telemetry.
+            if (N >= EXTREME_5M_THRESHOLD) {
+                if (!extreme5mActive) {
+                    extreme5mActive = true;
+                    extreme5mPeakStep = 0;
+                    extreme5mStepWindow = [];
+                }
+                if (stepMs > extreme5mPeakStep) extreme5mPeakStep = stepMs;
+                extreme5mStepWindow.push(stepMs);
+                if (extreme5mStepWindow.length > 60) extreme5mStepWindow.shift();
+            } else if (extreme5mActive) {
+                extreme5mActive = false;
+                extreme5mPeakStep = 0;
+                extreme5mStepWindow = [];
+            }
+
             // Live variant-benchmark sample hook: when a bench run is active,
             // collect per-frame step latency so runLiveBench() can measure
             // each shader-exposed axis (FMM order, fixed/adaptive, elastic
@@ -4002,6 +4074,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 frameCount = 0;
                 lastFpsTime = now;
                 updatePassTimingTelemetry();
+                updateExtreme5mTelemetry();
                 diagFlush();
             }
 
@@ -4568,6 +4641,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (b.id.startsWith('btnPreset')) b.classList.remove('active');
             });
             if (btn) btn.classList.add('active');
+            // Reset 5M instrumentation state on any particle-count change
+            // so peak/avg always reflect the current workload.
+            extreme5mPeakStep = 0;
+            extreme5mStepWindow = [];
             resetSimulation();
         };
 
@@ -4623,7 +4700,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // ====================================================================
         // VARIANT BENCHMARK PANEL (live in-browser micro-bench)
         // Axes (aligned with core/benchmark_kit.py): standard, +fmm,
-        // +adaptivefmm, +elastichash, +quantized_bitpacked. Each row isolates
+        // +adaptivefmm, +openaddr-hash, +quantized_bitpacked. Each row isolates
         // ONE axis and is measured on the real render path (the same
         // frameLoop stepMs the sidebar telemetry reports) plus a far-field
         // accuracy column (reusing the ?probe=1 brute-force compare), so the
@@ -4756,7 +4833,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             restoreBaseline();
 
             // T1 axis set. Axis names match benchmark_kit.py exactly:
-            // standard, +fmm, +adaptivefmm, +elastichash, +quantized_bitpacked
+            // standard, +fmm, +adaptivefmm, +openaddr-hash, +quantized_bitpacked
             // (suffixes like " p=4" allowed after the axis name). P2P radius
             // and 1euro are deliberately NOT axes (T2).
             const variants = [
@@ -4767,7 +4844,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { axis: '+fmm p=2', label: '+fmm p=2 (quadrupole)', cfg: { fmmOrder: 2 }, note: 'app default' },
                 { axis: '+fmm p=4', label: '+fmm p=4 (hexadecapole)', cfg: { fmmOrder: 4 }, note: 'highest far-field accuracy' },
                 { axis: '+adaptivefmm', label: '+adaptivefmm adaptive CGR88', cfg: { adaptive: true }, note: 'multi-level (if available)' },
-                { axis: '+elastichash', label: '+elastichash', cfg: { useElasticHash: true }, note: 'open-addressing cell membership' },
+                { axis: '+openaddr-hash', label: '+openaddr-hash (linear probe)', cfg: { useElasticHash: true }, note: 'open-addressing hash (hashU32 + linear probe); NOT the funnel schedule of core/elastic_hash.py' },
                 { axis: '+quantized_bitpacked', label: '+quantized_bitpacked', cfg: { useQuantized: true }, note: 'f16-packed state round-trip' },
             ];
 
@@ -4780,10 +4857,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'adaptive pipeline unavailable on this device' });
                     continue;
                 }
-                // +elastichash / +quantized_bitpacked: ERROR if the GPU path
+                // +openaddr-hash / +quantized_bitpacked: ERROR if the GPU path
                 // is not exposed on this device.
                 if (v.cfg.useElasticHash && !webgpuEhPipelines.eh_build) {
-                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'elastic-hash GPU path unavailable' });
+                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'open-addressing hash GPU path unavailable' });
                     continue;
                 }
                 if (v.cfg.useQuantized && !webgpuQuantPipelines.pack) {

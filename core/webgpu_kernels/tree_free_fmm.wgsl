@@ -50,7 +50,7 @@ fn c_mul(a: ComplexNum, b: ComplexNum) -> ComplexNum {
 var<workgroup> tile_particles: array<Particle2D, 128>;
 
 @compute @workgroup_size(128, 1, 1)
-fn main(
+fn fmm_compute_main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) group_id: vec3<u32>

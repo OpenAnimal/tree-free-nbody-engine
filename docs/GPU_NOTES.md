@@ -56,6 +56,18 @@ beyond the round-3 scope. Rather than fake a timing row on the existing
 direct kernel (which has no rebuild to overlap), this is recorded as "not
 attempted this round" per the round-3 plan's instruction.
 
+### Web demo hash honesty (round 4)
+
+The GPU hash in `index.html` (`eh_clear` / `eh_build` / `ehProbe`) is
+generic open addressing (hashU32 + linear probe), NOT the funnel schedule
+of `core/elastic_hash.py`. The live in-browser micro-bench axis is
+labeled `+openaddr-hash (linear probe)` to reflect this honestly. The
+funnel-schedule WGSL port (with ping-pong rebuilds) is future work; the
+current demo hash shares only the "hash-indexed cells, no pointers" idea
+with the elastic hash. The static reference table in `index.html` (pasted
+from `BENCHMARKS.md`) retains the `+elastichash` axis name because those
+rows are Python results that DO use the real funnel hash.
+
 ---
 
 ## 2. The "NOT faster at this scale" rows are Python constants, not algorithmic facts

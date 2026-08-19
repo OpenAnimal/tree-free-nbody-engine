@@ -52,11 +52,13 @@ neither radial nor translation-invariant — it depends on the dot product
 difference. There is no `G(r)` to expand.
 
 **Affected apps:** app3 (spatial-hash attention with a 2D Gaussian RBF is
-radial and DOES have FMM structure — see Class D for why it is still
-omitted at demo scale; the softmax-attention variant documented here is the
-non-radial case), app10 (continuous spatial GNN with a 2D Gaussian message
-kernel — radial, see Class D). The pure softmax-attention case is documented
-as the canonical Class B example.
+radial and DOES have FMM structure — the Gaussian is now served by
+`core/gaussian2d_fgt.py` (see the `+fmm (Taylor FGT)` row in the
+[App 3](../BENCHMARKS.md#app-3-spatial-hash-attention-2d-gaussian-rbf)
+table); the softmax-attention variant documented here is the non-radial
+case that remains in Class B), app10 (continuous spatial GNN with a 2D
+Gaussian message kernel — radial, see Class D). The pure softmax-attention
+case is documented as the canonical Class B example.
 
 **Falsifiable reason:** for a softmax-attention head, the contribution from
 key `k_j` to query `q_i` is `exp(q_i·k_j / sqrt(d)) / sum_l exp(q_i·k_l /
@@ -70,24 +72,20 @@ the attention sum becomes a linear-time matrix product. This is documented
 here as the known alternative; it is NOT implemented in this repo (the apps
 use spatial hashing instead, which is exact in the near field).
 
-**FGT note (round-3 optional stretch, NOT attempted):** for the *radial
-Gaussian RBF* variant of app3 (`G(r) = exp(-r^2/h^2)`, which IS radial and
-so is technically a Class D "right technique, wrong scale" case rather than
-a true Class B non-radial kernel), the corresponding fast transform is the
-**Fast Gaussian Transform** (Greengard & Strain 1991), whose derivative-
-tensor recursion `G_{n+1} = G_n'(r)/r` is the same one used in
-`core/yukawa3d_fmm.py` — for a Gaussian it closes as
-`G_n(r) = (-2/h^2)^n * exp(-r^2/h^2)`. A `+fgt (Taylor order-4 Gaussian)`
-row for app3 was the round-3 optional stretch, but it was NOT implemented
-this round: app3 is 2D and the round-3 derivative-tensor FMM machinery was
-built for the 3D Yukawa case (3D multi-indices, `CellIndex(dims=3)`); a 2D
-port of the P-tensor / M2L / L2P assembly is a separate piece of work, and
-the plan permitted skipping it with an honest pointer to the FGT literature
-rather than faking a half-derived row. The derivative-tensor machinery in
-`core/yukawa3d_fmm.py` is kernel-agnostic (the `P_{alpha,n}` recursion only
-uses `G_n'(r) = r G_{n+1}(r)`) and could be retargeted to the Gaussian in a
-future round by swapping the `G_n` evaluator and dropping to 2D multi-
-indices.
+**Gaussian RBFs now have a fast transform (round-4):** the *radial Gaussian
+RBF* variant of app3 (`G(r) = exp(-r^2/h^2)`, which IS radial and so is a
+Class D "right technique, wrong scale" case rather than a true Class B
+non-radial kernel) is now served by `core/gaussian2d_fgt.py`
+(`Gaussian2DFGT`), a 2D Taylor Fast Gaussian Transform. The Gaussian is an
+eigenfunction of the radial operator `(1/r d/dr)`, so the derivative-tensor
+radial functions close exactly as `G_n(r) = (-2/h^2)^n * exp(-r^2/h^2)` and
+the same `P_{alpha,n}` recursion as the 3D Yukawa FMM (dropped to 2D
+multi-indices) gives the derivative tensors. The app3 `+fmm (Taylor FGT)`
+row reaches 4.7e-7 rel-L2 (the exact spatial-only attention) but is NOT
+faster than direct at N=1500 (Class D constant-factor regime). The
+softmax-attention kernel itself remains in Class B: it is bilinear in
+`q·k`, not a function of `|q-k|`, so no multipole/Taylor expansion applies
+and the Gaussian FGT does not serve it.
 
 **Evidence table:** [App 3](../BENCHMARKS.md#app-3-spatial-hash-attention-2d-gaussian-rbf)
 (Gaussian RBF, radial — Class D applies; the softmax variant is the
