@@ -4096,6 +4096,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 updatePassTimingTelemetry();
                 updateExtreme5mTelemetry();
                 diagFlush();
+                autoprintTelemetry(fps);
             }
 
             requestAnimationFrame(frameLoop);
@@ -4964,7 +4965,96 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         benchRunBtn.addEventListener('click', (e) => { e.stopPropagation(); runLiveBench(); });
         benchExportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportBenchJson(); });
 
+        // ====================================================================
+        // URL PARAMS for hands-free browser verification (round-6 task 6.3)
+        //   ?preset=15k|120k|500k|5m  -> equivalent to clicking the preset button
+        //   ?n=<int>                  -> equivalent to spinbutton + Set (overrides preset)
+        //   ?scenario=galaxy|boids|vortex|sph -> select scenario
+        //   ?autoprint=1              -> log one `TELEM {json}` console line per
+        //                                1Hz telemetry refresh with all sidebar metrics
+        // No behavior change when params are absent. Applied BEFORE initEngine
+        // so generateParticles() runs with the requested N/scenario.
+        // ====================================================================
+        const AUTOPRINT = new URLSearchParams(location.search).get('autoprint') === '1';
+        function applyUrlParams() {
+            const qs = new URLSearchParams(location.search);
+            const presetMap = {
+                '15k':  { n: 15000,    btn: 'btnPreset15k' },
+                '120k': { n: 120000,   btn: 'btnPreset120k' },
+                '500k': { n: 500000,   btn: 'btnPreset500k' },
+                '5m':   { n: 5000000,  btn: 'btnPreset5M' },
+            };
+            const preset = (qs.get('preset') || '').toLowerCase();
+            if (presetMap[preset]) {
+                N = Math.min(maxRuntimeParticles, Math.max(1000, presetMap[preset].n));
+                const btn = document.getElementById(presetMap[preset].btn);
+                if (btn) {
+                    document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
+                        if (b.id.startsWith('btnPreset')) b.classList.remove('active');
+                    });
+                    btn.classList.add('active');
+                }
+            }
+            const nParam = parseInt(qs.get('n') || '0', 10);
+            if (nParam > 0) {
+                // n overrides preset (custom count, like spinbutton + Set).
+                N = Math.min(maxRuntimeParticles, Math.max(1000, nParam));
+                document.querySelectorAll('#sidebar .btn-grid button').forEach(b => {
+                    if (b.id.startsWith('btnPreset')) b.classList.remove('active');
+                });
+            }
+            const scen = qs.get('scenario');
+            if (scen && ['galaxy', 'boids', 'vortex', 'sph'].includes(scen)) {
+                scenario = scen;
+                const sel = document.getElementById('scenarioSelect');
+                if (sel) sel.value = scen;
+            }
+            // Reflect N in the UI controls (slider + custom input + readout).
+            document.getElementById('valParticles').innerText = N.toLocaleString();
+            const slider = document.getElementById('sliderParticles');
+            if (slider) {
+                if (N <= 250000) { slider.max = 250000; slider.value = N; }
+                else { slider.max = N; slider.value = N; }
+            }
+            const inp = document.getElementById('inputCustomParticles');
+            if (inp) inp.value = N;
+        }
+        // One stable parseable console line per 1Hz telemetry refresh.
+        function autoprintTelemetry(fps) {
+            if (!AUTOPRINT) return;
+            const get = (id) => { const el = document.getElementById(id); return el ? el.innerText : null; };
+            const avg = extreme5mStepWindow.length > 0
+                ? extreme5mStepWindow.reduce((a, b) => a + b, 0) / extreme5mStepWindow.length
+                : null;
+            const telem = {
+                N, scenario, fps,
+                throughput: get('valThroughput'),
+                computeTimeMs: get('valComputeTime'),
+                gpuBuffers: get('valGpuMemory'),
+                gpuBufferLimit: get('valGpuLimit'),
+                cellOccupancy: get('valFmmHash'),
+                p2pNearField: get('valP2pBudget'),
+                fmmBuildMs: +webgpuPassTimings.fmmBuild.toFixed(4),
+                fmmM2lMs: +webgpuPassTimings.fmmM2l.toFixed(4),
+                fmmL2pMs: +webgpuPassTimings.fmmL2p.toFixed(4),
+                mainComputeMs: +webgpuPassTimings.mainCompute.toFixed(4),
+                renderMs: +webgpuPassTimings.render.toFixed(4),
+                totalGpuMs: +webgpuPassTimings.totalGpu.toFixed(4),
+                gpuCompleteMs: +webgpuGpuCompleteMs.toFixed(4),
+                leafBits: fmmLeafBits,
+                p2pRadius,
+                extreme5m: extreme5mActive ? {
+                    peakStepMs: +extreme5mPeakStep.toFixed(4),
+                    avgStepMs: avg != null ? +avg.toFixed(4) : null,
+                    avgStepN: extreme5mStepWindow.length,
+                    budget: get('val5mBudget'),
+                } : null,
+            };
+            console.log('TELEM ' + JSON.stringify(telem));
+        }
+
         // Launch Engine
+        applyUrlParams();
         initEngine();
         setInterval(() => { diagState.timers = (diagState.timers || 0) + 1; diagFlush(); }, 1000);
     </script>
