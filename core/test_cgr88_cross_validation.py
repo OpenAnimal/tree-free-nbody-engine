@@ -445,6 +445,38 @@ def test_tree_free_elastic_adaptive_equivalence():
     assert diff_fx < 1e-12, f"Tree-Free and Tree force difference {diff_fx:.3e} exceeds tolerance"
 
 
+def test_flat_fmm_elastic_hash_occupancy():
+    """FastVectorizedFMM on a clustered non-uniform distribution: accuracy
+    vs direct summation AND the elastic hash must contain exactly the set
+    of occupied Morton cell keys."""
+    np.random.seed(707)
+    pts = np.vstack([
+        np.random.rand(40, 2) * 0.10 + 0.10,
+        np.random.rand(60, 2) * 0.15 + 0.70,
+        np.random.rand(100, 2) * 0.30 + 0.40,
+    ])
+    q = np.random.uniform(-1.0, 1.0, size=len(pts))
+
+    fmm = FastVectorizedFMM(depth=4, order=8)
+    pot, fx, fy = fmm.evaluate(pts, q, compute_forces=True)
+
+    exact_pot = exact_direct_nbody_2d(pts, q)
+    exact_fx, _ = exact_direct_nbody_forces_2d(pts, q)
+    err_pot = np.max(np.abs(pot - exact_pot)) / np.max(np.abs(exact_pot))
+    err_fx = np.max(np.abs(fx - exact_fx)) / np.max(np.abs(exact_fx))
+    assert err_pot < 1e-4, f"flat FMM potential error {err_pot:.3e}"
+    assert err_fx < 1e-3, f"flat FMM force error {err_fx:.3e}"
+
+    grid_res = 1 << 4
+    ix = np.clip((pts[:, 0] * grid_res).astype(np.int64), 0, grid_res - 1)
+    iy = np.clip((pts[:, 1] * grid_res).astype(np.int64), 0, grid_res - 1)
+    expected_keys = set(int(k) for k in ((4 << 24) | (ix << 12) | iy))
+    hash_keys = set(int(k) for k, _ in fmm.hash_table.items())
+    assert hash_keys == expected_keys, "elastic hash occupancy mismatch"
+    for k in expected_keys:
+        assert k in fmm.hash_table, f"occupied cell {k} missing from elastic hash"
+
+
 if __name__ == '__main__':
     tests = [
         ("test_p2m_expansion_accuracy", test_p2m_expansion_accuracy),
@@ -460,6 +492,7 @@ if __name__ == '__main__':
         ("test_cgr88_singular_boundary_distribution", test_cgr88_singular_boundary_distribution),
         ("test_multi_engine_cross_validation", test_multi_engine_cross_validation),
         ("test_tree_free_elastic_adaptive_equivalence", test_tree_free_elastic_adaptive_equivalence),
+        ("test_flat_fmm_elastic_hash_occupancy", test_flat_fmm_elastic_hash_occupancy),
     ]
     for p in [2, 4, 6, 8, 10, 12]:
         tests.append((f"test_cgr88_convergence_vs_order(p={p})", lambda p=p: test_cgr88_convergence_vs_order(p)))

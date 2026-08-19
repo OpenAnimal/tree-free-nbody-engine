@@ -25,6 +25,7 @@ struct SimulationParams {
     num_clusters: u32,
     order: u32,
     softening_sq: f32,
+    cell_size: f32, // width of one uniform-grid leaf cell (world units)
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle2D>;
@@ -106,17 +107,25 @@ fn main(
 
         let tile_limit = min(128u, n - t * 128u);
         if (gid < n) {
+            let my_cid = my_p.cluster_id;
+            let my_center = cluster_centers[my_cid];
             for (var j: u32 = 0u; j < tile_limit; j = j + 1u) {
                 let global_j = t * 128u + j;
                 if (global_j != gid) {
                     let pj = tile_particles[j];
-                    let diff = my_p.pos - pj.pos;
-                    let r_sq = dot(diff, diff) + params.softening_sq;
-                    if (r_sq < 0.0025) { // Within direct near-field cutoff
-                        let r_sq_safe = max(r_sq, 1e-12);
-                        let inv_r = inverseSqrt(r_sq_safe);
+                    // Near-field = same or geometrically adjacent cluster
+                    // (Chebyshev center distance <= one cell): the exact
+                    // complement of the far-field well-separated pairs.
+                    let cj_center = cluster_centers[pj.cluster_id];
+                    let near_cell = (pj.cluster_id == my_cid) ||
+                        (abs(cj_center.x - my_center.x) <= 1.5 * params.cell_size &&
+                         abs(cj_center.y - my_center.y) <= 1.5 * params.cell_size);
+                    if (near_cell) {
+                        let diff = my_p.pos - pj.pos;
+                        let r_sq = dot(diff, diff) + params.softening_sq;
+                        let inv_r = inverseSqrt(r_sq);
                         let inv_r2 = inv_r * inv_r;
-                        acc_phi = acc_phi + pj.q * 0.5 * log(r_sq_safe);
+                        acc_phi = acc_phi + pj.q * 0.5 * log(r_sq);
                         acc_f = acc_f - pj.q * diff * inv_r2;
                     }
                 }

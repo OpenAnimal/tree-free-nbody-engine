@@ -1,10 +1,10 @@
 """
-Application 9: Lock-Free High-Dimensional Streaming Vector Database Engine.
+Application 9: High-Dimensional Streaming Vector Database Engine.
 Powered by Random Hyperplane LSH + Farach-Colton / Krapivin / Kuszmaul Elastic Non-Reordering Hash.
 
 Features:
 1. Simulates dynamic streaming ingestion of 128-dimensional dense vectors (e.g. LLM embeddings).
-2. Evaluates Lock-Free O(1) Ingestion Rate vs IVF/HNSW Index build times.
+2. Evaluates ingestion rate (amortized O(1)-probe funnel-hash inserts) vs IVF/HNSW index build times.
 3. Tests Top-K Recall & Query Latency with multi-probe bucket retrieval.
 """
 
@@ -19,7 +19,9 @@ from core.elastic_hash import ElasticHashTable
 
 class StreamingVectorDB:
     """
-    Lock-Free Vector Database Engine backed by Farach-Colton Non-Reordering Hash.
+    Vector Database Engine backed by the Farach-Colton/Krapivin/Kuszmaul non-reordering
+    funnel hash (single-process; atomic lock-free operation is a property of the
+    table design, not claimed for this Python driver).
     """
     def __init__(self, d_dim: int = 128, n_hyperplanes: int = 14, delta: float = 0.05):
         self.d_dim = d_dim
@@ -44,7 +46,7 @@ class StreamingVectorDB:
         return int(np.sum(proj * self.powers_of_two))
 
     def insert(self, vec: np.ndarray) -> int:
-        """Lock-Free O(1) Vector Ingestion."""
+        """Vector ingestion: one amortized-O(1)-probe funnel-hash insert per bucket."""
         vec_id = self.n_vectors
         self.vector_storage.append(vec)
         self.n_vectors += 1
@@ -180,7 +182,7 @@ def run_streaming_vector_db_demo():
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 9: Lock-Free High-Dimensional Vector DB Engine (Farach-Colton Hash)", 
+    fig.suptitle("Application 9: High-Dimensional Vector DB Engine (Funnel Hash, Farach-Colton et al.)", 
                  color='white', fontsize=13, fontweight='bold')
     plt.tight_layout()
     output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "app9_streaming_vector_db.png")

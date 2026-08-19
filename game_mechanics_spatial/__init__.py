@@ -5,7 +5,7 @@ High-performance spatial algorithms, swarm navigation, procedural generation, an
 
 from .massive_crowd_flocking import MassiveGameCrowdEngine
 from .line_of_sight_fog_of_war import GameLineOfSightRadar
-from .procedural_map_generator import ProceduralMultipoleMapGenerator
+from .procedural_map_generator import ProceduralMultipoleMapGenerator, ProceduralRBFMapGenerator
 from .smart_brush_lasso_selector import SmartBrushPointCloudSelector
 from .fast_mesh_lod_decimator import FastMeshLODDecimator
 from .harmonic_flow_field_pathfinding import HarmonicPotentialFlowField
@@ -25,6 +25,7 @@ __all__ = [
     "GameLineOfSightRadar",
     "LineOfSightFogOfWarEngine",
     "ProceduralMultipoleMapGenerator",
+    "ProceduralRBFMapGenerator",
     "SmartBrushPointCloudSelector",
     "SmartBrushLassoSelector",
     "FastMeshLODDecimator",

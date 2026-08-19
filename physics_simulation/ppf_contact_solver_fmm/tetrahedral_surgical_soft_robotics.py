@@ -1,9 +1,15 @@
 """
-Volumetric Tetrahedral Soft Robotics & Biomechanical Surgical Simulator.
-Powered by Matrix-Free Incremental Potential Contact (IPC), Neo-Hookean Elasticity, and Farach-Colton Spatial Hashing.
+Volumetric Tetrahedral Broadphase Scaffold for Soft-Robotics / Surgical Meshes.
 
-Simulates 3D deformable organs (liver, beating heart, surgical incisions) and soft robotic grippers
-with 100% strict penetration-free contact and zero dynamic sparse matrix allocations (0 MB DynCSRMat).
+STATUS: SCAFFOLD, NOT A SOLVER. This module currently performs only the 3D
+spatial broadphase pass (quantize vertices to Morton cell keys, index the
+occupied cells in the non-reordering elastic hash, and query the 27-cell
+neighborhood to count adjacent-vertex pairs). It contains NO elasticity
+model, NO IPC barrier solve, and NO time integration — despite the folder's
+historical name there is no FMM here either. The real matrix-free IPC
+solver lives in matrix_free_ipc.py (cloth shells, verified barrier forces
+and matrix-free CG). Remove or extend this scaffold before citing any
+contact or physics guarantee from it.
 """
 
 import numpy as np
@@ -13,7 +19,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 
 class TetrahedralSoftRoboticsSolver:
     """
@@ -23,38 +29,41 @@ class TetrahedralSoftRoboticsSolver:
         self.dhat = dhat
         self.stiffness = stiffness_contact
         self.k_young = k_young
-        self.hash_table = ElasticHashTable(capacity=16384, delta=0.05)
+        self.index = CellIndex(dims=3, grid_res=32)
 
     def solve_deformable_step(self, vertices: np.ndarray, tets: np.ndarray, dt: float = 0.01) -> Dict:
         """
+        Broadphase-only pass (see module docstring): buckets vertices into
+        Morton cells, indexes occupied cells in the elastic hash, and counts
+        vertex pairs sharing a 27-cell neighborhood. No forces are computed.
         vertices: (N, 3) 3D nodal coordinates
-        tets: (M, 4) tetrahedral element connectivity indices
+        tets: (M, 4) tetrahedral element connectivity indices (unused by the broadphase)
         """
         t0 = time.perf_counter()
         N = len(vertices)
         M = len(tets)
-        
-        # 1. 3D Spatial Broadphase via Farach-Colton Hash Table
-        grid_res = 32
-        ix = np.clip((vertices[:, 0] * grid_res).astype(np.int64), 0, grid_res - 1)
-        iy = np.clip((vertices[:, 1] * grid_res).astype(np.int64), 0, grid_res - 1)
-        iz = np.clip((vertices[:, 2] * grid_res).astype(np.int64), 0, grid_res - 1)
-        cell_keys = (ix << 20) | (iy << 10) | iz
-        
-        for k in np.unique(cell_keys):
-            self.hash_table.insert(int(k), int(k))
-            
-        # 2. Volumetric Elastic Strain Energy & Matrix-Free Hessian Products (SpMV)
-        # 3. IPC Log-Barrier Collision Avoidance with Surgical Scalpel / Obstacles
+
+        # 1. 3D Spatial Broadphase via Farach-Colton Hash Table (unit mode:
+        #    vertices are already in [0,1], pass directly to CellIndex).
+        unique_keys, _ = self.index.build(vertices)
+
+        # Count broadphase vertex pairs: for every occupied cell, probe the
+        # 27-cell neighborhood through the hash (load-bearing lookups).
+        neighbor_pairs = 0
+        for k in unique_keys:
+            neighbor_pairs += len(self.index.neighbor_keys(int(k), 1))
+
         t_step = (time.perf_counter() - t0) * 1000.0
-        
+
         return {
             "num_nodes": N,
             "num_tets": M,
             "latency_ms": t_step,
             "fps_capacity": 1000.0 / max(1e-3, t_step),
             "csr_memory_allocated_mb": 0.0,
-            "penetration_free": True
+            "occupied_cells": len(unique_keys),
+            "broadphase_neighbor_cell_pairs": neighbor_pairs,
+            "solver_active": False,
         }
 
 def run_surgical_demo():
@@ -79,7 +88,9 @@ def run_surgical_demo():
     
     print(f"[-] Deformable Newton Step:   {stats['latency_ms']:.2f} ms ({stats['fps_capacity']:.1f} FPS for Haptic Feedback)")
     print(f"[-] Dynamic Matrix Memory:    {stats['csr_memory_allocated_mb']:.2f} MB (Matrix-Free)")
-    print(f"[-] Penetration Guarantee:    100% Inversion & Penetration-Free IPC")
+    print(f"[-] Broadphase Cells:          {stats['occupied_cells']:,} occupied, "
+          f"{stats['broadphase_neighbor_cell_pairs']:,} adjacent cell pairs")
+    print(f"[-] Solver Status:             SCAFFOLD (broadphase only — no elasticity/IPC solve; see matrix_free_ipc.py)")
 
 if __name__ == '__main__':
     run_surgical_demo()

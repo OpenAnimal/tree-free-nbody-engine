@@ -6,7 +6,11 @@ over dense particle clouds, foliage, smoke plumes, and dynamic hair in O(N).
 Architectures Supported:
 1. FMM_ONLY: Tree-Free Multipole Field Evaluation (unbounded, sparse, zero-grid memory).
 2. VOXEL_ONLY: Bounded 3D Voxel Texture with vectorized hardware-aligned trilinear interpolation.
-3. HYBRID: Near-Field 3D Voxel Texture (fast local trilinear step) + Far-Field FMM Multipole Clusters (unbounded long-range shadow & ambient attenuation).
+3. HYBRID: Near-Field 3D Voxel Texture (fast local trilinear step) + Far-Field monopole clusters (unbounded long-range shadow & ambient attenuation).
+
+Honesty note: despite the historical class names, the cluster field here is an order-0 (monopole / center+mass)
+approximation of the 3D inverse-square occlusion kernel — a Barnes-Hut-style scheme driven by the elastic hash,
+not a multipole-expansion FMM (the core CGR88 FMM solves the 2D logarithmic kernel and does not apply here).
 
 Mathematical Formulation:
 - Volumetric Transmittance / Occlusion integral:
@@ -28,13 +32,14 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 
 
 class VolumetricSamplingMode(str, Enum):
     """Execution mode for volumetric sampling and raymarching."""
-    FMM_ONLY = "FMM_ONLY"       # Pure continuous multipole density field (unbounded, zero voxel memory)
+    FMM_ONLY = "FMM_ONLY"       # Continuous monopole-cluster density field (unbounded, zero voxel memory; historical name)
     VOXEL_ONLY = "VOXEL_ONLY"   # Pure 3D voxel texture with trilinear interpolation (fast local lookup)
-    HYBRID = "HYBRID"           # Near-field 3D voxel texture + Far-field FMM cluster integration
+    HYBRID = "HYBRID"           # Near-field 3D voxel texture + Far-field monopole cluster integration
 
 
 class SparseVolumetricVoxelGrid:
@@ -226,14 +231,23 @@ class SparseVolumetricVoxelGrid:
 
 class VolumetricFMMAmbientOcclusion:
     """
-    Volumetric Ambient Occlusion & Deep Shadowing via Multipole Density Fields.
-    Supports continuous 3D point evaluation, multi-step volumetric raymarching,
-    and direct GPU-aligned memory export.
+    Volumetric Ambient Occlusion & Deep Shadowing via bucketed monopole
+    density clusters indexed by the non-reordering elastic hash.
+
+    Accuracy model (honest scope): each occupied spatial cell contributes a
+    single order-0 "monopole" (mass + center) — a Barnes-Hut-style
+    approximation, NOT a multipole expansion and NOT an FMM: the occlusion
+    kernel sigma*V/(4*pi*d^2 + r^2) is a 3D inverse-square kernel, while the
+    core engine's CGR88 FMM solves the 2D logarithmic kernel. The elastic
+    hash table is the authoritative cell index: neighborhood queries
+    (evaluate_ao_field_near_far) resolve occupied cells exclusively through
+    hash lookups, never through dict scans.
     """
     def __init__(self, cell_size: float = 1.0, occlusion_radius: float = 8.0, capacity: int = 32768):
         self.cell_size = float(cell_size)
         self.occlusion_radius = float(occlusion_radius)
-        self.hash_table = ElasticHashTable(capacity=capacity, delta=0.05)
+        self._capacity_hint = int(capacity)
+        self.index = CellIndex(dims=3, cell_size=cell_size)
         self.cell_density_map: Dict[int, List[int]] = {}
         self.macro_clusters: Dict[int, Dict[str, np.ndarray]] = {}
         self.voxel_grid: Optional[SparseVolumetricVoxelGrid] = None
@@ -241,22 +255,13 @@ class VolumetricFMMAmbientOcclusion:
         self._raw_radii: Optional[np.ndarray] = None
         self._raw_opacities: Optional[np.ndarray] = None
 
-    def _quantize_key(self, pos: np.ndarray) -> int:
-        ix = int(np.clip(np.floor(pos[0] / self.cell_size) + 512, 0, 1023))
-        iy = int(np.clip(np.floor(pos[1] / self.cell_size) + 512, 0, 1023))
-        iz = int(np.clip(np.floor(pos[2] / self.cell_size) + 512, 0, 1023))
-        morton = 0
-        for b in range(10):
-            morton |= ((ix & (1 << b)) << (2 * b)) | ((iy & (1 << b)) << (2 * b + 1)) | ((iz & (1 << b)) << (2 * b + 2))
-        return int(morton)
-
     def insert_occluders(self, positions: np.ndarray, radii: np.ndarray, opacities: np.ndarray):
         """
         Inserts volumetric occluding particles (geometry, smoke, hair strands) into Elastic Spatial Hash.
         """
         self.cell_density_map.clear()
         self.macro_clusters.clear()
-        
+
         positions = np.asarray(positions, dtype=np.float32)
         radii = np.asarray(radii, dtype=np.float32).ravel()
         opacities = np.asarray(opacities, dtype=np.float32).ravel()
@@ -274,12 +279,10 @@ class VolumetricFMMAmbientOcclusion:
         if n == 0:
             return
 
-        for i in range(n):
-            k = self._quantize_key(positions[i])
-            if k not in self.cell_density_map:
-                self.cell_density_map[k] = []
-                self.hash_table.insert(k, len(self.cell_density_map))
-            self.cell_density_map[k].append(i)
+        unique_keys, _ = self.index.build(positions)
+        self._capacity_hint = max(16, len(unique_keys))
+        for k, bucket in self.index.items():
+            self.cell_density_map[k] = bucket
 
         # Build multipole cluster representations
         for k, indices in self.cell_density_map.items():
@@ -460,6 +463,89 @@ class VolumetricFMMAmbientOcclusion:
             ao_values[start_idx:end_idx] = np.clip(ao_factor, 0.0, 1.0)
         return ao_values
 
+    @staticmethod
+    def _particle_masses(radii: np.ndarray, opacities: np.ndarray) -> np.ndarray:
+        return (4.0 / 3.0) * np.pi * (radii.astype(np.float64) ** 3) * opacities
+
+    def evaluate_ao_exact(self, query_points: np.ndarray) -> np.ndarray:
+        """
+        Ground-truth reference: exact per-particle occlusion sum over ALL
+        occluders (O(Q*N)). Used to quantify the cluster approximation error.
+        """
+        q = np.asarray(query_points, dtype=np.float64)
+        m = self._particle_masses(self._raw_radii, self._raw_opacities)
+        diff = self._raw_positions.astype(np.float64)[None, :, :] - q[:, None, :]
+        dist_sq = np.sum(diff ** 2, axis=-1) + self._raw_radii[None, :].astype(np.float64) ** 2
+        occ = np.sum(m[None, :] / (4.0 * np.pi * dist_sq), axis=1)
+        return np.clip(np.exp(-1.5 * occ), 0.0, 1.0)
+
+    def evaluate_ao_field_near_far(self, query_points: np.ndarray) -> np.ndarray:
+        """
+        Hash-driven near/far evaluation (Barnes-Hut order 0, NOT an FMM).
+
+        Near field: the 27-cell neighborhood of the query cell is resolved
+        EXCLUSIVELY through elastic-hash lookups; occupied cells contribute
+        exact per-particle occlusion. Far field: all remaining clusters
+        contribute their order-0 monopole (center + mass). This makes the
+        elastic hash load-bearing (authoritative spatial index) instead of
+        decorative, and is strictly more accurate near geometry than the
+        all-cluster path (_evaluate_ao_cpu).
+        """
+        if self._raw_positions is None or not self.macro_clusters:
+            return np.ones(len(query_points), dtype=np.float32)
+
+        q = np.asarray(query_points, dtype=np.float64)
+        positions = self._raw_positions.astype(np.float64)
+        masses = self._particle_masses(self._raw_radii, self._raw_opacities)
+        radii = self._raw_radii.astype(np.float64)
+
+        cluster_keys = sorted(self.macro_clusters.keys())
+        c_centers = np.stack([self.macro_clusters[k]["center"] for k in cluster_keys], axis=0).astype(np.float64)
+        c_masses = np.array([self.macro_clusters[k]["mass"] for k in cluster_keys], dtype=np.float64)
+        c_radii = np.array([self.macro_clusters[k]["eff_radius"] for k in cluster_keys], dtype=np.float64)
+
+        ao_values = np.empty(len(q), dtype=np.float32)
+        for i in range(len(q)):
+            q_key = self.index.key_of(q[i])
+            near_keys = set(self.index.neighbor_keys(q_key, ring=1))
+            occ = 0.0
+            for key in near_keys:
+                idx = np.asarray(self.cell_density_map[key], dtype=np.int64)
+                d = np.linalg.norm(positions[idx] - q[i], axis=1)
+                occ += np.sum(masses[idx] / (4.0 * np.pi * (d ** 2 + radii[idx] ** 2)))
+
+            far_mask = np.array([k not in near_keys for k in cluster_keys], dtype=bool)
+            if np.any(far_mask):
+                d = np.linalg.norm(c_centers[far_mask] - q[i], axis=1)
+                occ += np.sum(c_masses[far_mask] / (4.0 * np.pi * (d ** 2 + c_radii[far_mask] ** 2)))
+
+            ao_values[i] = np.clip(np.exp(-1.5 * occ), 0.0, 1.0)
+        return ao_values
+
+    def validate_near_far_accuracy(self, query_points: np.ndarray, n_samples: int = 512) -> Dict[str, float]:
+        """
+        Cross-validates the near/far split against the exact per-particle sum
+        and the all-cluster monopole baseline on a random query subset.
+        """
+        rng = np.random.default_rng(7)
+        idx = rng.choice(len(query_points), size=min(n_samples, len(query_points)), replace=False)
+        q = np.asarray(query_points)[idx]
+        exact = self.evaluate_ao_exact(q)
+        nf = self.evaluate_ao_field_near_far(q)
+        all_cluster = self._evaluate_ao_cpu(
+            q.astype(np.float32),
+            np.stack([self.macro_clusters[k]["center"] for k in sorted(self.macro_clusters.keys())], axis=0),
+            np.array([self.macro_clusters[k]["mass"] for k in sorted(self.macro_clusters.keys())], dtype=np.float32),
+            np.array([self.macro_clusters[k]["eff_radius"] for k in sorted(self.macro_clusters.keys())], dtype=np.float32),
+            chunk_size=4096,
+        )
+        err = lambda a: float(np.mean(np.abs(a - exact)))
+        return {
+            "mean_abs_err_near_far": err(nf.astype(np.float64)),
+            "mean_abs_err_all_cluster": err(all_cluster.astype(np.float64)),
+            "near_far_wins": bool(err(nf) <= err(all_cluster)),
+        }
+
     def sample_volumetric_ray_transmittance(
         self,
         ray_origins: np.ndarray,
@@ -475,7 +561,7 @@ class VolumetricFMMAmbientOcclusion:
         use_gpu: bool = False
     ) -> Dict[str, Any]:
         """
-        Continuous Volumetric Raymarching Sampler supporting FMM, 3D Voxel Texture, and Hybrid modes.
+        Continuous Volumetric Raymarching Sampler supporting cluster-field, 3D Voxel Texture, and Hybrid modes.
         Evaluates optical depth, primary transmittance T(ray), and integrated in-scattering.
 
         Args:
@@ -571,13 +657,13 @@ class VolumetricFMMAmbientOcclusion:
                 if self.voxel_grid is not None:
                     sample_density_flat = self.voxel_grid.sample_trilinear(p_flat)
             elif mode_enum == VolumetricSamplingMode.HYBRID:
-                # Near-field voxel grid density + Far-field FMM multipole field outside or aggregated
+                # Near-field voxel grid density + far-field monopole cluster field outside or aggregated
                 if self.voxel_grid is not None:
                     v_density = self.voxel_grid.sample_trilinear(p_flat)
                 else:
                     v_density = np.zeros(n_flat, dtype=np.float32)
                 
-                # FMM multipole evaluation for far-field continuity
+                # Monopole cluster evaluation for far-field continuity
                 if has_fmm_clusters:
                     sub_chunk = 4096
                     fmm_density = np.zeros(n_flat, dtype=np.float32)
@@ -661,7 +747,7 @@ class VolumetricFMMAmbientOcclusion:
 
 def run_volumetric_ao_demo():
     print("==================================================================")
-    print(" GRAPHICS RENDERING: HYBRID 3D VOXEL + FMM VOLUMETRIC ENGINE")
+    print(" GRAPHICS RENDERING: HYBRID 3D VOXEL + MONOPOLE-CLUSTER VOLUMETRIC ENGINE")
     print("==================================================================")
     
     np.random.seed(42)
@@ -687,10 +773,17 @@ def run_volumetric_ao_demo():
     stats = vao.evaluate_ao_field(p_recv)
     print(f"[-] Total Active Occluders:    {n_occluders:,}")
     print(f"[-] Receiver Query Points:     {stats['num_queries']:,}")
-    print(f"[-] Multipole Density Clusters:{stats['num_clusters']:,}")
+    print(f"[-] Monopole Density Clusters: {stats['num_clusters']:,}")
     print(f"[-] Field Evaluation Time:     {stats['latency_ms']:.2f} ms")
     print(f"[-] Evaluation Throughput:     {stats['throughput_queries_per_sec']:,.0f} Queries/sec")
     print(f"[-] Mean Sky Visibility / AO:  {stats['mean_ao']:.4f} (0=Shadowed, 1=Open Sky)")
+
+    # Cross-validate the hash-driven near/far split against the exact per-particle sum
+    val = vao.validate_near_far_accuracy(p_recv, n_samples=256)
+    print(f"[-] Near/Far Split Validation:  mean |err| = {val['mean_abs_err_near_far']:.2e} "
+          f"(all-cluster baseline: {val['mean_abs_err_all_cluster']:.2e}, near/far "
+          f"{'MORE' if val['near_far_wins'] else 'LESS'} accurate vs exact)")
+    assert val['near_far_wins'], "hash-driven near/far split should beat all-cluster monopoles"
 
     # 2. Build 3D Voxel Texture Grid (Near-Field)
     voxel_grid = vao.build_voxel_grid(grid_resolution=64)
@@ -698,7 +791,7 @@ def run_volumetric_ao_demo():
     print(f"\n[-] Built 3D Voxel Texture:    {tex3d_buf.shape} ({tex3d_buf.nbytes / (1024*1024):.2f} MB, RGBA float32)")
     print(f"[-] Active Dirty Bricks:       {len(voxel_grid.dirty_bricks)} bricks ({voxel_grid.brick_size}^3 each)")
 
-    # 3. Continuous Volumetric Raymarching Comparison (FMM vs 3D Voxel vs Hybrid)
+    # 3. Continuous Volumetric Raymarching Comparison (cluster field vs 3D Voxel vs Hybrid)
     print(f"\nComparing Raymarching Modes across {n_rays:,} camera rays (16 steps/ray):")
     ray_org = np.random.uniform(-5.0, 5.0, size=(n_rays, 3)).astype(np.float32)
     ray_org[:, 1] = 0.0 # Eye level
@@ -726,3 +819,5 @@ def run_volumetric_ao_demo():
 
 if __name__ == '__main__':
     run_volumetric_ao_demo()
+
+VolumetricMonopoleAO = VolumetricFMMAmbientOcclusion  # renamed alias (old name kept for compatibility)

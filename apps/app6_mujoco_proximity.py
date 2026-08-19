@@ -1,6 +1,8 @@
 """
 Application 6: MuJoCo-Style Proximity Fields & Aerodynamic Ground-Effect Contact Solver.
-Powered by Tree-Free Fast Multipole Method (FMM) + Farach-Colton Non-Reordering Spatial Hash.
+Powered by the Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash
+(core.elastic_hash) for O(1) terrain-cell proximity lookups. No FMM: proximity queries
+are exact nearest-terrain-point searches, not kernel sums, so multipole math does not apply.
 
 Simulates dynamic ground proximity distance fields and normal force vectors for legged robotics
 (e.g., AT-ST / Walker footpads over uneven deformable terrain).
@@ -13,7 +15,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 from core.elastic_hash import ElasticHashTable
-from core.tree_free_fmm import morton_encode_2d, decode_morton_2d
 
 def generate_terrain_and_robot_contacts(n_terrain: int = 2500):
     """Generates 2D/3D uneven heightfield terrain and foot contact probes."""

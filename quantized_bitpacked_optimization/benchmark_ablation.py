@@ -54,13 +54,21 @@ def run_ablation_benchmarks():
         print(f"\nEvaluating Scale N = {N:,} Particles...")
         
         # 1. Direct O(N^2) baseline (skip if N > 5000 to avoid freezing)
+        exact_pot = None
+
+        def rel_err(pot):
+            if exact_pot is None:
+                return float("nan")
+            return float(np.linalg.norm(pot - exact_pot) / np.linalg.norm(exact_pot))
+
         if N <= 5000:
             t0 = time.perf_counter()
             diff = pos[:, None, :] - pos[None, :, :]
             r = np.linalg.norm(diff, axis=-1) + 1e-12
             np.fill_diagonal(r, 1.0)
-            _ = np.sum(charges[None, :] * np.log(r) * (1.0 - np.eye(N)), axis=1)
+            exact_pot = np.sum(charges[None, :] * np.log(r) * (1.0 - np.eye(N)), axis=1)
             t_direct = (time.perf_counter() - t0) * 1000.0
+
         else:
             # Extrapolate quadratic scaling
             t_direct = results["direct_n2"][2] * ((N / 5000) ** 2)
@@ -76,7 +84,7 @@ def run_ablation_benchmarks():
         )
         # Warmup + timing
         _, _ = fmm_base.evaluate(pos, charges)
-        _, m_base = fmm_base.evaluate(pos, charges)
+        pot_base, m_base = fmm_base.evaluate(pos, charges)
         results["baseline_fmm"].append(m_base["total_latency_ms"])
         results["memory_baseline_kb"].append(m_base["memory_bytes"] / 1024.0)
         results["m2l_dim_baseline"].append(m_base["m2l_matrix_dim"])
@@ -90,7 +98,7 @@ def run_ablation_benchmarks():
             enable_direct_strides=False
         )
         _, _ = fmm_packed.evaluate(pos, charges)
-        _, m_packed = fmm_packed.evaluate(pos, charges)
+        pot_packed, m_packed = fmm_packed.evaluate(pos, charges)
         results["packed_only"].append(m_packed["total_latency_ms"])
         results["memory_packed_kb"].append(m_packed["memory_bytes"] / 1024.0)
         
@@ -103,7 +111,7 @@ def run_ablation_benchmarks():
             enable_direct_strides=False
         )
         _, _ = fmm_greedy.evaluate(pos, charges)
-        _, m_greedy = fmm_greedy.evaluate(pos, charges)
+        pot_greedy, m_greedy = fmm_greedy.evaluate(pos, charges)
         results["greedy_only"].append(m_greedy["total_latency_ms"])
         results["m2l_dim_greedy"].append(m_greedy["m2l_matrix_dim"])
         
@@ -116,15 +124,19 @@ def run_ablation_benchmarks():
             enable_direct_strides=True
         )
         _, _ = fmm_all.evaluate(pos, charges)
-        _, m_all = fmm_all.evaluate(pos, charges)
+        pot_all, m_all = fmm_all.evaluate(pos, charges)
         results["all_combined"].append(m_all["total_latency_ms"])
         results["stage_timings_combined"].append(m_all)
         
         print(f"  -> Direct N^2:        {t_direct:8.2f} ms")
+        if exact_pot is not None:
+            print(f"  -> Accuracy (rel L2 vs direct): baseline {rel_err(pot_base):.2e} | "
+                  f"packed {rel_err(pot_packed):.2e} | greedy {rel_err(pot_greedy):.2e} | "
+                  f"combined {rel_err(pot_all):.2e}")
         print(f"  -> Baseline FMM:      {m_base['total_latency_ms']:8.2f} ms (Mem: {m_base['memory_bytes']/1024:.1f} KB)")
         print(f"  -> + Bit-Packing:     {m_packed['total_latency_ms']:8.2f} ms (Mem: {m_packed['memory_bytes']/1024:.1f} KB, {m_base['memory_bytes']/m_packed['memory_bytes']:.1f}x compression)")
         print(f"  -> + Greedy Merging:  {m_greedy['total_latency_ms']:8.2f} ms (M2L Dim: {m_greedy['m2l_matrix_dim']} vs {m_base['m2l_matrix_dim']})")
-        print(f"  -> Combined Engine:   {m_all['total_latency_ms']:8.2f} ms (Speedup vs N^2: {t_direct/m_all['total_latency_ms']:.1f}x)")
+        print(f"  -> Combined Engine:   {m_all['total_latency_ms']:8.2f} ms (Speedup vs N^2: {t_direct/m_all['total_latency_ms']:.1f}x; NOTE: the speedup is partly bought with accuracy — see the error column above: greedy run-merging and coordinate bit-packing are lossy, bitboard/strides are lossless).")
 
     # -------------------------------------------------------------
     # Render Publication-Grade Visualization

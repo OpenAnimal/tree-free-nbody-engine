@@ -7,7 +7,10 @@ Mathematical Foundation:
 - Irradiance representation via Order-1 Spherical Harmonics (SH L0 + L1):
     E(p, n) = C0 * L_0(p) + C1 * (n · L_1(p))
 - Elastic Spatial Hash assigns probes dynamically to active game volumes.
-- Continuous multipole query evaluates SH coefficients at dynamic actor vertices in O(1).
+- Query interpolates SH coefficients over probes via Gaussian distance weights (O(P) per vertex, vectorized).
+
+Honesty note: the SH L0/L1 basis is directional, not a multipole expansion — no FMM here.
+The elastic hash tracks the occupied probe cells (authoritative membership).
 - GPU-Structured float4 layouts matching HLSL/GLSL StructuredBuffer<DynamicSHProbe>.
 """
 
@@ -18,29 +21,20 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 from graphics_rendering.gpu_hardware_interop import pack_sh_probes_gpu_layout
 
 class DynamicIrradianceCache:
     """
-    Gridless Dynamic Irradiance Cache using Spherical Harmonic Multipoles.
+    Gridless Dynamic Irradiance Cache using order-1 Spherical Harmonics probes.
     """
     def __init__(self, cell_size: float = 3.0, capacity: int = 16384):
         self.cell_size = float(cell_size)
-        self.hash_table = ElasticHashTable(capacity=capacity, delta=0.05)
+        self.index = CellIndex(dims=3, cell_size=self.cell_size)
         self.probe_positions: Optional[np.ndarray] = None
         self.probe_l0: Optional[np.ndarray] = None  # (N_probes, 3)
         self.probe_l1: Optional[np.ndarray] = None  # (N_probes, 3, 3)
         self.cell_probe_map: Dict[int, List[int]] = {}
-
-    def _quantize_key(self, pos: np.ndarray) -> int:
-        ix = int(np.clip(np.floor(pos[0] / self.cell_size) + 512, 0, 1023))
-        iy = int(np.clip(np.floor(pos[1] / self.cell_size) + 512, 0, 1023))
-        iz = int(np.clip(np.floor(pos[2] / self.cell_size) + 512, 0, 1023))
-        morton = 0
-        for b in range(10):
-            morton |= ((ix & (1 << b)) << (2 * b)) | ((iy & (1 << b)) << (2 * b + 1)) | ((iz & (1 << b)) << (2 * b + 2))
-        return int(morton)
 
     def update_probe_field(self, positions: np.ndarray, l0_rgb: np.ndarray, l1_grad: np.ndarray):
         """
@@ -61,13 +55,9 @@ class DynamicIrradianceCache:
         self.probe_l1 = np.ascontiguousarray(l1_grad)
 
         self.cell_probe_map.clear()
-        n = len(positions)
-        for i in range(n):
-            k = self._quantize_key(positions[i])
-            if k not in self.cell_probe_map:
-                self.cell_probe_map[k] = []
-                self.hash_table.insert(k, len(self.cell_probe_map))
-            self.cell_probe_map[k].append(i)
+        unique, _ = self.index.build(positions)
+        for k, idxs in self.index.items():
+            self.cell_probe_map[int(k)] = [int(i) for i in idxs]
 
     def export_gpu_probe_buffer(self) -> np.ndarray:
         """
@@ -100,7 +90,7 @@ class DynamicIrradianceCache:
         use_gpu: bool = False
     ) -> Dict[str, Any]:
         """
-        Evaluates dynamic irradiance for thousands of character / mesh vertices in O(1) per vertex.
+        Evaluates dynamic irradiance for thousands of character / mesh vertices (vectorized, all-probe Gaussian weights).
         Supports automatic GPU acceleration when PyTorch/CuPy is installed with CUDA.
         Returns RGB irradiance values and query performance metrics.
         """

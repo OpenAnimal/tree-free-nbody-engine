@@ -1,11 +1,14 @@
 """
-4D Dynamic Gaussian Splatting & Volumetric Holographic Video Streaming Engine.
-Powered by Tree-Free 3D Morton Hashing & Multipole Spherical Harmonics Radiance Aggregation.
+4D Dynamic Gaussian Splatting Frame Compressor.
+Tree-free 3D Morton quantization indexed by the non-reordering elastic hash.
 
-Features:
-1. Replaces O(N log N) per-frame Radix Sort with flat 3D Morton quantization & O(1) non-reordering hashing.
-2. Far-Field Multipole Radiance Merging: Aggregates millions of distant micro-Gaussians into regional multipole radiance centers (M2L).
-3. Achieves 90 FPS real-time volumetric video decoding for VR/AR headsets (Apple Vision Pro, Meta Quest).
+What it actually does: buckets Gaussian centroids into Morton cells and stores
+one mean color per occupied cell (lossy order-0 compression). The elastic hash
+is the authoritative occupied-cell index. What it does NOT do: there is no
+spherical-harmonics radiance aggregation, no "multipole M2L merging", no
+rendering or decoding pipeline, and per-frame work is O(N) bucketing — the
+"90 FPS VR decoding" claim of earlier revisions described nothing real. The
+lossy color error is measured and reported by validate_color_compression().
 """
 
 import numpy as np
@@ -15,7 +18,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 
 class GaussianSplat4DStreamer:
     """
@@ -25,7 +28,7 @@ class GaussianSplat4DStreamer:
         self.depth = depth
         self.grid_res = 1 << depth
         self.max_gaussians = max_gaussians
-        self.hash_table = ElasticHashTable(capacity=self.grid_res**3 * 2, delta=0.05)
+        self.index = CellIndex(dims=3, grid_res=self.grid_res)
         self.cluster_map = {}
 
     def compress_frame(self, means: np.ndarray, scales: np.ndarray, rotations: np.ndarray, sh_colors: np.ndarray) -> Dict:
@@ -36,31 +39,28 @@ class GaussianSplat4DStreamer:
         """
         t0 = time.perf_counter()
         N = len(means)
-        grid_res = self.grid_res
-        
-        # 1. 3D Morton Coordinate Interleaving
-        ix = np.clip((means[:, 0] * grid_res).astype(np.int64), 0, grid_res - 1)
-        iy = np.clip((means[:, 1] * grid_res).astype(np.int64), 0, grid_res - 1)
-        iz = np.clip((means[:, 2] * grid_res).astype(np.int64), 0, grid_res - 1)
-        morton_keys = (ix << 24) | (iy << 12) | iz
-        
-        unique_keys, inverse = np.unique(morton_keys, return_inverse=True)
+
+        # 1. Build the authoritative occupied-cell index (3D Morton, unit mode).
+        unique_keys, inverse = self.index.build(means)
         num_clusters = len(unique_keys)
-        
-        # 2. Store active clusters in Farach-Colton Non-Reordering Table
-        for k in unique_keys:
-            self.hash_table.insert(int(k), int(k))
-            
-        # 3. Compute Multipole Radiance Moments (Monopole weight + Dipole RGB SH)
+
+        # 2. Per-cluster mean color (order-0 moment)
         cluster_weights = np.bincount(inverse, minlength=num_clusters).astype(np.float32)
         cluster_radiance = np.zeros((num_clusters, 3), dtype=np.float32)
         for c in range(3):
             cluster_radiance[:, c] = np.bincount(inverse, weights=sh_colors[:, c], minlength=num_clusters)
         cluster_radiance /= np.maximum(1.0, cluster_weights[:, None])
-        
+
+        # 3. Lossy reconstruction: expand cluster means back to N Gaussians and
+        #    measure the actual compression error honestly.
+        recon = cluster_radiance[inverse]
+        color_rel_l2_err = float(np.linalg.norm(recon - sh_colors) /
+                                 max(1e-9, np.linalg.norm(sh_colors)))
+
         t_compress = (time.perf_counter() - t0) * 1000.0
-        
+
         return {
+            "color_rel_l2_err": color_rel_l2_err,
             "num_gaussians": N,
             "num_clusters": num_clusters,
             "compression_ratio": N / max(1, num_clusters),
@@ -87,8 +87,10 @@ def run_gaussian_splat_demo():
     
     print(f"[-] Splat Frame Ingest Time:  {stats['latency_ms']:.2f} ms")
     print(f"[-] Splat Throughput:         {stats['throughput_gps']/1e6:.2f} Million Gaussians/sec")
-    print(f"[-] Decoded Frame Rate:       {stats['fps_capacity']:.1f} FPS (Target: 90 FPS VR)")
-    print(f"[-] Multipole Merging Ratio:  {stats['compression_ratio']:.2f}x Pruning")
+    print(f"[-] Frame Ingest Capacity:     {stats['fps_capacity']:.1f} FPS (bucketing only — no decoder implemented)")
+    print(f"[-] Cluster Pruning Ratio:     {stats['compression_ratio']:.2f}x")
+    print(f"[-] Color Compression Error:   rel L2 = {stats['color_rel_l2_err']:.3f} "
+          f"(lossy order-0 cluster-mean quantization)")
 
 if __name__ == '__main__':
     run_gaussian_splat_demo()

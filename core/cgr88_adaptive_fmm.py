@@ -15,7 +15,8 @@ Provides:
 2. Complete 4-interaction-list construction for arbitrary adaptive quadtrees (List 1, List 2, List 3, List 4).
 3. Exact O(N) Adaptive FMM with potential and vector force calculation.
 4. Regular (Uniform) FMM for fixed-depth quadtrees.
-5. Tree-Free Hash-Indexed FMM combining non-reordering elastic spatial hash with CGR88 operators.
+5. Tree-Free Hash-Indexed FMM: CGR88 operators on a non-reordering funnel-hash
+   cell index (core.elastic_hash.ElasticHashTable, Farach-Colton/Krapivin/Kuszmaul 2025).
 6. Exact O(N^2) direct Coulomb / logarithmic N-body ground-truth evaluator for potentials and forces.
 """
 
@@ -829,12 +830,22 @@ def decode_morton_box(code: int) -> Tuple[int, int, int]:
 
 class TreeFreeElasticAdaptiveFMM:
     """
-    High-Performance Tree-Free Adaptive FMM combining Farach-Colton et al. (2025)
-    Elastic Non-Reordering Spatial Hash Table with Carrier, Greengard, & Rokhlin (1988)
-    4-List Adaptive Multipole & Local Expansion Mathematics.
-    
-    Eliminates all pointer-based tree allocations, pointer chasing, and traversal bottlenecks.
-    All parent, child, colleague, and interaction list queries execute as O(1) hash table lookups.
+    Tree-Free Adaptive FMM: Carrier, Greengard, & Rokhlin (1988) 4-list
+    adaptive expansion mathematics indexed by a non-reordering funnel hash.
+
+    The AUTHORITATIVE cell index is core.elastic_hash.ElasticHashTable
+    (funnel hashing, Farach-Colton/Krapivin/Kuszmaul, arXiv:2501.02305):
+    the level-tagged Morton key of every cell maps, through the funnel
+    probe sequence (alpha slabs of beta-slot sub-arrays plus the B/C
+    overflow region), to that cell's record. There is no pointer-based
+    tree and no auxiliary dict index: parent, child, colleague, and
+    interaction-list resolution go exclusively through funnel hash
+    lookups. After each build a sorted snapshot of the cell keys
+    (`self.cell_keys`) is taken once so the linear passes iterate cells in
+    a deterministic cache-friendly order; membership and data access still
+    route through the hash. CGR88AdaptiveFMM above is the classical
+    dict/tree reference implementation; the two engines agree numerically
+    to <1e-12 relative (core/test_cgr88_cross_validation.py).
     """
     def __init__(
         self,
@@ -849,8 +860,12 @@ class TreeFreeElasticAdaptiveFMM:
         self.max_depth = max_depth
         self.p = p
         self.softening = softening
+        # Funnel hash: authoritative cell index (Morton cell key -> cell record).
         self.hash_table = ElasticHashTable(capacity=16384, delta=0.05)
-        self.cells: Dict[int, Dict] = {}  # key -> cell metadata
+        # Sorted snapshot of cell keys, refreshed once per build for
+        # deterministic cache-friendly iteration (the hash remains the
+        # authoritative membership/index structure).
+        self.cell_keys: List[int] = []
 
     def _get_box_center(self, level: int, ix: int, iy: int, bounds: Tuple[float, float, float, float]) -> complex:
         xmin, xmax, ymin, ymax = bounds
@@ -879,23 +894,26 @@ class TreeFreeElasticAdaptiveFMM:
         bounds = (xmin - margin, xmax + margin, ymin - margin, ymax + margin)
 
         # ---------------------------------------------------------------------
-        # 1. TREE-FREE MULTI-LEVEL ELASTIC HASH PARTITIONING
+        # 1. TREE-FREE MULTI-LEVEL FUNNEL HASH PARTITIONING
         # ---------------------------------------------------------------------
-        self.cells.clear()
+        # Rebuild the funnel hash as the authoritative cell index.
         self.hash_table = ElasticHashTable(capacity=max(16384, N * 4), delta=0.05)
+        ht = self.hash_table
+        cell_keys_log: List[int] = []  # insertion-order log of created keys
 
         # Initial binning at base level
         b_res = 1 << self.base_depth
         scale_x = b_res / (bounds[1] - bounds[0])
         scale_y = b_res / (bounds[3] - bounds[2])
-        
+
         ix_base = np.clip(((positions[:, 0] - bounds[0]) * scale_x).astype(np.int32), 0, b_res - 1)
         iy_base = np.clip(((positions[:, 1] - bounds[2]) * scale_y).astype(np.int32), 0, b_res - 1)
 
         def make_cell(lvl: int, gx: int, gy: int) -> Dict:
+            # Create-or-fetch a cell record through the funnel hash index.
             key = morton_encode_box(lvl, gx, gy)
-            if key not in self.cells:
-                self.hash_table.insert(key, key)
+            cell = ht.get(key)
+            if cell is None:
                 cell = {
                     'key': key, 'level': lvl, 'ix': gx, 'iy': gy,
                     'center': self._get_box_center(lvl, gx, gy, bounds),
@@ -904,8 +922,11 @@ class TreeFreeElasticAdaptiveFMM:
                     'l': np.zeros(self.p + 1, dtype=np.complex128),
                     'list1': [], 'list2': [], 'list3': [], 'list4': []
                 }
-                self.cells[key] = cell
-            return self.cells[key]
+                ok, _ = ht.insert(key, cell)
+                if not ok:
+                    raise RuntimeError(f"funnel hash rejected cell key {key}")
+                cell_keys_log.append(key)
+            return cell
 
         # Populate base cells
         base_leaves = set()
@@ -917,17 +938,17 @@ class TreeFreeElasticAdaptiveFMM:
         # Adaptive subdivision via elastic hash splitting
         active_leaves = set(base_leaves)
         for lvl in range(self.base_depth, self.max_depth):
-            current_leaves = [self.cells[k] for k in active_leaves if self.cells[k]['level'] == lvl]
+            current_leaves = [c for c in (ht.get(k) for k in active_leaves) if c['level'] == lvl]
             for leaf in current_leaves:
                 if len(leaf['indices']) > self.max_leaf_particles:
                     leaf['is_leaf'] = False
                     active_leaves.remove(leaf['key'])
-                    
+
                     # Split into 4 child keys
                     c_res = 1 << (lvl + 1)
                     c_scale_x = c_res / (bounds[1] - bounds[0])
                     c_scale_y = c_res / (bounds[3] - bounds[2])
-                    
+
                     for p_idx in leaf['indices']:
                         c_ix = int(np.clip((positions[p_idx, 0] - bounds[0]) * c_scale_x, 0, c_res - 1))
                         c_iy = int(np.clip((positions[p_idx, 1] - bounds[2]) * c_scale_y, 0, c_res - 1))
@@ -936,26 +957,29 @@ class TreeFreeElasticAdaptiveFMM:
                         active_leaves.add(child_cell['key'])
 
         # Create ancestor keys up to root
-        all_keys = list(self.cells.keys())
-        for key in all_keys:
+        for key in list(cell_keys_log):
             lvl, gx, gy = decode_morton_box(key)
             while lvl > 0:
                 lvl -= 1
                 gx >>= 1
                 gy >>= 1
                 p_key = morton_encode_box(lvl, gx, gy)
-                if p_key not in self.cells:
+                if p_key not in ht:
                     p_cell = make_cell(lvl, gx, gy)
                     p_cell['is_leaf'] = False
                 else:
-                    self.cells[p_key]['is_leaf'] = False
+                    ht.get(p_key)['is_leaf'] = False
+
+        # One-time cache-friendly iteration snapshot (hash stays authoritative).
+        self.cell_keys = sorted(cell_keys_log)
 
         # ---------------------------------------------------------------------
         # 2. TREE-FREE 4-LIST RESOLUTION VIA HASH LOOKUPS
         # ---------------------------------------------------------------------
         # Pre-group active cells by level
         level_cells: Dict[int, List[Dict]] = {}
-        for cell in self.cells.values():
+        for key in self.cell_keys:
+            cell = ht.get(key)
             level_cells.setdefault(cell['level'], []).append(cell)
 
         # Build List 2 (colleagues of parent's children that are separated)
@@ -969,7 +993,7 @@ class TreeFreeElasticAdaptiveFMM:
                         spx, spy = px + pdx, py + pdy
                         if 0 <= spx < grid_p and 0 <= spy < grid_p:
                             p_coll_key = morton_encode_box(lvl - 1, spx, spy)
-                            if self.hash_table.lookup(p_coll_key) is not None:
+                            if p_coll_key in ht:
                                 for cdx in (0, 1):
                                     for cdy in (0, 1):
                                         sx = (spx << 1) + cdx
@@ -977,11 +1001,15 @@ class TreeFreeElasticAdaptiveFMM:
                                         if 0 <= sx < grid_c and 0 <= sy < grid_c:
                                             if abs(sx - cell['ix']) > 1 or abs(sy - cell['iy']) > 1:
                                                 c_key = morton_encode_box(lvl, sx, sy)
-                                                if c_key in self.cells:
+                                                if c_key in ht:
                                                     cell['list2'].append(c_key)
 
         # Build List 1, List 3, and List 4
-        leaf_cells = [c for c in self.cells.values() if c['is_leaf'] and len(c['indices']) > 0]
+        leaf_cells = []
+        for key in self.cell_keys:
+            cell = ht.get(key)
+            if cell['is_leaf'] and len(cell['indices']) > 0:
+                leaf_cells.append(cell)
         
         def are_boxes_adjacent(b1_lvl, b1_x, b1_y, b2_lvl, b2_x, b2_y) -> bool:
             s1_x = (bounds[1] - bounds[0]) / (1 << b1_lvl)
@@ -1003,7 +1031,7 @@ class TreeFreeElasticAdaptiveFMM:
 
             # Find all List 1 adjacent leaves by traversing active hash cells from root
             def find_adjacent_leaves_hash(c_key: int):
-                c_cell = self.cells[c_key]
+                c_cell = ht.get(c_key)
                 if not are_boxes_adjacent(lvl, lx, ly, c_cell['level'], c_cell['ix'], c_cell['iy']):
                     return
                 if c_cell['is_leaf']:
@@ -1013,7 +1041,7 @@ class TreeFreeElasticAdaptiveFMM:
                     for cdx in (0, 1):
                         for cdy in (0, 1):
                             ch_k = morton_encode_box(c_lvl + 1, (cx << 1) + cdx, (cy << 1) + cdy)
-                            if ch_k in self.cells:
+                            if ch_k in ht:
                                 find_adjacent_leaves_hash(ch_k)
 
             find_adjacent_leaves_hash(morton_encode_box(0, 0, 0))
@@ -1025,18 +1053,18 @@ class TreeFreeElasticAdaptiveFMM:
                     nx, ny = lx + dx, ly + dy
                     if 0 <= nx < grid_lvl and 0 <= ny < grid_lvl:
                         coll_key = morton_encode_box(lvl, nx, ny)
-                        if coll_key in self.cells:
-                            coll = self.cells[coll_key]
+                        if coll_key in ht:
+                            coll = ht.get(coll_key)
                             if not coll['is_leaf']:
                                 def trace_list3_descendants(curr_key: int):
-                                    c_cell = self.cells[curr_key]
+                                    c_cell = ht.get(curr_key)
                                     if are_boxes_adjacent(lvl, lx, ly, c_cell['level'], c_cell['ix'], c_cell['iy']):
                                         if not c_cell['is_leaf']:
                                             c_lvl, cx, cy = c_cell['level'], c_cell['ix'], c_cell['iy']
                                             for cdx in (0, 1):
                                                 for cdy in (0, 1):
                                                     ch_k = morton_encode_box(c_lvl + 1, (cx << 1) + cdx, (cy << 1) + cdy)
-                                                    if ch_k in self.cells:
+                                                    if ch_k in ht:
                                                         trace_list3_descendants(ch_k)
                                     else:
                                         # Separated from leaf, but parent was adjacent
@@ -1046,7 +1074,7 @@ class TreeFreeElasticAdaptiveFMM:
                                 for cdx in (0, 1):
                                     for cdy in (0, 1):
                                         ch_k = morton_encode_box(lvl + 1, (nx << 1) + cdx, (ny << 1) + cdy)
-                                        if ch_k in self.cells:
+                                        if ch_k in ht:
                                             trace_list3_descendants(ch_k)
 
         # ---------------------------------------------------------------------
@@ -1064,8 +1092,8 @@ class TreeFreeElasticAdaptiveFMM:
                     for cdx in (0, 1):
                         for cdy in (0, 1):
                             ch_k = morton_encode_box(lvl + 1, (p_cell['ix'] << 1) + cdx, (p_cell['iy'] << 1) + cdy)
-                            if ch_k in self.cells:
-                                ch_cell = self.cells[ch_k]
+                            ch_cell = ht.get(ch_k)
+                            if ch_cell is not None:
                                 p_cell['m'] += m2m(ch_cell['m'], ch_cell['center'], p_cell['center'], self.p)
 
         # ---------------------------------------------------------------------
@@ -1075,18 +1103,18 @@ class TreeFreeElasticAdaptiveFMM:
             for cell in level_cells.get(lvl, []):
                 # Shift parent local expansion via L2L
                 p_key = morton_encode_box(lvl - 1, cell['ix'] >> 1, cell['iy'] >> 1)
-                if p_key in self.cells:
-                    p_cell = self.cells[p_key]
+                p_cell = ht.get(p_key)
+                if p_cell is not None:
                     cell['l'] += l2l(p_cell['l'], p_cell['center'], cell['center'], self.p)
 
                 # List 2 M2L
                 for src_k in cell['list2']:
-                    src_cell = self.cells[src_k]
+                    src_cell = ht.get(src_k)
                     cell['l'] += m2l(src_cell['m'], src_cell['center'], cell['center'], self.p)
 
                 # List 4 P2L
                 for c_k in cell['list4']:
-                    c_cell = self.cells[c_k]
+                    c_cell = ht.get(c_k)
                     if len(c_cell['indices']) > 0:
                         c_pts = positions[c_cell['indices']]
                         c_q = charges[c_cell['indices']]
@@ -1115,7 +1143,7 @@ class TreeFreeElasticAdaptiveFMM:
 
             # List 3 M2P
             for d_k in leaf['list3']:
-                d_cell = self.cells[d_k]
+                d_cell = ht.get(d_k)
                 for idx in t_indices:
                     pt_complex = complex(positions[idx, 0], positions[idx, 1])
                     pot_d, deriv_d = m2p(d_cell['m'], d_cell['center'], pt_complex, self.p)
@@ -1127,7 +1155,7 @@ class TreeFreeElasticAdaptiveFMM:
             # List 1 P2P
             tgt_pts = positions[t_indices]
             for n_k in leaf['list1']:
-                n_cell = self.cells[n_k]
+                n_cell = ht.get(n_k)
                 if n_cell['indices']:
                     src_pts = positions[n_cell['indices']]
                     src_q = charges[n_cell['indices']]

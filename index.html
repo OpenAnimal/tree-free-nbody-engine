@@ -244,10 +244,12 @@
 </head>
 <body>
 
+    <div id="diagChannel" hidden aria-hidden="true"></div>
+
     <div id="sidebar">
         <div>
             <h1>Tree-Free N-Body <span id="gpuBadge" class="badge badge-gpu">GPU COMPUTE</span></h1>
-            <p class="subtitle">Optimal Non-Reordering Hash (Farach-Colton et al. 2025)</p>
+            <p class="subtitle">Tree-Free FMM &mdash; Counting-Sorted Cell Lists + CGR88 Multipoles</p>
         </div>
 
         <div id="hwAccelWarning">
@@ -337,8 +339,8 @@
             <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">12.0M parts/sec</span></div>
             <div class="metric-row"><span>GPU Buffers:</span> <span id="valGpuMemory" class="metric-val">Calculating...</span></div>
             <div class="metric-row"><span>GPU Buffer Limit:</span> <span id="valGpuLimit" class="metric-val">Querying...</span></div>
-            <div class="metric-row"><span>FMM Hash Load:</span> <span id="valFmmHash" class="metric-val">Inactive</span></div>
-            <div class="metric-row"><span>P2P Budget:</span> <span id="valP2pBudget" class="metric-val">Adaptive</span></div>
+            <div class="metric-row"><span>Cell Occupancy:</span> <span id="valFmmHash" class="metric-val">Inactive</span></div>
+            <div class="metric-row"><span>P2P Near Field:</span> <span id="valP2pBudget" class="metric-val">Adaptive</span></div>
             <div class="metric-row"><span>FMM Build:</span> <span id="valFmmBuild" class="metric-val">—</span></div>
             <div class="metric-row"><span>FMM M2L:</span> <span id="valFmmM2l" class="metric-val">—</span></div>
             <div class="metric-row"><span>FMM L2P:</span> <span id="valFmmL2p" class="metric-val">—</span></div>
@@ -529,80 +531,31 @@
             g2y: f32,
             fmmEnabled: u32,
             adaptiveMode: u32,
-            _uniformPadding: vec2<u32>,
+            leafBits: u32,
+            p2pListCap: u32,
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
         @group(0) @binding(1) var<storage, read_write> posVelOut: array<Particle>;
         @group(0) @binding(2) var<storage, read_write> extras: array<ParticleExtra>;
         @group(0) @binding(3) var<uniform> params: SimParams;
-        @group(0) @binding(4) var<storage, read_write> fmmKeys: array<atomic<u32>>;
-        @group(0) @binding(5) var<storage, read_write> fmmHeads: array<atomic<u32>>;
-        @group(0) @binding(6) var<storage, read_write> fmmNext: array<u32>;
-        @group(0) @binding(7) var<storage, read_write> fmmField: array<vec4<f32>>;
-        @group(0) @binding(8) var<storage, read> fmmCellSlots: array<u32>;
-        const HASH_EMPTY: u32 = 0xffffffffu;
-        const HASH_CAPACITY: u32 = 16384u;
+        // Fixed-grid FMM data. Cell occupancy comes from the counting-sort
+        // passes in the FMM shader: cellStart/cellCount describe contiguous
+        // particle ranges of sortedIndex, which replace the old atomic linked
+        // lists (no heads/next pointer chasing, no hash table).
+        @group(0) @binding(4) var<storage, read> fmmField: array<vec4<f32>>;
+        @group(0) @binding(5) var<storage, read> fmmSortedIndex: array<u32>;
+        @group(0) @binding(6) var<storage, read> cellStart: array<u32>;
+        @group(0) @binding(7) var<storage, read> cellCount: array<u32>;
+        // Shared softening length^2: identical to the P2P kernel below and to
+        // the ring M2P / parent M2L monopole terms so the force field stays
+        // continuous across the P2P / ring / M2L zone boundaries.
+        const P2P_EPS2: f32 = 0.00004;
         fn leafIndex(p: vec2<f32>) -> u32 {
-            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * 64.0), 63u);
-            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * 64.0), 63u);
-            return cy * 64u + cx;
-        }
-        fn hashSlot(key: u32, level: u32, attempt: u32) -> u32 {
-            var a: u32 = 1u; var b: u32 = 0u; var size: u32 = 1024u; var offset: u32 = 15360u;
-            let si = attempt % 4u;
-            if (level == 0u) { if (si == 0u) { a=1608637543u; b=88409749u; } else if (si == 1u) { a=1273642420u; b=242285876u; } else if (si == 2u) { a=1935803229u; b=2018247425u; } else { a=787846415u; b=953477463u; } }
-            else if (level == 1u) { if (si == 0u) { a=996406379u; b=1427830251u; } else if (si == 1u) { a=1201263688u; b=1883569565u; } else if (si == 2u) { a=423734973u; b=911989541u; } else { a=415968277u; b=3344769u; } }
-            else if (level == 2u) { if (si == 0u) { a=670094951u; b=780932287u; } else if (si == 1u) { a=1914837114u; b=2114032571u; } else if (si == 2u) { a=669991379u; b=787716372u; } else { a=429389015u; b=504579232u; } }
-            else if (level == 3u) { if (si == 0u) { a=249467211u; b=1306710475u; } else if (si == 1u) { a=1972458955u; b=479546681u; } else if (si == 2u) { a=1572714584u; b=106328085u; } else { a=1433267573u; b=30349564u; } }
-            else { if (si == 0u) { a=434285668u; b=1855189739u; } else if (si == 1u) { a=613608296u; b=99052376u; } else if (si == 2u) { a=893664920u; b=1250819632u; } else { a=648061059u; b=106406362u; } }
-            if (level == 0u) { size = 8192u; offset = 0u; }
-            else if (level == 1u) { size = 4096u; offset = 8192u; }
-            else if (level == 2u) { size = 2048u; offset = 12288u; }
-            else if (level == 3u) { size = 1024u; offset = 14336u; }
-            let raw = (key * a + b + attempt * 2654435761u) & 0x7fffffffu;
-            return offset + raw % size;
-        }
-        fn findHashSlot(key: u32) -> u32 {
-            for (var level = 0u; level < 5u; level = level + 1u) {
-                var maxAttempts = 4u + level * 2u;
-                if (level == 0u) { maxAttempts = min(maxAttempts, 4096u); }
-                else if (level == 1u) { maxAttempts = min(maxAttempts, 2048u); }
-                else if (level == 2u) { maxAttempts = min(maxAttempts, 1024u); }
-                else { maxAttempts = min(maxAttempts, 512u); }
-                for (var attempt = 0u; attempt < maxAttempts; attempt = attempt + 1u) {
-                    let slot = hashSlot(key, level, attempt);
-                    let existing = atomicLoad(&fmmKeys[slot]);
-                    if (existing == key) { return slot; }
-                }
-            }
-            let start = key & 0x7fffffffu;
-            for (var i = 0u; i < 32u; i = i + 1u) {
-                let slot = (start + i) % HASH_CAPACITY;
-                if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
-            }
-            return HASH_EMPTY;
-        }
-        fn claimHashSlot(key: u32) -> u32 {
-            for (var level = 0u; level < 5u; level = level + 1u) {
-                var maxAttempts = 4u + level * 2u;
-                if (level == 0u) { maxAttempts = min(maxAttempts, 4096u); }
-                else if (level == 1u) { maxAttempts = min(maxAttempts, 2048u); }
-                else if (level == 2u) { maxAttempts = min(maxAttempts, 1024u); }
-                else { maxAttempts = min(maxAttempts, 512u); }
-                for (var attempt = 0u; attempt < maxAttempts; attempt = attempt + 1u) {
-                    let slot = hashSlot(key, level, attempt);
-                    let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
-                    if (result.exchanged || result.old_value == key) { return slot; }
-                }
-            }
-            let start = key & 0x7fffffffu;
-            for (var i = 0u; i < 32u; i = i + 1u) {
-                let slot = (start + i) % HASH_CAPACITY;
-                let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
-                if (result.exchanged || result.old_value == key) { return slot; }
-            }
-            return HASH_EMPTY;
+            let side = 1u << params.leafBits;
+            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * f32(side)), side - 1u);
+            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * f32(side)), side - 1u);
+            return cy * side + cx;
         }
 
         @compute @workgroup_size(256, 1, 1)
@@ -633,7 +586,13 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                // Calibrated Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.038)
+                if (params.fmmEnabled != 1u) {
+                // Calibrated Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.038).
+                // Analytic dual-core mode: exactly the pre-FMM baseline (total
+                // GM = 2 x 0.00075 = 0.0015). When the FMM is enabled these
+                // cores are REPLACED by the particle self-gravity below
+                // (Gp = 0.0015 / N => same total GM), so the calibration stays
+                // valid in both paths without doubling the gravity.
                 let epsSq: f32 = 0.001444; // 0.038^2
 
                 // Core 1 Attraction
@@ -653,6 +612,7 @@
                 let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
                 let f2 = 0.00075 * inv_r2_3;
                 fx += d2x * f2; fy += d2y * f2;
+                } // end analytic cores (FMM replaces them)
 
                 if (params.fmmEnabled == 1u) {
                 // Unified self-gravity constant: one galaxy (N/2 particles) must
@@ -674,39 +634,59 @@
                     // Near field is handled exactly by the multi-level L2P
                     // (List 1 adjacent-leaf P2P with softening).
                 } else {
-                // Fixed-grid mode: hash-based P2P restricted to the 3x3 leaf
-                // neighborhood. Together with the leaf-ring M2P in l2p and the
-                // parent-level M2L exclusion zone this forms an exact partition:
-                // |leaf offset| <= 1 -> P2P, 2..3 -> leaf M2P, >= 4 -> parent M2L.
+                // Fixed-grid mode: near-field P2P with FULL traversal of the
+                // 3x3 leaf neighborhood using the counting-sorted contiguous
+                // cell lists (cellStart/cellCount + sortedIndex). Zone
+                // decomposition invariant — every pair is counted EXACTLY once:
+                //   |leaf offset| <= 1  -> direct P2P here (exact, softened)
+                //   |leaf offset| 2..3  -> leaf multipole M2P ring in l2p
+                //                           (sources whose parent is adjacent)
+                //   |parent offset| >= 2 -> parent-level M2L far field
+                // The zones tile exactly: ring sources whose parent offset is
+                // also >= 2 are skipped in the ring because M2L covers them.
+                let side = 1u << params.leafBits;
                 let leaf = leafIndex(vec2(px, py));
-                let cx = leaf % 64u; let cy = leaf / 64u;
-                // Clamp the cutoff so it never exceeds the guaranteed 3x3-zone
-                // coverage of 2 leaf cells (2 / 64 = 0.03125); this keeps the
-                // near field seamless with the leaf-ring M2P.
-                let rc = min(params.p2pRadius, 0.031);
+                let cx = leaf % side; let cy = leaf / side;
+                // Cutoff rc = 2 leaf cells exactly covers the 3x3 stencil
+                // (Chebyshev-adjacent cells are at most 2w apart); the slider
+                // can only shrink it, never break zone coverage.
+                let cellW = 1.0 / f32(side);
+                let rc = min(params.p2pRadius, 2.0 * cellW);
                 let rcSq = rc * rc;
-                var p2pBudgetPerCell = 24u;
-                if (params.numParticles > 500000u) { p2pBudgetPerCell = 12u; }
-                if (params.numParticles > 2000000u) { p2pBudgetPerCell = 6u; }
+                // P2P knob: full traversal of the 9 neighbor lists when they
+                // are short; in dense cells, subsample each list with a fixed
+                // stride and a per-particle round-robin offset (different
+                // targets sample different subsets, so the aggregate stays
+                // unbiased) and weight each sampled contribution by the
+                // stride. The per-list cap is set from JS per particle count
+                // so total near-field work stays bounded at extreme N.
+                let P2P_LIST_CAP = max(8u, params.p2pListCap);
                 for (var oy: i32 = -1; oy <= 1; oy++) { for (var ox: i32 = -1; ox <= 1; ox++) {
                     let nx = i32(cx) + ox; let ny = i32(cy) + oy;
-                    if (nx >= 0 && nx < 64 && ny >= 0 && ny < 64) {
-                        let neighborKey = u32(ny) * 64u + u32(nx);
-                        let neighborSlot = fmmCellSlots[neighborKey];
-                        var other = HASH_EMPTY;
-                        if (neighborSlot != HASH_EMPTY) { other = atomicLoad(&fmmHeads[neighborSlot]); }
-                        var skip = (gid * 7u + neighborKey * 13u) % p2pBudgetPerCell;
-                        while (skip > 0u && other != HASH_EMPTY) { other = fmmNext[other]; skip = skip - 1u; }
-                        var budget = p2pBudgetPerCell;
+                    if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
+                        let neighborCell = u32(ny) * side + u32(nx);
+                        let start = cellStart[neighborCell];
+                        let count = cellCount[neighborCell];
+                        let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
+                        let strideF = f32(stride);
+                        var s: u32 = gid % stride;
                         loop {
-                            if (other == HASH_EMPTY || budget == 0u) { break; }
-                            let candidate = other;
-                            other = fmmNext[candidate];
-                            budget = budget - 1u;
+                            if (s >= count) { break; }
+                            let candidate = fmmSortedIndex[start + s];
                             if (candidate != gid) {
-                                let q = posVelIn[candidate]; let d = vec2(px, py) - q.pos; let r2 = dot(d, d) + 0.00004;
-                                if (r2 < rcSq) { let inv = inverseSqrt(r2); let w = Gp * inv * inv; fx += d.x * w; fy += d.y * w; nearP2PIntensity += 0.02; }
+                                let q = posVelIn[candidate];
+                                let d = vec2(px, py) - q.pos;
+                                let r2 = dot(d, d) + P2P_EPS2;
+                                if (r2 < rcSq) {
+                                    let inv = inverseSqrt(r2);
+                                    let w = Gp * inv * inv * strideF;
+                                    // Gravity ATTRACTS: pull toward the neighbor
+                                    // (-d), not away from it (+d).
+                                    fx -= d.x * w; fy -= d.y * w;
+                                    nearP2PIntensity += 0.02 / strideF;
+                                }
                             }
+                            s = s + stride;
                         }
                     }
                 } }
@@ -923,97 +903,158 @@
         }
         `;
 
-        // Galaxy-only fixed-depth cell-list FMM resources. The WebGL path intentionally
-        // remains the non-FMM compatibility fallback for every scenario.
+        // Galaxy-only fixed-depth cell-list FMM (multi-level CGR88 over a
+        // uniform lattice). The WebGL path remains the non-FMM fallback for
+        // all scenarios.
+        //
+        // Cell lists are COUNTING-SORTED every frame in three passes:
+        //   A) count_cells:   slot = cell(pos); atomicAdd(cellCount[slot], 1)
+        //   B) scan_cells:    exclusive prefix sum -> cellStart[] (+cellCursor[])
+        //   C) scatter_cells: idx = atomicAdd(cellCursor[cell], 1);
+        //                      sortedIndex[idx] = particleId
+        // All consumers then iterate CONTIGUOUS ranges of sortedIndex — no
+        // linked lists, no hash table, no pointer chasing, semi-coalesced reads.
+        //
+        // Levels: l = 0 is the leaf grid (2^leafBits per side), l = 1 its
+        // parent grid, ... up to the top level K = leafBits - 2 (4x4 cells).
+        // All levels share two packed buffers (fmmMoments / fmmLocals) with
+        // per-level cell bases supplied in 256-byte uniform blocks selected
+        // by dynamic offset at dispatch time.
+        //
+        // Zone decomposition invariant (every pair counted EXACTLY once; a
+        // pair interacts at the FINEST level whose cells are Chebyshev >= 2
+        // apart — validated exhaustively in core/test_uniform_multilevel_fmm.py):
+        //   leaf Chebyshev offset <= 1             -> direct P2P (main shader)
+        //   leaf offset 2..3, parents adjacent     -> leaf multipole ring (l2p)
+        //   level-l Chebyshev >= 2, parents at
+        //     l+1 adjacent (l = 1..K-1)            -> M2L at level l
+        //   top level (l = K) Chebyshev >= 2       -> M2L at the top level
+        // Parent adjacency is parity-dependent (an offset of 3 spans either
+        // one or two parent cells), so it is always computed from actual cell
+        // indices. Offset 4+ at a level implies parents >= 2 apart, which is
+        // why the per-level V-list only needs the -3..3 ring — this replaces
+        // the former all-pairs occupied-parent scan (O(occ^2)) with O(cells)
+        // work per level.
         const wgslFmmSource = `
         struct FmmParticle { pos: vec2<f32>, vel: vec2<f32> };
-        struct FmmParams { numParticles: u32, massFixed: u32, invMassScale: f32, order: u32 };
+        // One 256-byte block per level; the dispatched level is selected via
+        // the bind group's dynamic offset (level * 256). Block 0 (leaf) is
+        // shared by the counting-sort and P2M passes; l2p uses block 1.
+        struct FmmParams {
+            numParticles: u32,
+            order: u32,
+            leafBits: u32,     // leaf grid is 2^leafBits x 2^leafBits cells
+            levelCount: u32,   // K: top level index (top grid is 4x4)
+            level: u32,        // level of this block
+            levelRes: u32,     // cells per side at this level
+            momCellBase: u32,  // this level's first cell in fmmMoments
+            localCellBase: u32,// this level's first cell in fmmLocals
+            _pad0: u32,
+            _pad1: u32,
+        };
         @group(0) @binding(0) var<storage, read> fmmPos: array<FmmParticle>;
-        @group(0) @binding(1) var<storage, read_write> fmmKeys: array<atomic<u32>>;
-        @group(0) @binding(2) var<storage, read_write> fmmHeads: array<atomic<u32>>;
-        @group(0) @binding(3) var<storage, read_write> fmmNext: array<u32>;
-        @group(0) @binding(4) var<storage, read_write> fmmLeafMass: array<atomic<u32>>;
-        @group(0) @binding(5) var<storage, read_write> fmmLeafMom: array<vec4<f32>>; // 3 vec4s per leaf: complex a0..a4
-        @group(0) @binding(6) var<storage, read_write> fmmParentMom: array<vec4<f32>>; // 3 vec4s per parent: complex a0..a4
-        @group(0) @binding(7) var<storage, read_write> fmmParentField: array<vec4<f32>>; // 3 vec4s per parent: local c0..c4
-        @group(0) @binding(8) var<storage, read_write> fmmField: array<vec4<f32>>;
-        @group(0) @binding(9) var<uniform> fmmParams: FmmParams;
-        @group(0) @binding(10) var<storage, read_write> fmmCellSlots: array<u32>;
-        const HASH_EMPTY: u32 = 0xffffffffu;
-        const HASH_CAPACITY: u32 = 16384u;
+        @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
+        @group(0) @binding(2) var<storage, read_write> cellCursor: array<atomic<u32>>;
+        @group(0) @binding(3) var<storage, read_write> cellStart: array<u32>;
+        @group(0) @binding(4) var<storage, read_write> sortedIndex: array<u32>;
+        // All levels' multipoles packed together (level l at momCellBase, 3
+        // vec4s per cell storing complex a0..a4; leaf = level 0 at base 0):
+        @group(0) @binding(5) var<storage, read_write> fmmMoments: array<vec4<f32>>;
+        // All levels' local expansions (levels 1..K, same packing):
+        @group(0) @binding(6) var<storage, read_write> fmmLocals: array<vec4<f32>>;
+        @group(0) @binding(7) var<storage, read_write> fmmField: array<vec4<f32>>;
+        @group(0) @binding(8) var<uniform> fmmParams: FmmParams;
+        // Softening length^2 shared with the main-shader P2P kernel so the
+        // near/ring/far zone boundaries join continuously (see cdivSoft).
+        const P2P_EPS2: f32 = 0.00004;
+        fn leafSide() -> u32 { return 1u << fmmParams.leafBits; }
         fn leafIndex(p: vec2<f32>) -> u32 {
-            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * 64.0), 63u);
-            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * 64.0), 63u);
-            return cy * 64u + cx;
+            let side = leafSide();
+            let cx = min(u32(clamp(p.x, 0.0, 0.999999) * f32(side)), side - 1u);
+            let cy = min(u32(clamp(p.y, 0.0, 0.999999) * f32(side)), side - 1u);
+            return cy * side + cx;
         }
-        fn hashSlot(key: u32, level: u32, attempt: u32) -> u32 {
-            var a: u32 = 1u; var b: u32 = 0u; var size: u32 = 1024u; var offset: u32 = 15360u;
-            let si = attempt % 4u;
-            if (level == 0u) { if (si == 0u) { a=1608637543u; b=88409749u; } else if (si == 1u) { a=1273642420u; b=242285876u; } else if (si == 2u) { a=1935803229u; b=2018247425u; } else { a=787846415u; b=953477463u; } }
-            else if (level == 1u) { if (si == 0u) { a=996406379u; b=1427830251u; } else if (si == 1u) { a=1201263688u; b=1883569565u; } else if (si == 2u) { a=423734973u; b=911989541u; } else { a=415968277u; b=3344769u; } }
-            else if (level == 2u) { if (si == 0u) { a=670094951u; b=780932287u; } else if (si == 1u) { a=1914837114u; b=2114032571u; } else if (si == 2u) { a=669991379u; b=787716372u; } else { a=429389015u; b=504579232u; } }
-            else if (level == 3u) { if (si == 0u) { a=249467211u; b=1306710475u; } else if (si == 1u) { a=1972458955u; b=479546681u; } else if (si == 2u) { a=1572714584u; b=106328085u; } else { a=1433267573u; b=30349564u; } }
-            else { if (si == 0u) { a=434285668u; b=1855189739u; } else if (si == 1u) { a=613608296u; b=99052376u; } else if (si == 2u) { a=893664920u; b=1250819632u; } else { a=648061059u; b=106406362u; } }
-            if (level == 0u) { size = 8192u; offset = 0u; }
-            else if (level == 1u) { size = 4096u; offset = 8192u; }
-            else if (level == 2u) { size = 2048u; offset = 12288u; }
-            else if (level == 3u) { size = 1024u; offset = 14336u; }
-            return offset + ((key * a + b + attempt * 2654435761u) & 0x7fffffffu) % size;
-        }
-        fn claimHashSlot(key: u32) -> u32 {
-            for (var level = 0u; level < 5u; level = level + 1u) {
-                let attempts = 4u + level * 2u;
-                for (var attempt = 0u; attempt < attempts; attempt = attempt + 1u) {
-                    let slot = hashSlot(key, level, attempt);
-                    let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
-                    if (result.exchanged || result.old_value == key) { return slot; }
-                }
-            }
-            for (var i = 0u; i < 32u; i = i + 1u) {
-                let slot = (key + i) % HASH_CAPACITY;
-                let result = atomicCompareExchangeWeak(&fmmKeys[slot], HASH_EMPTY, key);
-                if (result.exchanged || result.old_value == key) { return slot; }
-            }
-            return HASH_EMPTY;
-        }
-        fn findHashSlot(key: u32) -> u32 {
-            for (var level = 0u; level < 5u; level = level + 1u) {
-                let attempts = 4u + level * 2u;
-                for (var attempt = 0u; attempt < attempts; attempt = attempt + 1u) {
-                    let slot = hashSlot(key, level, attempt);
-                    if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
-                }
-            }
-            for (var i = 0u; i < 32u; i = i + 1u) {
-                let slot = (key + i) % HASH_CAPACITY;
-                if (atomicLoad(&fmmKeys[slot]) == key) { return slot; }
-            }
-            return HASH_EMPTY;
+        fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x); }
+        // Softened complex divide: same form as cdiv but with |b|^2 + eps^2 in
+        // the denominator. Used ONLY for the leading 1/delta monopole terms so
+        // that a cell's multipole force rolls off exactly like the softened
+        // P2P kernel G*m/(r^2+eps^2) when a source approaches the near zone.
+        // Higher-order moments are left exact (they decay faster than 1/r).
+        fn cdivSoft(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+            let den = dot(b, b) + P2P_EPS2;
+            return vec2<f32>((a.x*b.x+a.y*b.y)/den, (a.y*b.x-a.x*b.y)/den);
         }
         @compute @workgroup_size(256)
         fn clear_cells(@builtin(global_invocation_id) id: vec3<u32>) {
-            if (id.x < HASH_CAPACITY) { atomicStore(&fmmKeys[id.x], HASH_EMPTY); atomicStore(&fmmHeads[id.x], HASH_EMPTY); }
-            if (id.x < 4096u) { atomicStore(&fmmLeafMass[id.x], 0u); fmmCellSlots[id.x] = HASH_EMPTY; }
-            if (id.x < 12288u) { fmmLeafMom[id.x] = vec4(0.0); }
-            if (id.x < 3072u) { fmmParentMom[id.x] = vec4(0.0); fmmParentField[id.x] = vec4(0.0); }
+            // Zero per-cell counters and all moment/local arrays across EVERY
+            // level. cellStart and cellCursor are fully rewritten by scan_cells
+            // each frame and need no clear; sortedIndex is fully overwritten by
+            // scatter_cells. The dispatch covers the largest of the three.
+            let leafCells = 1u << (2u * fmmParams.leafBits);
+            var momVecs: u32 = 0u;
+            var localVecs: u32 = 0u;
+            for (var l: u32 = 0u; l <= fmmParams.levelCount; l = l + 1u) {
+                let cells = 1u << (2u * (fmmParams.leafBits - l));
+                momVecs += cells * 3u;
+                if (l >= 1u) { localVecs += cells * 3u; }
+            }
+            if (id.x < leafCells) { atomicStore(&cellCount[id.x], 0u); }
+            if (id.x < momVecs) { fmmMoments[id.x] = vec4<f32>(0.0); }
+            if (id.x < localVecs) { fmmLocals[id.x] = vec4<f32>(0.0); }
         }
         @compute @workgroup_size(256)
-        fn build_cells(@builtin(global_invocation_id) id: vec3<u32>) {
+        fn count_cells(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= fmmParams.numParticles) { return; }
+            atomicAdd(&cellCount[leafIndex(fmmPos[id.x].pos)], 1u);
+        }
+        var<workgroup> scanPartial: array<u32, 256>;
+        var<workgroup> scanBase: array<u32, 256>;
+        @compute @workgroup_size(256)
+        fn scan_cells(@builtin(local_invocation_id) lid: vec3<u32>) {
+            // Single-workgroup exclusive prefix sum over cellCount: each thread
+            // sequentially scans one CONTIGUOUS chunk of cells (chunk-local
+            // exclusive prefix + chunk sum), thread 0 scans the 256 chunk sums,
+            // then every thread offsets its chunk by the totals of all earlier
+            // chunks. Writes cellStart[c] (exclusive prefix) and initializes
+            // cellCursor[c] = cellStart[c] for the scatter pass.
+            let tid = lid.x;
+            let nc = 1u << (2u * fmmParams.leafBits);
+            let chunk = (nc + 255u) / 256u;
+            let lo = tid * chunk;
+            let hi = min(lo + chunk, nc);
+            var run: u32 = 0u;
+            var i = lo;
+            loop {
+                if (i >= hi) { break; }
+                let c = atomicLoad(&cellCount[i]);
+                cellStart[i] = run;
+                run += c;
+                i += 1u;
+            }
+            scanPartial[tid] = run;
+            workgroupBarrier();
+            if (tid == 0u) {
+                var acc: u32 = 0u;
+                for (var t = 0u; t < 256u; t = t + 1u) { scanBase[t] = acc; acc += scanPartial[t]; }
+            }
+            workgroupBarrier();
+            let base = scanBase[tid];
+            var j = lo;
+            loop {
+                if (j >= hi) { break; }
+                let s = cellStart[j] + base;
+                cellStart[j] = s;
+                atomicStore(&cellCursor[j], s);
+                j += 1u;
+            }
+        }
+        @compute @workgroup_size(256)
+        fn scatter_cells(@builtin(global_invocation_id) id: vec3<u32>) {
             if (id.x >= fmmParams.numParticles) { return; }
             let cell = leafIndex(fmmPos[id.x].pos);
-            var slot = fmmCellSlots[cell];
-            if (slot == HASH_EMPTY) {
-                slot = claimHashSlot(cell);
-                if (slot == HASH_EMPTY) { fmmNext[id.x] = HASH_EMPTY; return; }
-                fmmCellSlots[cell] = slot;
-            }
-            let old = atomicExchange(&fmmHeads[slot], id.x);
-            fmmNext[id.x] = old;
-            atomicAdd(&fmmLeafMass[cell], fmmParams.massFixed);
+            let slot = atomicAdd(&cellCursor[cell], 1u);
+            sortedIndex[slot] = id.x;
         }
-        fn cadd(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return a + b; }
-        fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x); }
-        fn cscale(a: vec2<f32>, s: f32) -> vec2<f32> { return a * s; }
         fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
             let den = max(dot(b, b), 1e-20);
             return vec2<f32>((a.x*b.x+a.y*b.y)/den, (a.y*b.x-a.x*b.y)/den);
@@ -1046,123 +1087,231 @@
         }
         @compute @workgroup_size(64)
         fn build_moments(@builtin(global_invocation_id) id: vec3<u32>) {
-            if (id.x >= 4096u) { return; }
+            // P2M per leaf cell over its CONTIGUOUS counting-sort range:
+            // particles sortedIndex[cellStart[c] .. cellStart[c]+cellCount[c]].
+            let leafCells = 1u << (2u * fmmParams.leafBits);
+            if (id.x >= leafCells) { return; }
             let cell = id.x;
-            let cx = cell % 64u; let cy = cell / 64u;
-            let center = vec2<f32>((f32(cx) + 0.5) / 64.0, (f32(cy) + 0.5) / 64.0);
-            let slot = fmmCellSlots[cell];
-            var p = HASH_EMPTY;
-            if (slot != HASH_EMPTY) { p = atomicLoad(&fmmHeads[slot]); }
+            let side = leafSide();
+            let cx = cell % side; let cy = cell / side;
+            let center = vec2<f32>((f32(cx) + 0.5) / f32(side), (f32(cy) + 0.5) / f32(side));
+            let start = cellStart[cell];
+            let cnt = atomicLoad(&cellCount[cell]);
             var a0 = 0.0; var a1 = vec2<f32>(0.0); var a2 = vec2<f32>(0.0); var a3 = vec2<f32>(0.0); var a4 = vec2<f32>(0.0);
-            loop {
-                if (p == HASH_EMPTY) { break; }
-                let dz = vec2<f32>(fmmPos[p].pos.x - center.x, fmmPos[p].pos.y - center.y);
+            for (var s: u32 = 0u; s < cnt; s = s + 1u) {
+                let p = sortedIndex[start + s];
+                let dz = fmmPos[p].pos - center;
                 var power = vec2<f32>(1.0, 0.0);
                 a0 += 1.0;
                 if (fmmParams.order >= 1u) { power = cmul(power, dz); a1 -= power; }
                 if (fmmParams.order >= 2u) { power = cmul(power, dz); a2 -= power * 0.5; }
                 if (fmmParams.order >= 3u) { power = cmul(power, dz); a3 -= power / 3.0; }
                 if (fmmParams.order >= 4u) { power = cmul(power, dz); a4 -= power * 0.25; }
-                p = fmmNext[p];
             }
-            coeffWrite(&fmmLeafMom, cell, 0u, vec2<f32>(a0, 0.0));
-            coeffWrite(&fmmLeafMom, cell, 1u, a1);
-            coeffWrite(&fmmLeafMom, cell, 2u, a2);
-            coeffWrite(&fmmLeafMom, cell, 3u, a3);
-            coeffWrite(&fmmLeafMom, cell, 4u, a4);
+            coeffWrite(&fmmMoments, cell, 0u, vec2<f32>(a0, 0.0));
+            coeffWrite(&fmmMoments, cell, 1u, a1);
+            coeffWrite(&fmmMoments, cell, 2u, a2);
+            coeffWrite(&fmmMoments, cell, 3u, a3);
+            coeffWrite(&fmmMoments, cell, 4u, a4);
         }
         @compute @workgroup_size(64)
-        fn parent_moments(@builtin(global_invocation_id) id: vec3<u32>) {
-            if (id.x >= 1024u) { return; }
+        fn m2m_up(@builtin(global_invocation_id) id: vec3<u32>) {
+            // M2M at fmmParams.level (1..K): translate each of the four child
+            // expansions of level-1 to this level's cell center.
+            // CGR88 Thm 2.2 with delta = child_center - parent_center:
+            //   B_0 = A_0
+            //   B_k = -A_0 * delta^k / k + sum_{j=1..k} A_j * C(k-1,j-1) * delta^(k-j)
+            // (the j=0 term carries the -delta^k/k factor; the j>=1 binomial
+            // path below is the standard CGR88 translation, cross-checked
+            // against core/cgr88_adaptive_fmm.py m2m).
+            let res = fmmParams.levelRes;
+            let cells = res * res;
+            if (id.x >= cells) { return; }
             let cell = id.x;
-            let px = cell % 32u; let py = cell / 32u;
-            let parent_center = vec2<f32>((f32(px) + 0.5) / 32.0, (f32(py) + 0.5) / 32.0);
+            let px = cell % res; let py = cell / res;
+            let parent_center = vec2<f32>((f32(px) + 0.5) / f32(res), (f32(py) + 0.5) / f32(res));
+            let childRes = res * 2u;
+            let childBase = fmmParams.momCellBase - childRes * childRes;
             for (var k = 0u; k <= 4u; k = k + 1u) {
+                if (k > fmmParams.order) { break; }
                 var acc = vec2<f32>(0.0);
                 for (var oy = 0u; oy < 2u; oy = oy + 1u) {
                     for (var ox = 0u; ox < 2u; ox = ox + 1u) {
-                        let child = (py * 2u + oy) * 64u + px * 2u + ox;
-                        let child_center = vec2<f32>((f32(px * 2u + ox) + 0.5) / 64.0, (f32(py * 2u + oy) + 0.5) / 64.0);
+                        let child = (py * 2u + oy) * childRes + px * 2u + ox;
+                        let child_center = vec2<f32>((f32(px * 2u + ox) + 0.5) / f32(childRes), (f32(py * 2u + oy) + 0.5) / f32(childRes));
                         let delta = child_center - parent_center;
-                        let mc = coeffRead(&fmmLeafMom, child, k);
-                        var translated = mc;
-                        if (k > 0u) {
-                            translated = vec2<f32>(0.0);
-                            for (var j = 0u; j <= k; j = j + 1u) {
-                                let mj = coeffRead(&fmmLeafMom, child, j);
+                        if (k == 0u) {
+                            acc += coeffRead(&fmmMoments, childBase + child, 0u);
+                        } else {
+                            // j = 0 monopole translation: -A0 * delta^k / k
+                            var dp0 = vec2<f32>(1.0, 0.0);
+                            for (var n = 0u; n < k; n = n + 1u) { dp0 = cmul(dp0, delta); }
+                            let m0 = coeffRead(&fmmMoments, childBase + child, 0u);
+                            acc -= cmul(m0, dp0) / f32(k);
+                            // j >= 1: A_j * C(k-1, j-1) * delta^(k-j)
+                            for (var j = 1u; j <= k; j = j + 1u) {
+                                let mj = coeffRead(&fmmMoments, childBase + child, j);
                                 var dp = vec2<f32>(1.0, 0.0);
-                                for (var n = 0u; n < k - j; n = n + 1u) { dp = cmul(dp, delta); }
+                                for (var n2 = 0u; n2 < k - j; n2 = n2 + 1u) { dp = cmul(dp, delta); }
                                 var binom = 1.0;
-                                if (j > 0u) {
-                                    binom = 1.0;
-                                    for (var b = 1u; b < j; b = b + 1u) { binom *= f32(k - b) / f32(b); }
-                                }
-                                translated += mj * binom * dp;
+                                for (var b = 1u; b < j; b = b + 1u) { binom *= f32(k - b) / f32(b); }
+                                acc += cmul(mj, dp) * binom;
                             }
                         }
-                        acc += translated;
                     }
                 }
-                coeffWrite(&fmmParentMom, cell, k, acc);
+                coeffWrite(&fmmMoments, fmmParams.momCellBase + cell, k, acc);
             }
         }
-        @compute @workgroup_size(64)
+        // M2L accumulation of one source cell into a target's local expansion
+        // (coefficients held in a function-scope array). Softening matches the
+        // softened P2P kernel on monopole leading terms (see cdivSoft).
+        fn m2lAccumulate(localArr: ptr<function, array<vec2<f32>, 5>>, tc: vec2<f32>, sourceCell: u32, res: u32) {
+            let a0 = coeffRead(&fmmMoments, fmmParams.momCellBase + sourceCell, 0u);
+            if (a0.x == 0.0 && a0.y == 0.0) { return; }
+            let sx = sourceCell % res; let sy = sourceCell / res;
+            let sc = vec2<f32>((f32(sx) + 0.5) / f32(res), (f32(sy) + 0.5) / f32(res));
+            let delta = tc - sc;
+            // c_0 = a0*ln(delta) + sum_k a_k/delta^k (potential only).
+            (*localArr)[0] += cmul(a0, clog(delta));
+            for (var k = 1u; k <= 4u; k = k + 1u) {
+                if (k > fmmParams.order) { break; }
+                var dp = vec2<f32>(1.0, 0.0);
+                for (var n = 0u; n < k; n = n + 1u) { dp = cmul(dp, delta); }
+                (*localArr)[0] += cdiv(coeffRead(&fmmMoments, fmmParams.momCellBase + sourceCell, k), dp);
+            }
+            // c_l for l >= 1: CGR88 Thm 2.3 with delta = target - source.
+            // Monopole term uses the SOFTENED kernel
+            //   1/delta^l  ->  conj(delta)^l / (|delta|^2 + eps^2)^l
+            // which equals the exact term at eps = 0 and for l = 1 is
+            // exactly the P2P kernel G*m/(r^2+eps^2), keeping the M2L
+            // zone continuous with the softened ring / P2P zones.
+            var conjPow = vec2<f32>(1.0, 0.0);
+            var deltaPow = vec2<f32>(1.0, 0.0);
+            var denL = 1.0;
+            let denSoft = dot(delta, delta) + P2P_EPS2;
+            for (var l = 1u; l <= 4u; l = l + 1u) {
+                if (l > fmmParams.order) { break; }
+                conjPow = cmul(conjPow, vec2<f32>(delta.x, -delta.y));
+                deltaPow = cmul(deltaPow, delta);
+                denL *= denSoft;
+                // Monopole: (-1)^(l-1)/l => +1 for odd l, -1 for even l.
+                let signA0 = select(1.0, -1.0, (l & 1u) == 0u);
+                (*localArr)[l] += cmul(a0, conjPow) * (signA0 / (f32(l) * denL));
+                for (var k = 1u; k <= 4u; k = k + 1u) {
+                    if (k > fmmParams.order) { break; }
+                    var dp = deltaPow;
+                    for (var n2 = 0u; n2 < k; n2 = n2 + 1u) { dp = cmul(dp, delta); }
+                    var binom = 1.0;
+                    for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k + b - 1u) / f32(b); }
+                    let sign = select(1.0, -1.0, (l & 1u) == 1u);
+                    (*localArr)[l] += cdiv(coeffRead(&fmmMoments, fmmParams.momCellBase + sourceCell, k) * (sign * binom), dp);
+                }
+            }
+        }
+        @compute @workgroup_size(256)
         fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
-            if (id.x >= 1024u) { return; }
+            // Per-level M2L at fmmParams.level (1..K) over the V-list: same-
+            // level cells at Chebyshev >= 2 whose PARENTS are adjacent, with
+            // the parity check on actual cell indices (an offset of 3 spans
+            // one or two parent cells). At the top level every cell at
+            // Chebyshev >= 2 contributes (the 4x4 top grid covers the whole
+            // domain, so this closes the far field). Empty targets early-out:
+            // their locals were cleared and are never read by L2P/L2L.
+            // Replaces the former all-pairs occupied-parent scan (O(occ^2)).
+            let res = fmmParams.levelRes;
+            let cells = res * res;
+            if (id.x >= cells) { return; }
             let targetCell = id.x;
-            let tx = targetCell % 32u; let ty = targetCell / 32u;
-            let tc = vec2<f32>((f32(tx) + 0.5) / 32.0, (f32(ty) + 0.5) / 32.0);
-            for (var l = 0u; l <= 4u; l = l + 1u) {
-                var local = vec2<f32>(0.0);
-                for (var j = 0u; j < 1024u; j = j + 1u) {
-                    let sx = j % 32u; let sy = j / 32u;
-                    if (abs(i32(sx) - i32(tx)) <= 1 && abs(i32(sy) - i32(ty)) <= 1) { continue; }
-                    let sc = vec2<f32>((f32(sx) + 0.5) / 32.0, (f32(sy) + 0.5) / 32.0);
-                    let delta = tc - sc;
-                    var deltaPow = vec2<f32>(1.0, 0.0);
-                    for (var n = 0u; n < l; n = n + 1u) { deltaPow = cmul(deltaPow, delta); }
-                    let a0 = coeffRead(&fmmParentMom, j, 0u);
-                    if (l == 0u) {
-                        local += cmul(a0, clog(delta));
-                        for (var k = 1u; k <= 4u; k = k + 1u) {
-                            var dp = vec2<f32>(1.0, 0.0);
-                            for (var n = 0u; n < k; n = n + 1u) { dp = cmul(dp, delta); }
-                            local += cdiv(coeffRead(&fmmParentMom, j, k), dp);
-                        }
-                    } else {
-                        // Monopole term requires (-1)^(l+1)/l: +1 for odd l, -1 for even l.
-                        local += cdiv(a0 * (select(1.0, -1.0, (l & 1u) == 0u) / f32(l)), deltaPow);
-                        for (var k = 1u; k <= 4u; k = k + 1u) {
-                            var dp = deltaPow;
-                            for (var n = 0u; n < k; n = n + 1u) { dp = cmul(dp, delta); }
-                            var binom = 1.0;
-                            for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k + b - 1u) / f32(b); }
-                            let sign = select(1.0, -1.0, (l & 1u) == 1u);
-                            local += cdiv(coeffRead(&fmmParentMom, j, k) * (sign * binom), dp);
-                        }
+            let own0 = coeffRead(&fmmMoments, fmmParams.momCellBase + targetCell, 0u);
+            if (own0.x == 0.0 && own0.y == 0.0) { return; }
+            let tx = targetCell % res; let ty = targetCell / res;
+            let tc = vec2<f32>((f32(tx) + 0.5) / f32(res), (f32(ty) + 0.5) / f32(res));
+            var localArr = array<vec2<f32>, 5>(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0));
+            if (fmmParams.level == fmmParams.levelCount) {
+                // Top level: scan the entire (4x4) grid, Chebyshev >= 2 only.
+                for (var sy = 0u; sy < res; sy = sy + 1u) {
+                    for (var sx = 0u; sx < res; sx = sx + 1u) {
+                        // Skip the 3x3 (Chebyshev < 2) neighborhood.
+                        if (max(abs(i32(sx) - i32(tx)), abs(i32(sy) - i32(ty))) < 2) { continue; }
+                        m2lAccumulate(&localArr, tc, sy * res + sx, res);
                     }
                 }
-                coeffWrite(&fmmParentField, targetCell, l, local);
+            } else {
+                // Interior level: V-list ring -3..3 with parity-checked
+                // parent adjacency; pairs failing the check are handled at a
+                // coarser level (their parents are >= 2 apart here).
+                for (var oy: i32 = -3; oy <= 3; oy = oy + 1) {
+                    for (var ox: i32 = -3; ox <= 3; ox = ox + 1) {
+                        if (max(abs(ox), abs(oy)) < 2) { continue; }
+                        let nx = i32(tx) + ox; let ny = i32(ty) + oy;
+                        if (nx < 0 || nx >= i32(res) || ny < 0 || ny >= i32(res)) { continue; }
+                        let nu = u32(nx); let nv = u32(ny);
+                        if (abs(i32(nu >> 1u) - i32(tx >> 1u)) > 1 || abs(i32(nv >> 1u) - i32(ty >> 1u)) > 1) { continue; }
+                        m2lAccumulate(&localArr, tc, nv * res + nu, res);
+                    }
+                }
+            }
+            for (var l = 0u; l <= 4u; l = l + 1u) {
+                if (l > fmmParams.order) { break; }
+                coeffWrite(&fmmLocals, fmmParams.localCellBase + targetCell, l, localArr[l]);
+            }
+        }
+        @compute @workgroup_size(256)
+        fn l2l_down(@builtin(global_invocation_id) id: vec3<u32>) {
+            // L2L at fmmParams.level (2..K): translate the parent's local
+            // expansion down into each child cell of level-1, ADDING to what
+            // m2l already accumulated there. Pure polynomial recentering:
+            //   c'_l = sum_{j>=l} c_j * C(j,l) * d^(j-l),  d = child - parent
+            // (locals are coefficients of z^l, so the shift is exact and
+            // convention-independent).
+            let res = fmmParams.levelRes;
+            let childRes = res * 2u;
+            let childCells = childRes * childRes;
+            if (id.x >= childCells) { return; }
+            let cell = id.x;
+            let cx = cell % childRes; let cy = cell / childRes;
+            let parentCell = (cy >> 1u) * res + (cx >> 1u);
+            let pc = vec2<f32>((f32(cx >> 1u) + 0.5) / f32(res), (f32(cy >> 1u) + 0.5) / f32(res));
+            let cc = vec2<f32>((f32(cx) + 0.5) / f32(childRes), (f32(cy) + 0.5) / f32(childRes));
+            let d = cc - pc;
+            let childBase = fmmParams.localCellBase - childCells;
+            for (var l = 0u; l <= 4u; l = l + 1u) {
+                if (l > fmmParams.order) { break; }
+                var acc = vec2<f32>(0.0);
+                for (var j = l; j <= 4u; j = j + 1u) {
+                    if (j > fmmParams.order) { break; }
+                    var dp = vec2<f32>(1.0, 0.0);
+                    for (var n = 0u; n < j - l; n = n + 1u) { dp = cmul(dp, d); }
+                    var binom = 1.0;
+                    for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(j - b + 1u) / f32(b); }
+                    acc += cmul(coeffRead(&fmmLocals, fmmParams.localCellBase + parentCell, j), dp) * binom;
+                }
+                    // Add into the child's existing local expansion.
+                    let prev = coeffRead(&fmmLocals, childBase + cell, l);
+                    coeffWrite(&fmmLocals, childBase + cell, l, prev + acc);
             }
         }
         @compute @workgroup_size(256)
         fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
             if (id.x >= fmmParams.numParticles) { return; }
             let pos = fmmPos[id.x].pos;
-            // Evaluate the local expansion of the CONTAINING parent cell only.
-            // (A previous version bilinearly blended the coefficients of the 4
-            // surrounding parent cells, which is invalid: each expansion is tied
-            // to its own center and exclusion zone, and the blend produced
-            // grid-aligned force artifacts at every cell boundary.)
-            let ix = min(u32(clamp(pos.x, 0.0, 0.999999) * 32.0), 31u);
-            let iy = min(u32(clamp(pos.y, 0.0, 0.999999) * 32.0), 31u);
-            let parentCell = iy * 32u + ix;
-            let center = vec2<f32>((f32(ix) + 0.5) / 32.0, (f32(iy) + 0.5) / 32.0);
+            // Evaluate the local expansion of the CONTAINING level-1 (parent)
+            // cell only. (A previous version bilinearly blended the coefficients
+            // of the 4 surrounding parent cells, which is invalid: each expansion
+            // is tied to its own center and exclusion zone, and the blend produced
+            // grid-aligned force artifacts at every cell boundary.) Dispatched
+            // with uniform block 1: levelRes = parent side, localCellBase = 0.
+            let ps = fmmParams.levelRes;
+            let ix = min(u32(clamp(pos.x, 0.0, 0.999999) * f32(ps)), ps - 1u);
+            let iy = min(u32(clamp(pos.y, 0.0, 0.999999) * f32(ps)), ps - 1u);
+            let parentCell = iy * ps + ix;
+            let center = vec2<f32>((f32(ix) + 0.5) / f32(ps), (f32(iy) + 0.5) / f32(ps));
             let dz = pos - center;
             var potential = vec2<f32>(0.0); var deriv = vec2<f32>(0.0);
             for (var l = 0u; l <= 4u; l = l + 1u) {
                 if (l > fmmParams.order) { break; }
-                let c = coeffRead(&fmmParentField, parentCell, l);
+                let c = coeffRead(&fmmLocals, fmmParams.localCellBase + parentCell, l);
                 var dp = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < l; n = n + 1u) { dp = cmul(dp, dz); }
                 potential += cmul(c, dp);
@@ -1173,26 +1322,40 @@
                 }
             }
             // Leaf ring: direct M2P from leaf multipoles for leaf cells at
-            // Chebyshev distance 2..3. This exactly covers the gap between the
-            // 3x3 P2P stencil (|offset| <= 1) and the parent M2L exclusion zone
-            // (parents within index distance 1 <=> |leaf offset| <= 3).
-            let lx = min(u32(clamp(pos.x, 0.0, 0.999999) * 64.0), 63u);
-            let ly = min(u32(clamp(pos.y, 0.0, 0.999999) * 64.0), 63u);
+            // Chebyshev offset 2..3 whose PARENT is inside the 3x3 parent
+            // neighborhood of the target leaf's parent. Without the parent
+            // check, offset-3 pairs on a parity sublattice are counted TWICE
+            // (once here, once by a level M2L), producing a phantom force
+            // with period 2 leaf cells. With the check, every pair is counted
+            // exactly once: P2P for |leaf offset| <= 1, ring M2P for offsets
+            // 2..3 with adjacent parents, per-level M2L beyond that.
+            let ls = leafSide();
+            let lx = min(u32(clamp(pos.x, 0.0, 0.999999) * f32(ls)), ls - 1u);
+            let ly = min(u32(clamp(pos.y, 0.0, 0.999999) * f32(ls)), ls - 1u);
+            let tpx = i32(lx >> 1u); let tpy = i32(ly >> 1u);
             for (var oy: i32 = -3; oy <= 3; oy = oy + 1) { for (var ox: i32 = -3; ox <= 3; ox = ox + 1) {
-                if (ox >= -1 && ox <= 1 && oy >= -1 && oy <= 1) { continue; }
+                let cheb = max(abs(ox), abs(oy));
+                if (cheb <= 1 || cheb > 3) { continue; }
                 let nx = i32(lx) + ox; let ny = i32(ly) + oy;
-                if (nx < 0 || nx >= 64 || ny < 0 || ny >= 64) { continue; }
-                let cell = u32(ny) * 64u + u32(nx);
-                let a0 = coeffRead(&fmmLeafMom, cell, 0u);
+                if (nx < 0 || nx >= i32(ls) || ny < 0 || ny >= i32(ls)) { continue; }
+                // P3 rule: skip ring sources whose parent is OUTSIDE the 3x3
+                // neighborhood of the target's parent — the per-level M2L
+                // above already accounts for them.
+                if (abs((nx >> 1) - tpx) > 1 || abs((ny >> 1) - tpy) > 1) { continue; }
+                let cell = u32(ny) * ls + u32(nx);
+                let a0 = coeffRead(&fmmMoments, cell, 0u);
                 if (a0.x == 0.0 && a0.y == 0.0) { continue; }
-                let delta = pos - vec2<f32>((f32(nx) + 0.5) / 64.0, (f32(ny) + 0.5) / 64.0);
+                let delta = pos - vec2<f32>((f32(nx) + 0.5) / f32(ls), (f32(ny) + 0.5) / f32(ls));
+                // Softened monopole: cdivSoft divides by |delta|^2 + eps^2,
+                // matching the P2P kernel G*m/(r^2+eps^2) so the near/ring
+                // zone boundary stays continuous. Higher moments stay exact.
                 potential += cmul(a0, clog(delta));
-                deriv += cdiv(a0, delta);
+                deriv += cdivSoft(a0, delta);
                 var power = vec2<f32>(1.0, 0.0);
                 for (var k = 1u; k <= 4u; k = k + 1u) {
                     if (k > fmmParams.order) { break; }
                     power = cmul(power, delta);
-                    let ak = coeffRead(&fmmLeafMom, cell, k);
+                    let ak = coeffRead(&fmmMoments, cell, k);
                     potential += cdiv(ak, power);
                     deriv -= f32(k) * cdiv(ak, cmul(power, delta));
                 }
@@ -1204,11 +1367,19 @@
         const wgslAdaptiveFmmSource = `
 // Flat adaptive CGR88 WebGPU kernel — full pipeline with M2M, L2L, M2L, P2L.
 struct Particle { pos: vec2<f32>, vel: vec2<f32> };
+// levelBase is the flat node offset of the level being dispatched. Nodes are
+// laid out with levelStart[l] = sum_{i<l} 4^i, so a dispatch of levelCount[l]
+// threads must address nodes as levelBase + id.x — plain id.x would cover the
+// WRONG level range (leaves missing M2L/L2L, other nodes accumulated 2-4x).
 struct FmmParams {
     numParticles: u32,
     nodeCount: u32,
     expansionOrder: u32,
     levelCount: u32,
+    levelBase: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -1301,7 +1472,9 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
-    let node = id.x;
+    // Upward pass, dispatched per level: node = levelBase + id.x so the
+    // workgroup range covers exactly this level's nodes.
+    let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     if (isTerminal(node)) { return; }
     let center = nodeCenterSize[node].xy;
@@ -1335,7 +1508,8 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
-    let node = id.x;
+    // Downward pass, dispatched per level with exact level ranges.
+    let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     let parent = nodeParent[node];
     if (parent == INVALID) { return; }
@@ -1360,7 +1534,10 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
-    let targetNode = id.x;
+    // M2L, dispatched per level with exact level ranges. Each node is
+    // processed exactly once per frame (locals were cleared by the clear
+    // pass), so the existing + accumulate semantics are correct.
+    let targetNode = params.levelBase + id.x;
     if (targetNode >= params.nodeCount) { return; }
     let targetCenter = nodeCenterSize[targetNode].xy;
 
@@ -1524,7 +1701,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             g2y: f32,
             fmmEnabled: u32,
             adaptiveMode: u32,
-            _uniformPadding: vec2<u32>,
+            leafBits: u32,
+            p2pListCap: u32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -1846,15 +2024,57 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuPosVelBufferB = null;
         let webgpuExtraBuffer = null;
         let webgpuUniformBuffer = null;
-        let webgpuFmmKeys = null, webgpuFmmHeads = null, webgpuFmmNext = null, webgpuFmmLeafMass = null, webgpuFmmCellSlots = null;
-        let webgpuFmmLeafMom = null, webgpuFmmParentMom = null, webgpuFmmParentField = null, webgpuFmmField = null;
+        let webgpuFmmCellCount = null, webgpuFmmCellCursor = null, webgpuFmmCellStart = null, webgpuFmmSortedIndex = null;
+        let webgpuFmmMoments = null, webgpuFmmLocals = null, webgpuFmmField = null;
         let webgpuFmmParams = null;
         let webgpuBufferBytes = 0;
         let webgpuBufferLimitBytes = 0;
-        let webgpuHashEntries = 0;
+        // Fixed-grid leaf resolution & GPU capacity management.
+        // Leaf grid scales with N to keep average occupancy bounded:
+        // 64x64 up to ~150k particles, 128x128 up to ~1M, 256x256 beyond.
+        let maxRuntimeParticles = MAX_P; // clamped by device limits after init
+        let particleCapacity = 0;        // currently allocated particle capacity
+        let fmmLeafBits = 6;             // leaf grid is 2^bits x 2^bits cells
+        function leafBitsForCount(n) { return n <= 150000 ? 6 : (n <= 1000000 ? 7 : 8); }
+        // Debug/validation switches (query params):
+        //   ?fmm2level=1 -> force K=1 (the original 2-level scheme; identical
+        //                   far-field coverage, O(occ^2) M2L — for A/B checks)
+        //   ?probe=1     -> at frame 40, read back fmmField + positions and
+        //                   compare the far field against a JS brute-force sum
+        const FORCE_TWO_LEVEL = new URLSearchParams(location.search).get('fmm2level') === '1';
+        const FMM_PROBE = new URLSearchParams(location.search).get('probe') === '1';
+        const FMM_FORCE_K = parseInt(new URLSearchParams(location.search).get('fmmK') || '0', 10) || 0; // debug: cap the level count
+        const FMM_DEBUG = new URLSearchParams(location.search).get('fmmdebug') === '1';
+        let fmmProbeDone = false;
+        let fmmProbeFrames = 0;
+        let fmmDebugDone = false;
+        // Multi-level geometry: level l grid has 2^(leafBits-l) cells/side;
+        // the top level K is a 4x4 grid (leafBits - 2), floored at K=1.
+        function fmmLevelCount() {
+            if (FORCE_TWO_LEVEL) return 1;
+            if (FMM_FORCE_K > 0) return Math.min(FMM_FORCE_K, Math.max(1, fmmLeafBits - 2));
+            return Math.max(1, fmmLeafBits - 2);
+        }
+        function fmmLevelRes(level) { return 1 << (fmmLeafBits - level); }
+        function fmmTotalMomCells() { let c = 0; for (let l = 0; l <= fmmLevelCount(); l++) c += fmmLevelRes(l) ** 2; return c; }
+        function fmmTotalLocalCells() { let c = 0; for (let l = 1; l <= fmmLevelCount(); l++) c += fmmLevelRes(l) ** 2; return c; }
+        function nextPow2(x) { let p = 1; while (p < x) p <<= 1; return p; }
+        // Preallocated per-frame uniform staging (zero allocations per frame).
+        const simUniformData = new ArrayBuffer(96);
+        const simUniformF = new Float32Array(simUniformData);
+        const simUniformU = new Uint32Array(simUniformData);
+        // FMM per-level uniform staging: 256-byte blocks (dynamic-offset
+        // stride), resized when the level count changes. fmmParamU[l * 64 + i].
+        let fmmParamData = new ArrayBuffer(256);
+        let fmmParamU = new Uint32Array(fmmParamData);
+        let adaptiveParamData = null; // 256 * numLevels bytes (dynamic-offset blocks)
+        let adaptiveParamU = null;
+        let webgpuFenceCounter = 0;
         let webgpuBindGroupA = null;
         let webgpuBindGroupB = null;
         let webgpuRenderBindGroup = null;
+        let webgpuRenderBindLayout = null; // hoisted so bind groups can be recreated on resize
+        let webgpuFmmBindLayout = null;
         let webgpuPingPong = 0;
         // GPU timestamp query infrastructure for per-pass FMM timing
         let webgpuTimestampQueryEnabled = false;
@@ -1889,6 +2109,29 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let lastFpsTime = performance.now();
         let frameCount = 0;
 
+        // Hidden diagnostic channel: surfaces JS/device errors and frame-pipeline
+        // health to the DOM (readable even when the console is unavailable).
+        const diagState = { errors: [], submits: 0, maps: 0, lastTimings: null };
+        function diagPush(msg) {
+            if (diagState.errors.length < 12) diagState.errors.push(String(msg).slice(0, 300));
+            diagFlush();
+        }
+        function diagFlush() {
+            const el = document.getElementById('diagChannel');
+            if (!el) return;
+            el.textContent = JSON.stringify({
+                errors: diagState.errors,
+                submits: diagState.submits,
+                maps: diagState.maps,
+                timers: diagState.timers || 0,
+                beats: diagState.beats || 0,
+                vis: diagState.vis || null,
+                timings: diagState.lastTimings
+            });
+        }
+        window.addEventListener('error', (e) => diagPush('JS: ' + (e.message || e.type)));
+        window.addEventListener('unhandledrejection', (e) => diagPush('REJ: ' + (e.reason && e.reason.message ? e.reason.message : e.reason)));
+
         function formatBytes(bytes) {
             if (!Number.isFinite(bytes) || bytes <= 0) return 'Unavailable';
             const units = ['B', 'KiB', 'MiB', 'GiB'];
@@ -1910,16 +2153,368 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     const md = adaptiveMetadata;
                     fmmHash.innerText = md ? `${md.totalNodes} nodes / depth ${md.depth}` : 'Adaptive';
                 } else if (activeBackend === 'WEBGPU' && webgpuFmmEnabled && scenario === 'galaxy') {
-                    fmmHash.innerText = `≤4096 / 16,384 slots`;
+                    const side = 1 << fmmLeafBits;
+                    const occ = N / (side * side);
+                    fmmHash.innerText = `avg ${occ.toFixed(1)} / cell (${side}×${side} grid)`;
                 } else {
                     fmmHash.innerText = 'Inactive';
                 }
             }
             if (p2pBudget) {
-                const budget = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
-                p2pBudget.innerText = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${budget}/cell × 9 cells` : 'Scenario dependent';
+                if (activeBackend === 'WEBGPU' && webgpuAdaptiveEnabled && useAdaptiveFmm && scenario === 'galaxy') {
+                    const budget = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
+                    p2pBudget.innerText = `List-1 sampled ${budget}/leaf`;
+                } else if (activeBackend === 'WEBGPU' && scenario === 'galaxy') {
+                    p2pBudget.innerText = 'Full ×9 cell lists';
+                } else {
+                    p2pBudget.innerText = 'Scenario dependent';
+                }
             }
-            // Per-pass GPU timing telemetry
+            // Per-pass GPU timing telemetry (refreshed at 1 Hz from frameLoop —
+            // webgpuPassTimings arrive asynchronously via timestamp readback)
+            updatePassTimingTelemetry();
+        }
+
+        // ?probe=1 — one-shot far-field validation: after the copies are
+        // submitted with the current frame, map fmmField + the frame's INPUT
+        // positions and compare the FMM far field against a JS brute-force
+        // softened pairwise sum restricted to leaf cells at Chebyshev >= 2.
+        // The scheme's far field equals that sum up to order-4 truncation and
+        // the ring softening granularity (~eps^2/(2w)^2 at fine grids).
+        function scheduleFmmProbe(commandEncoder, N) {
+            try {
+                const bytes = N * 16;
+                const fieldBuf = webgpuDevice.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const stateBuf = webgpuDevice.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const input = webgpuPingPong === 0 ? webgpuPosVelBufferA : webgpuPosVelBufferB;
+                commandEncoder.copyBufferToBuffer(webgpuFmmField, 0, fieldBuf, 0, bytes);
+                commandEncoder.copyBufferToBuffer(input, 0, stateBuf, 0, bytes);
+                // Compare one frame later: the copies are submitted with this
+                // frame's command buffer, so they are guaranteed in flight.
+                requestAnimationFrame(() => {
+                    webgpuDevice.queue.onSubmittedWorkDone().then(async () => {
+                        await Promise.all([fieldBuf.mapAsync(GPUMapMode.READ), stateBuf.mapAsync(GPUMapMode.READ)]);
+                        runFmmProbeCompare(new Float32Array(fieldBuf.getMappedRange()), new Float32Array(stateBuf.getMappedRange()), N);
+                        fieldBuf.unmap(); stateBuf.unmap();
+                        fieldBuf.destroy(); stateBuf.destroy();
+                    });
+                });
+            } catch (e) {
+                console.warn('FMM probe failed:', e);
+                diagPush('probe: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        function runFmmProbeCompare(fieldF32, stateF32, N) {
+            try {
+                const side = 1 << fmmLeafBits;
+                const eps2 = 0.00004;
+                const probeCount = N > 1000000 ? 16 : 64;
+                const stride = Math.max(1, Math.floor(N / probeCount));
+                const maxRel = { v: 0 }, sumRel = { v: 0 }; let cnt = 0;
+                for (let p = 0; p * stride < N && p < probeCount; p++) {
+                    const i = p * stride;
+                    const px = stateF32[i * 4], py = stateF32[i * 4 + 1];
+                    const cx = Math.min(Math.max(Math.trunc(px * side), 0), side - 1);
+                    const cy = Math.min(Math.max(Math.trunc(py * side), 0), side - 1);
+                    let fx = 0, fy = 0;
+                    for (let j = 0; j < N; j++) {
+                        if (j === i) continue;
+                        const jx = stateF32[j * 4], jy = stateF32[j * 4 + 1];
+                        const jcx = Math.min(Math.max(Math.trunc(jx * side), 0), side - 1);
+                        const jcy = Math.min(Math.max(Math.trunc(jy * side), 0), side - 1);
+                        if (Math.max(Math.abs(jcx - cx), Math.abs(jcy - cy)) < 2) continue; // near/ring zones excluded
+                        const dx = px - jx, dy = py - jy;
+                        const w = 1 / (dx * dx + dy * dy + eps2);
+                        fx -= dx * w; fy -= dy * w;
+                    }
+                    const gx = fieldF32[i * 4], gy = fieldF32[i * 4 + 1];
+                    const bmag = Math.hypot(fx, fy);
+                    if (bmag < 1e-4) continue;
+                    const rel = Math.hypot(gx - fx, gy - fy) / bmag;
+                    if (rel > maxRel.v) maxRel.v = rel;
+                    sumRel.v += rel; cnt++;
+                }
+                const result = { maxRel: maxRel.v, meanRel: cnt ? sumRel.v / cnt : -1, n: cnt, N, leafBits: fmmLeafBits, levels: fmmLevelCount(), twoLevel: FORCE_TWO_LEVEL };
+                window.__fmmProbe = result;
+                console.log('FMM PROBE ' + JSON.stringify(result));
+                diagPush('probe ' + JSON.stringify(result));
+            } catch (e) {
+                console.warn('FMM probe compare failed:', e);
+                diagPush('probe compare: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        // ?fmmdebug=1 — one-shot structural diagnosis of the multi-level FMM.
+        // Dumps the GPU moments/locals/field and rebuilds the entire far field
+        // in JS float64 FROM THE DUMPED MOMENTS, then reports:
+        //   mono[l]  — per-level monopole sums (must equal N at every level)
+        //   locals[l]— max relative GPU-vs-reference local-coefficient error
+        //   field    — {gpuVsBrute, refVsBrute, gpuVsRef} for probe particles
+        // refVsBrute ≈ the 2-level baseline means the moments and the SCHEME
+        // are right and the corruption is in the WGSL m2l/l2l/l2p plumbing;
+        // locals[l] then pinpoints the level where it first appears.
+        function scheduleFmmDebugDump(commandEncoder, N) {
+            try {
+                const momBytes = webgpuFmmMoments.size, locBytes = webgpuFmmLocals.size;
+                const stateBytes = N * 16;
+                const input = webgpuPingPong === 0 ? webgpuPosVelBufferA : webgpuPosVelBufferB;
+                const bufs = [webgpuFmmMoments, webgpuFmmLocals, webgpuFmmField, input]
+                    .map((b, i) => webgpuDevice.createBuffer({ size: [momBytes, locBytes, stateBytes, stateBytes][i], usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
+                [webgpuFmmMoments, webgpuFmmLocals, webgpuFmmField, input].forEach((src, i) => commandEncoder.copyBufferToBuffer(src, 0, bufs[i], 0, bufs[i].size));
+                requestAnimationFrame(() => {
+                    webgpuDevice.queue.onSubmittedWorkDone().then(async () => {
+                        await Promise.all(bufs.map((b) => b.mapAsync(GPUMapMode.READ)));
+                        runFmmDebugAnalysis(
+                            new Float32Array(bufs[0].getMappedRange()),
+                            new Float32Array(bufs[1].getMappedRange()),
+                            new Float32Array(bufs[2].getMappedRange()),
+                            new Float32Array(bufs[3].getMappedRange()), N);
+                        bufs.forEach((b) => { b.unmap(); b.destroy(); });
+                    });
+                });
+            } catch (e) {
+                console.warn('FMM debug dump failed:', e);
+                diagPush('fmmdebug: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        function runFmmDebugAnalysis(momF32, locF32, fieldF32, stateF32, N) {
+            try {
+                const K = fmmLevelCount(), order = Math.min(4, fmmOrder), side = 1 << fmmLeafBits, eps2 = 0.00004;
+                const resOf = (l) => 1 << (fmmLeafBits - l);
+                const momBase = [], locBase = [];
+                let mb = 0, lb = 0;
+                for (let l = 0; l <= K; l++) { momBase.push(mb); locBase.push(lb); mb += resOf(l) ** 2; if (l >= 1) lb += resOf(l) ** 2; }
+                const coeffR = (buf, base, cell, k) => [buf[(base + cell) * 12 + 2 * k], buf[(base + cell) * 12 + 2 * k + 1]];
+                const cmul = (a, b) => [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]];
+                const cadd = (a, b) => [a[0] + b[0], a[1] + b[1]];
+                const cscale = (a, s) => [a[0] * s, a[1] * s];
+                const cdiv = (a, b) => { const d = Math.max(b[0] * b[0] + b[1] * b[1], 1e-20); return [(a[0] * b[0] + a[1] * b[1]) / d, (a[1] * b[0] - a[0] * b[1]) / d]; };
+                const cdivSoft = (a, b) => { const d = b[0] * b[0] + b[1] * b[1] + eps2; return [(a[0] * b[0] + a[1] * b[1]) / d, (a[1] * b[0] - a[0] * b[1]) / d]; };
+                const clog = (a) => [0.5 * Math.log(Math.max(a[0] * a[0] + a[1] * a[1], 1e-20)), Math.atan2(a[1], a[0])];
+                const report = { N, leafBits: fmmLeafBits, K, order, mono: [], locals: [], field: null };
+
+                // Check 1: monopole conservation (M2M chain) + full M2M audit
+                // (JS recomputation of level 1..K moments from the dumped leaf
+                // moments, correct complex arithmetic).
+                const momRef = Float64Array.from(momF32);
+                const combJ = (j, l) => { let c = 1; for (let b = 1; b <= l; b++) c = c * (j - b + 1) / b; return c; };
+                const cpow = (a, n) => { let r = [1, 0]; for (let i = 0; i < n; i++) r = cmul(r, a); return r; };
+                for (let l = 1; l <= K; l++) {
+                    const res = resOf(l), cres = res * 2;
+                    for (let cy = 0; cy < res; cy++) for (let cx = 0; cx < res; cx++) {
+                        for (let k = 0; k <= order; k++) {
+                            let acc = [0, 0];
+                            for (let oy = 0; oy < 2; oy++) for (let ox = 0; ox < 2; ox++) {
+                                const child = (cy * 2 + oy) * cres + cx * 2 + ox;
+                                const base = (momBase[l - 1] + child) * 12;
+                                const dx = (cx * 2 + ox + 0.5) / cres - (cx + 0.5) / res;
+                                const dy = (cy * 2 + oy + 0.5) / cres - (cy + 0.5) / res;
+                                const delta = [dx, dy];
+                                const a0 = [momF32[base], momF32[base + 1]];
+                                if (k === 0) { acc = cadd(acc, a0); }
+                                else {
+                                    acc = cadd(acc, cscale(cmul(a0, cpow(delta, k)), -1 / k));
+                                    for (let j = 1; j <= k; j++) {
+                                        const aj = [momF32[base + 2 * j], momF32[base + 2 * j + 1]];
+                                        acc = cadd(acc, cmul(cscale(aj, combJ(k - 1, j - 1)), cpow(delta, k - j)));
+                                    }
+                                }
+                            }
+                            momRef[(momBase[l] + cy * res + cx) * 12 + 2 * k] = acc[0];
+                            momRef[(momBase[l] + cy * res + cx) * 12 + 2 * k + 1] = acc[1];
+                        }
+                    }
+                }
+                for (let l = 0; l <= K; l++) {
+                    const res = resOf(l); let sum = 0, nz = 0, badM = 0, scaleM = 0;
+                    for (let c = 0; c < res * res; c++) {
+                        const a0 = coeffR(momF32, momBase[l], c, 0); sum += a0[0]; if (a0[0] !== 0) nz++;
+                        for (let k = 1; k <= order; k++) {
+                            const g = momF32[(momBase[l] + c) * 12 + 2 * k];
+                            const r = momRef[(momBase[l] + c) * 12 + 2 * k];
+                            scaleM = Math.max(scaleM, Math.abs(r));
+                            if (Math.abs(r) > 1e-6 && Math.abs(g - r) > 0.1 * Math.abs(r)) badM++;
+                        }
+                    }
+                    report.mono.push({ l, sum, nz, cells: res * res, badMomSlots: badM });
+                }
+
+                // Reference locals in f64 from the GPU moments (mirrors the
+                // WGSL m2l + l2l exactly, including the softening).
+                const localsRef = new Float64Array(locF32.length);
+                const m2lAcc = (lvl, base, tc, res, cellT) => { // writes coeffs for target cell
+                    const tx = cellT % res, ty = (cellT / res) | 0;
+                    const c = [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];
+                    const iter = [];
+                    if (lvl === K) {
+                        for (let sy = 0; sy < res; sy++) for (let sx = 0; sx < res; sx++) if (Math.max(Math.abs(sx - tx), Math.abs(sy - ty)) >= 2) iter.push(sy * res + sx);
+                    } else {
+                        for (let oy = -3; oy <= 3; oy++) for (let ox = -3; ox <= 3; ox++) {
+                            if (Math.max(Math.abs(ox), Math.abs(oy)) < 2) continue;
+                            const nx = tx + ox, ny = ty + oy;
+                            if (nx < 0 || nx >= res || ny < 0 || ny >= res) continue;
+                            if (Math.abs((nx >> 1) - (tx >> 1)) > 1 || Math.abs((ny >> 1) - (ty >> 1)) > 1) continue;
+                            iter.push(ny * res + nx);
+                        }
+                    }
+                    for (const sc of iter) {
+                        const a0 = coeffR(momF32, base, sc, 0);
+                        if (a0[0] === 0 && a0[1] === 0) continue;
+                        const sx = sc % res, sy = (sc / res) | 0;
+                        const delta = [tc[0] - (sx + 0.5) / res, tc[1] - (sy + 0.5) / res];
+                        c[0] = cadd(c[0], cmul(a0, clog(delta)));
+                        for (let k = 1; k <= order; k++) { let dp = [1, 0]; for (let n = 0; n < k; n++) dp = cmul(dp, delta); c[0] = cadd(c[0], cdiv(coeffR(momF32, base, sc, k), dp)); }
+                        const denSoft = delta[0] * delta[0] + delta[1] * delta[1] + eps2;
+                        let conjPow = [1, 0], deltaPow = [1, 0], denL = 1;
+                        for (let l = 1; l <= order; l++) {
+                            conjPow = cmul(conjPow, [delta[0], -delta[1]]);
+                            deltaPow = cmul(deltaPow, delta);
+                            denL *= denSoft;
+                            c[l] = cadd(c[l], cscale(cmul(a0, conjPow), (l % 2 === 1 ? 1 : -1) / (l * denL)));
+                            for (let k = 1; k <= order; k++) {
+                                let dp = deltaPow; for (let n = 0; n < k; n++) dp = cmul(dp, delta);
+                                let binom = 1; for (let b = 1; b <= l; b++) binom *= (k + b - 1) / b;
+                                c[l] = cadd(c[l], cdiv(cscale(coeffR(momF32, base, sc, k), (l % 2 === 0 ? 1 : -1) * binom), dp));
+                            }
+                        }
+                    }
+                    for (let k = 0; k <= order; k++) {
+                        localsRef[(locBase[lvl] + cellT) * 12 + 2 * k] = c[k][0];
+                        localsRef[(locBase[lvl] + cellT) * 12 + 2 * k + 1] = c[k][1];
+                    }
+                };
+                for (let l = 1; l <= K; l++) {
+                    const res = resOf(l);
+                    for (let cellT = 0; cellT < res * res; cellT++) {
+                        const a0 = coeffR(momF32, momBase[l], cellT, 0);
+                        if (a0[0] === 0 && a0[1] === 0) continue;
+                        const tx = cellT % res, ty = (cellT / res) | 0;
+                        m2lAcc(l, momBase[l], [(tx + 0.5) / res, (ty + 0.5) / res], res, cellT);
+                    }
+                }
+                // l2l downward (add into children) — a SECOND copy without the
+                // l2l step isolates a "missing L2L contribution" signature.
+                const localsNoL2L = Float64Array.from(localsRef);
+                for (let l = K; l >= 2; l--) {
+                    const res = resOf(l), cres = res * 2;
+                    for (let cell = 0; cell < cres * cres; cell++) {
+                        const cx = cell % cres, cy = (cell / cres) | 0;
+                        const parentCell = ((cy >> 1) * res) + (cx >> 1);
+                        const d = [(cx + 0.5) / cres - ((cx >> 1) + 0.5) / res, (cy + 0.5) / cres - ((cy >> 1) + 0.5) / res];
+                        for (let lo = 0; lo <= order; lo++) {
+                            let acc = [0, 0];
+                            for (let j = lo; j <= order; j++) {
+                                let dp = [1, 0]; for (let n = 0; n < j - lo; n++) dp = cmul(dp, d);
+                                let binom = 1; for (let b = 1; b <= lo; b++) binom *= (j - b + 1) / b;
+                                const cj = [localsRef[(locBase[l] + parentCell) * 12 + 2 * j], localsRef[(locBase[l] + parentCell) * 12 + 2 * j + 1]];
+                                acc = cadd(acc, cmul(cj, cscale(dp, binom)));
+                            }
+                            const idx = (locBase[l - 1] + cell) * 12 + 2 * lo;
+                            localsRef[idx] += acc[0]; localsRef[idx + 1] += acc[1];
+                        }
+                    }
+                }
+                // Check 2: GPU locals vs reference, per level.
+                for (let l = 1; l <= K; l++) {
+                    const res = resOf(l); let maxDiff = 0, scale = 0, nz = 0, bad = 0, badNoL2L = 0, badDoubleL2L = 0;
+                    const worst = [];
+                    for (let c = 0; c < res * res; c++) for (let k = 0; k <= order; k++) {
+                        const g = locF32[(locBase[l] + c) * 12 + 2 * k], r = localsRef[(locBase[l] + c) * 12 + 2 * k];
+                        const n = localsNoL2L[(locBase[l] + c) * 12 + 2 * k];
+                        if (g !== 0 || r !== 0) nz++;
+                        maxDiff = Math.max(maxDiff, Math.abs(g - r)); scale = Math.max(scale, Math.abs(r));
+                        if (Math.abs(r) > 1e-6 && Math.abs(g - r) > 0.1 * Math.abs(r)) {
+                            bad++;
+                            const denom = r - n;
+                            worst.push({ cell: c, tx: c % res, ty: (c / res) | 0, k, gpu: +g.toFixed(4), ref: +r.toFixed(4), noL2L: +n.toFixed(4), l2lRatio: Math.abs(denom) > 1e-9 ? +((g - n) / denom).toFixed(4) : null });
+                        }
+                        // "l2l applied twice" signature: gpu == 2*ref - noL2L
+                        if (Math.abs(g - (2 * r - n)) < 0.1 * Math.max(Math.abs(r), 1e-6)) badDoubleL2L++;
+                        if (Math.abs(n) > 1e-6 && Math.abs(g - n) > 0.1 * Math.abs(n)) badNoL2L++;
+                    }
+                    worst.sort((a, b) => Math.abs(b.gpu - b.ref) / Math.max(Math.abs(b.ref), 1e-9) - Math.abs(a.gpu - a.ref) / Math.max(Math.abs(a.ref), 1e-9));
+                    report.locals.push({ l, maxDiff, scale, rel: scale > 1e-9 ? maxDiff / scale : 0, nzSlots: nz, badSlots10pct: bad, badVsNoL2L: badNoL2L, doubleL2LMatches: badDoubleL2L, worst: worst.slice(0, 8) });
+                }
+
+                // Check 3: field for probe particles — GPU vs reference vs brute.
+                // Second reference evaluates the GPU level-1 LOCALS (not the
+                // recomputed ones) to split l2p-evaluation errors from
+                // corrupted-local errors.
+                const probeCount = 64, stride = Math.max(1, Math.floor(N / probeCount));
+                const acc = { gb: 0, rb: 0, gr: 0, glb: 0 }; let cnt = 0;
+                for (let p = 0; p * stride < N && p < probeCount; p++) {
+                    const i = p * stride;
+                    const px = stateF32[i * 4], py = stateF32[i * 4 + 1];
+                    // reference far field: ring (GPU leaf moments) + ref level-1 local eval
+                    const ls = side;
+                    const lx = Math.min(Math.max(Math.trunc(px * ls), 0), ls - 1), ly = Math.min(Math.max(Math.trunc(py * ls), 0), ls - 1);
+                    const tpx = lx >> 1, tpy = ly >> 1;
+                    let deriv = [0, 0];
+                    for (let oy = -3; oy <= 3; oy++) for (let ox = -3; ox <= 3; ox++) {
+                        const cheb = Math.max(Math.abs(ox), Math.abs(oy));
+                        if (cheb <= 1 || cheb > 3) continue;
+                        const nx = lx + ox, ny = ly + oy;
+                        if (nx < 0 || nx >= ls || ny < 0 || ny >= ls) continue;
+                        if (Math.abs((nx >> 1) - tpx) > 1 || Math.abs((ny >> 1) - tpy) > 1) continue;
+                        const cell = ny * ls + nx;
+                        const a0 = coeffR(momF32, 0, cell, 0);
+                        if (a0[0] === 0 && a0[1] === 0) continue;
+                        const delta = [px - (nx + 0.5) / ls, py - (ny + 0.5) / ls];
+                        deriv = cadd(deriv, cdivSoft(a0, delta));
+                        let power = [1, 0];
+                        for (let k = 1; k <= order; k++) {
+                            power = cmul(power, delta);
+                            deriv = cadd(deriv, cscale(cdiv(coeffR(momF32, 0, cell, k), cmul(power, delta)), -k));
+                        }
+                    }
+                    const ps = resOf(1);
+                    const ix = Math.min(Math.max(Math.trunc(px * ps), 0), ps - 1), iy = Math.min(Math.max(Math.trunc(py * ps), 0), ps - 1);
+                    const dz = [px - (ix + 0.5) / ps, py - (iy + 0.5) / ps];
+                    const localDeriv = (src) => {
+                        let d = [0, 0];
+                        for (let l = 1; l <= order; l++) {
+                            const cl = [src[(locBase[1] + iy * ps + ix) * 12 + 2 * l], src[(locBase[1] + iy * ps + ix) * 12 + 2 * l + 1]];
+                            let dpl = [1, 0]; for (let n = 1; n < l; n++) dpl = cmul(dpl, dz);
+                            d = cadd(d, cscale(cmul(cl, dpl), l));
+                        }
+                        return d;
+                    };
+                    const locRef = localDeriv(localsRef);
+                    const locGpu = localDeriv(locF32);
+                    deriv = cadd(deriv, locRef);
+                    const refFx = -deriv[0], refFy = deriv[1];
+                    const gpuLocFx = -locGpu[0], gpuLocFy = locGpu[1];
+                    // brute (same as probe)
+                    const cx = lx, cy = ly; let fx = 0, fy = 0;
+                    for (let j = 0; j < N; j++) {
+                        if (j === i) continue;
+                        const jx = stateF32[j * 4], jy = stateF32[j * 4 + 1];
+                        const jcx = Math.min(Math.max(Math.trunc(jx * side), 0), side - 1), jcy = Math.min(Math.max(Math.trunc(jy * side), 0), side - 1);
+                        if (Math.max(Math.abs(jcx - cx), Math.abs(jcy - cy)) < 2) continue;
+                        const dx = px - jx, dy = py - jy, w = 1 / (dx * dx + dy * dy + eps2);
+                        fx -= dx * w; fy -= dy * w;
+                    }
+                    const gx = fieldF32[i * 4], gy = fieldF32[i * 4 + 1];
+                    const bmag = Math.hypot(fx, fy); if (bmag < 1e-4) continue;
+                    acc.gb += Math.hypot(gx - fx, gy - fy) / bmag;
+                    acc.rb += Math.hypot(refFx - fx, refFy - fy) / bmag;
+                    acc.gr += Math.hypot(gx - refFx, gy - refFy) / Math.max(Math.hypot(refFx, refFy), 1e-9);
+                    acc.glb += Math.hypot(gpuLocFx - fx, gpuLocFy - fy) / bmag;
+                    cnt++;
+                }
+                report.field = { gpuVsBrute: acc.gb / cnt, refVsBrute: acc.rb / cnt, gpuVsRef: acc.gr / cnt, gpuLocalsVsBrute: acc.glb / cnt, n: cnt };
+                window.__fmmDebug = report;
+                console.log('FMM DEBUG ' + JSON.stringify(report));
+                diagPush('fmmdebug ' + JSON.stringify(report));
+            } catch (e) {
+                console.warn('FMM debug analysis failed:', e);
+                diagPush('fmmdebug analysis: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        function updatePassTimingTelemetry() {
             const fmmBuildEl = document.getElementById('valFmmBuild');
             const fmmM2lEl = document.getElementById('valFmmM2l');
             const fmmL2pEl = document.getElementById('valFmmL2p');
@@ -2197,7 +2792,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         }
                         webgpuTimestampQueryEnabled = requiredFeatures.includes('timestamp-query');
                         webgpuDevice = await adapter.requestDevice({ requiredLimits, requiredFeatures });
-                        webgpuDevice.addEventListener('uncapturederror', (event) => console.error(`WebGPU validation error: ${event.error?.name || 'Unknown'}: ${event.error?.message || event.error}`, event.error));
+                        webgpuDevice.addEventListener('uncapturederror', (event) => { console.error(`WebGPU validation error: ${event.error?.name || 'Unknown'}: ${event.error?.message || event.error}`, event.error); diagPush('GPU: ' + (event.error?.message || event.error?.name || 'validation error')); });
                         webgpuDevice.lost.then((info) => console.error('WebGPU device lost:', info.message));
                         webgpuContext = canvas.getContext('webgpu');
 
@@ -2221,15 +2816,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-                            { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                            { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
                         ] }) ] });
                         const renderBindLayout = webgpuDevice.createBindGroupLayout({ entries: [
                             { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
                         ] });
+                        webgpuRenderBindLayout = renderBindLayout;
                         const renderLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [renderBindLayout] });
                         const fmmLayout = webgpuDevice.createBindGroupLayout({ entries: [
                             { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
@@ -2240,11 +2835,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+                            // Per-level parameter blocks (256-byte stride)
+                            // selected at dispatch time via dynamic offset.
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 40 } }
                         ] });
                         const fmmPipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [fmmLayout] });
+                        webgpuFmmBindLayout = fmmLayout;
                         // Explicit layouts keep compute, FMM, and render bind groups compatible.
                         webgpuPipelineCompute = webgpuDevice.createComputePipeline({ layout: computeLayout, compute: { module: computeModule, entryPoint: 'main' } });
                         const fmmModule = webgpuDevice.createShaderModule({ code: wgslFmmSource });
@@ -2252,7 +2848,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         const fmmErrors = fmmInfo.messages.filter((message) => message.type === 'error');
                         if (fmmErrors.length > 0) throw new Error(`WGSL FMM compile failed: ${fmmErrors.map((message) => message.message).join(' | ')}`);
                         webgpuDevice.pushErrorScope('validation');
-                        for (const entryPoint of ['clear_cells', 'build_cells', 'build_moments', 'parent_moments', 'm2l', 'l2p']) {
+                        for (const entryPoint of ['clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p']) {
                             webgpuFmmPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FMM ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
                         }
                         const fmmPipelineError = await webgpuDevice.popErrorScope();
@@ -2283,7 +2879,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                                 { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                                 { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                                 { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                                { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                                { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 80 } },
                                 { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                                 { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                                 { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
@@ -2331,7 +2927,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuAdaptiveBuffers.multipoles = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
                             webgpuAdaptiveBuffers.locals = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
                             // fields buffer is assigned later, after webgpuFmmField is created
-                            webgpuAdaptiveParams = webgpuDevice.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                            // Per-level uniform blocks at 256-byte-aligned offsets: each
+                            // m2m/l2l/m2l dispatch binds the block holding its levelBase
+                            // (P6 fix) via a dynamic offset.
+                            webgpuAdaptiveParams = webgpuDevice.createBuffer({ size: 256 * md.numLevels, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                            adaptiveParamData = new ArrayBuffer(256 * md.numLevels);
+                            adaptiveParamU = new Uint32Array(adaptiveParamData);
 
                             // Upload static metadata
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
@@ -2391,41 +2992,21 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             primitive: { topology: 'point-list' }
                         });
 
-                        // Storage Buffers
-                        const posVelBytes = MAX_P * 16;
-                        const extraBytes = MAX_P * 16;
-
-                        webgpuPosVelBufferA = webgpuDevice.createBuffer({
-                            size: posVelBytes,
-                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-                        });
-                        webgpuPosVelBufferB = webgpuDevice.createBuffer({
-                            size: posVelBytes,
-                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-                        });
-                        webgpuExtraBuffer = webgpuDevice.createBuffer({
-                            size: extraBytes,
-                            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-                        });
-                        webgpuUniformBuffer = webgpuDevice.createBuffer({
-                            size: 96, // vec3 padding aligns the uniform struct to 96 bytes
-                            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-                        });
-                        const fmmStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-                        webgpuFmmKeys = webgpuDevice.createBuffer({ size: 16384 * 4, usage: fmmStorage });
-                        webgpuFmmHeads = webgpuDevice.createBuffer({ size: 16384 * 4, usage: fmmStorage });
-                        webgpuFmmNext = webgpuDevice.createBuffer({ size: MAX_P * 4, usage: fmmStorage });
-                        webgpuFmmLeafMass = webgpuDevice.createBuffer({ size: 4096 * 4, usage: fmmStorage });
-                        webgpuFmmCellSlots = webgpuDevice.createBuffer({ size: 4096 * 4, usage: fmmStorage });
-                        // Three vec4 slots per cell store five complex CGR88 coefficients:
-                        // c0=(slot0.xy), c1=(slot0.zw), c2=(slot1.xy), c3=(slot1.zw), c4=(slot2.xy).
-                        webgpuFmmLeafMom = webgpuDevice.createBuffer({ size: 4096 * 3 * 16, usage: fmmStorage });
-                        webgpuFmmParentMom = webgpuDevice.createBuffer({ size: 1024 * 3 * 16, usage: fmmStorage });
-                        webgpuFmmParentField = webgpuDevice.createBuffer({ size: 1024 * 3 * 16, usage: fmmStorage });
-                        webgpuFmmField = webgpuDevice.createBuffer({ size: MAX_P * 16, usage: fmmStorage });
-                        webgpuFmmParams = webgpuDevice.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-                        webgpuBufferBytes = (posVelBytes * 2) + extraBytes + (16384 * 4 * 2) + (MAX_P * 4) + (4096 * 4 * 2) + (4096 * 3 * 16) + (1024 * 3 * 16 * 2) + (MAX_P * 16) + 96;
-                        webgpuHashEntries = 16384;
+                        // Storage buffers are sized to the ACTUAL particle count
+                        // (with pow2 headroom), not MAX_P: ~680MB of committed
+                        // VRAM at 15k particles was wasteful and could exceed
+                        // maxBufferSize. ensureWebGPUCapacity() recreates the
+                        // N-dependent buffers + bind groups whenever the count
+                        // (or the N-derived leaf resolution) changes.
+                        maxRuntimeParticles = Math.min(
+                            MAX_P,
+                            Math.floor(Math.min(webgpuDevice.limits.maxBufferSize, webgpuDevice.limits.maxStorageBufferBindingSize) / 16)
+                        );
+                        if (N > maxRuntimeParticles) {
+                            console.warn(`Particle count clamped to device limit: ${N} -> ${maxRuntimeParticles}`);
+                            N = maxRuntimeParticles;
+                        }
+                        ensureWebGPUCapacity(N);
 
                         // GPU timestamp query set for per-pass FMM timing (5 passes × 2 timestamps = 10 slots)
                         if (webgpuTimestampQueryEnabled) {
@@ -2443,54 +3024,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             }
                         }
 
+                        recreateWebGPUBindGroups();
                         uploadWebGPUParticles();
-
-                        // Bind Groups
-                        webgpuBindGroupA = webgpuDevice.createBindGroup({
-                            layout: webgpuPipelineCompute.getBindGroupLayout(0),
-                            entries: [
-                                { binding: 0, resource: { buffer: webgpuPosVelBufferA } },
-                                { binding: 1, resource: { buffer: webgpuPosVelBufferB } },
-                                { binding: 2, resource: { buffer: webgpuExtraBuffer } },
-                                { binding: 3, resource: { buffer: webgpuUniformBuffer } },
-                                { binding: 4, resource: { buffer: webgpuFmmKeys } },
-                                { binding: 5, resource: { buffer: webgpuFmmHeads } },
-                                { binding: 6, resource: { buffer: webgpuFmmNext } },
-                                { binding: 7, resource: { buffer: webgpuFmmField } },
-                                { binding: 8, resource: { buffer: webgpuFmmCellSlots } },
-                            ]
-                        });
-
-                        webgpuBindGroupB = webgpuDevice.createBindGroup({
-                            layout: webgpuPipelineCompute.getBindGroupLayout(0),
-                            entries: [
-                                { binding: 0, resource: { buffer: webgpuPosVelBufferB } },
-                                { binding: 1, resource: { buffer: webgpuPosVelBufferA } },
-                                { binding: 2, resource: { buffer: webgpuExtraBuffer } },
-                                { binding: 3, resource: { buffer: webgpuUniformBuffer } },
-                                { binding: 4, resource: { buffer: webgpuFmmKeys } },
-                                { binding: 5, resource: { buffer: webgpuFmmHeads } },
-                                { binding: 6, resource: { buffer: webgpuFmmNext } },
-                                { binding: 7, resource: { buffer: webgpuFmmField } },
-                                { binding: 8, resource: { buffer: webgpuFmmCellSlots } },
-                            ]
-                        });
-
-                        // Render bind group (binding 0: uniform params)
-                        webgpuRenderBindGroup = webgpuDevice.createBindGroup({
-                            layout: renderBindLayout,
-                            entries: [{ binding: 0, resource: { buffer: webgpuUniformBuffer } }]
-                        });
-                        const fmmEntries = (source) => [
-                            { binding: 0, resource: { buffer: source } }, { binding: 1, resource: { buffer: webgpuFmmKeys } },
-                            { binding: 2, resource: { buffer: webgpuFmmHeads } }, { binding: 3, resource: { buffer: webgpuFmmNext } },
-                            { binding: 4, resource: { buffer: webgpuFmmLeafMass } }, { binding: 5, resource: { buffer: webgpuFmmLeafMom } },
-                            { binding: 6, resource: { buffer: webgpuFmmParentMom } }, { binding: 7, resource: { buffer: webgpuFmmParentField } },
-                            { binding: 8, resource: { buffer: webgpuFmmField } }, { binding: 9, resource: { buffer: webgpuFmmParams } },
-                            { binding: 10, resource: { buffer: webgpuFmmCellSlots } }
-                        ];
-                        webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: fmmLayout, entries: fmmEntries(webgpuPosVelBufferA) });
-                        webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: fmmLayout, entries: fmmEntries(webgpuPosVelBufferB) });
 
                         // Adaptive bind groups (deferred until after webgpuFmmField is created)
                         if (webgpuAdaptiveEnabled && webgpuAdaptiveLayout) {
@@ -2500,7 +3035,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
                         activeBackend = 'WEBGPU';
                         document.getElementById('hwAccelWarning').style.display = 'none';
-                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${webgpuAdaptiveEnabled ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Elastic-Hash FMM' : 'WebGPU Analytic Fallback')}`;
+                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${(webgpuAdaptiveEnabled && useAdaptiveFmm) ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
                         document.getElementById('gpuName').innerText = gpuDescription;
                         document.getElementById('vramMode').innerText = 'Estimated WebGPU buffer allocation';
                         updateMemoryTelemetry();
@@ -2524,6 +3059,125 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             webgpuDevice.queue.writeBuffer(webgpuExtraBuffer, 0, initialExtras.buffer, 0, N * 16);
         }
 
+        function ensureWebGPUCapacity(n) {
+            // Recreate particle-count-dependent GPU buffers at actual capacity
+            // (pow2 headroom above n) instead of MAX_P, plus the cell arrays at
+            // the N-derived leaf resolution. Bind groups are recreated by the
+            // caller via recreateWebGPUBindGroups().
+            if (!webgpuDevice) return;
+            let cap = nextPow2(Math.ceil(n * 1.25));
+            cap = Math.min(cap, Math.max(n, maxRuntimeParticles));
+            const bits = leafBitsForCount(n);
+            if (cap === particleCapacity && bits === fmmLeafBits && webgpuPosVelBufferA) return;
+            const bitsChanged = bits !== fmmLeafBits || !webgpuFmmCellCount;
+            particleCapacity = cap;
+            fmmLeafBits = bits;
+
+            const fmmStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+            for (const b of [webgpuPosVelBufferA, webgpuPosVelBufferB, webgpuExtraBuffer, webgpuFmmField, webgpuFmmSortedIndex]) {
+                if (b) b.destroy();
+            }
+            // COPY_SRC on the ping-pong state buffers: the adaptive metadata
+            // refresh copies live positions GPU->staging for CPU tree rebuilds.
+            webgpuPosVelBufferA = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC });
+            webgpuPosVelBufferB = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC });
+            webgpuExtraBuffer = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.VERTEX });
+            // COPY_SRC: the ?probe=1 validation readback copies the far field
+            // GPU->staging for comparison against a JS brute-force sum.
+            webgpuFmmField = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC }); // shared with the adaptive path
+            webgpuFmmSortedIndex = webgpuDevice.createBuffer({ size: cap * 4, usage: fmmStorage });
+
+            if (bitsChanged) {
+                for (const b of [webgpuFmmCellCount, webgpuFmmCellCursor, webgpuFmmCellStart, webgpuFmmMoments, webgpuFmmLocals]) {
+                    if (b) b.destroy();
+                }
+                const leafCells = 1 << (2 * fmmLeafBits);
+                webgpuFmmCellCount = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+                webgpuFmmCellCursor = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+                webgpuFmmCellStart = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+                // All levels' moments and locals packed into two buffers
+                // (level l occupies its momCellBase/localCellBase range).
+                // Three vec4 slots per cell store five complex CGR88
+                // coefficients: c0=(slot0.xy), c1=(slot0.zw), c2=(slot1.xy),
+                // c3=(slot1.zw), c4=(slot2.xy).
+                // COPY_SRC: the ?fmmdebug=1 structural dump reads both back.
+                webgpuFmmMoments = webgpuDevice.createBuffer({ size: fmmTotalMomCells() * 3 * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC });
+                webgpuFmmLocals = webgpuDevice.createBuffer({ size: fmmTotalLocalCells() * 3 * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC });
+                // Per-level uniform blocks: 256-byte stride, one per level.
+                const blocks = fmmLevelCount() + 1;
+                if (webgpuFmmParams) webgpuFmmParams.destroy();
+                webgpuFmmParams = webgpuDevice.createBuffer({ size: 256 * blocks, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+                if (fmmParamData.byteLength !== 256 * blocks) {
+                    fmmParamData = new ArrayBuffer(256 * blocks);
+                    fmmParamU = new Uint32Array(fmmParamData);
+                }
+            }
+
+            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+            updateWebGPUBufferBytes();
+        }
+
+        function updateWebGPUBufferBytes() {
+            if (!particleCapacity) return;
+            const leafCells = 1 << (2 * fmmLeafBits);
+            let bytes = particleCapacity * 16 * 4 + particleCapacity * 4; // posVel x2 + extras + field, sorted
+            bytes += leafCells * 4 * 3; // cell count/cursor/start
+            bytes += fmmTotalMomCells() * 3 * 16 + fmmTotalLocalCells() * 3 * 16;
+            bytes += 96; // sim uniform buffer
+            if (webgpuFmmParams) bytes += webgpuFmmParams.size; // per-level FMM blocks
+            if (webgpuAdaptiveParams) bytes += webgpuAdaptiveParams.size;
+            if (adaptiveMetadata) {
+                const md = adaptiveMetadata;
+                bytes += md.totalNodes * 3 * 16 * 2; // multipoles + locals
+                bytes += md.leafForParticle.byteLength + md.particleIndices.byteLength +
+                         md.nodeCenterSize.byteLength + md.nodeParticleRange.byteLength +
+                         md.listOffsets.byteLength + md.listCounts.byteLength +
+                         md.listData.byteLength + md.nodeParent.byteLength +
+                         md.nodeChildren.byteLength + md.nodeFlags.byteLength;
+            }
+            if (adaptiveStagingBuffer) bytes += adaptiveStagingSize;
+            webgpuBufferBytes = bytes;
+        }
+
+        function recreateWebGPUBindGroups() {
+            if (!webgpuDevice || !webgpuPosVelBufferA || !webgpuPipelineCompute) return;
+            const computeEntries = (src, dst) => [
+                { binding: 0, resource: { buffer: src } },
+                { binding: 1, resource: { buffer: dst } },
+                { binding: 2, resource: { buffer: webgpuExtraBuffer } },
+                { binding: 3, resource: { buffer: webgpuUniformBuffer } },
+                { binding: 4, resource: { buffer: webgpuFmmField } },
+                { binding: 5, resource: { buffer: webgpuFmmSortedIndex } },
+                { binding: 6, resource: { buffer: webgpuFmmCellStart } },
+                { binding: 7, resource: { buffer: webgpuFmmCellCount } },
+            ];
+            webgpuBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferA, webgpuPosVelBufferB) });
+            webgpuBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferB, webgpuPosVelBufferA) });
+            // Render bind group (binding 0: uniform params)
+            webgpuRenderBindGroup = webgpuDevice.createBindGroup({
+                layout: webgpuRenderBindLayout,
+                entries: [{ binding: 0, resource: { buffer: webgpuUniformBuffer } }]
+            });
+            const fmmEntries = (source) => [
+                { binding: 0, resource: { buffer: source } },
+                { binding: 1, resource: { buffer: webgpuFmmCellCount } },
+                { binding: 2, resource: { buffer: webgpuFmmCellCursor } },
+                { binding: 3, resource: { buffer: webgpuFmmCellStart } },
+                { binding: 4, resource: { buffer: webgpuFmmSortedIndex } },
+                { binding: 5, resource: { buffer: webgpuFmmMoments } },
+                { binding: 6, resource: { buffer: webgpuFmmLocals } },
+                { binding: 7, resource: { buffer: webgpuFmmField } },
+                // size: 256 = one 256-byte level block per dynamic offset; the
+                // binding MUST declare it explicitly or offsets are validated
+                // against the whole buffer and out-of-bounds dispatches fail.
+                { binding: 8, resource: { buffer: webgpuFmmParams, size: 256 } },
+            ];
+            webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferA) });
+            webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferB) });
+            if (webgpuAdaptiveEnabled && webgpuAdaptiveLayout) recreateAdaptiveBindGroups();
+        }
+
         function recreateAdaptiveBindGroups() {
             if (!webgpuAdaptiveLayout || !webgpuFmmField) return;
             try {
@@ -2540,7 +3194,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     { binding: 8, resource: { buffer: webgpuAdaptiveBuffers.multipoles } },
                     { binding: 9, resource: { buffer: webgpuAdaptiveBuffers.locals } },
                     { binding: 10, resource: { buffer: webgpuAdaptiveBuffers.fields } },
-                    { binding: 11, resource: { buffer: webgpuAdaptiveParams } },
+                    { binding: 11, resource: { buffer: webgpuAdaptiveParams, size: 256 } },
                     { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeParent } },
                     { binding: 13, resource: { buffer: webgpuAdaptiveBuffers.nodeChildren } },
                     { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.nodeFlags } },
@@ -2583,19 +3237,44 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             uploadAdaptiveMetadata(adaptiveMetadata);
         }
 
-        // Periodic live-position tree refresh: the quadtree particle
-        // assignment goes stale as the galaxies move, which would corrupt
-        // moments and local expansions. Every few frames the freshest GPU
-        // position buffer is copied to staging, mapped back, and used to
-        // rebuild + reupload the metadata.
+        // Periodic live-position tree refresh (P7): the quadtree particle
+        // assignment goes stale as the galaxies move — without this, P2M
+        // expands CURRENT positions about INITIAL leaf centers, pinning
+        // phantom masses to the initial lattice. Every ADAPTIVE_REFRESH_INTERVAL
+        // frames the latest GPU position buffer is copied to a reusable staging
+        // buffer, mapped back, and used to rebuild + reupload the metadata.
+        // The refresh is scheduled at frame start (before that frame's
+        // dispatches are encoded), guarded by a pending flag, and allocation
+        // free after warmup (staging buffer is reused and only grown).
+        const ADAPTIVE_REFRESH_INTERVAL = 24;
         let adaptiveRefreshPending = false;
         let adaptiveFrameCounter = 0;
         let adaptiveStagingBuffer = null;
         let adaptiveStagingSize = 0;
 
-        function finishAdaptiveMetadataRefresh() {
-            const staging = adaptiveStagingBuffer;
+        function maybeStartAdaptiveRefresh() {
+            if (!webgpuDevice || !webgpuAdaptiveEnabled || !useAdaptiveFmm || scenarioId !== 0) return;
+            adaptiveFrameCounter++;
+            if (adaptiveFrameCounter % ADAPTIVE_REFRESH_INTERVAL !== 0) return;
+            if (adaptiveRefreshPending || !adaptiveMetadata) return;
+            const needed = Math.ceil((N * 16) / 256) * 256; // keep MAP_READ size 256-aligned
+            if (!adaptiveStagingBuffer || adaptiveStagingSize < needed) {
+                if (adaptiveStagingBuffer) adaptiveStagingBuffer.destroy();
+                adaptiveStagingSize = needed;
+                adaptiveStagingBuffer = webgpuDevice.createBuffer({
+                    size: adaptiveStagingSize,
+                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+                });
+                updateWebGPUBufferBytes();
+            }
             adaptiveRefreshPending = true;
+            const staging = adaptiveStagingBuffer;
+            // Latest completed positions live in the buffer that will be the
+            // INPUT of this frame (ping-pong already flipped after last submit).
+            const src = webgpuPingPong === 0 ? webgpuPosVelBufferA : webgpuPosVelBufferB;
+            const enc = webgpuDevice.createCommandEncoder();
+            enc.copyBufferToBuffer(src, 0, staging, 0, N * 16);
+            webgpuDevice.queue.submit([enc.finish()]);
             staging.mapAsync(GPUMapMode.READ).then(() => {
                 try {
                     const live = new Float32Array(staging.getMappedRange().slice(0));
@@ -2660,7 +3339,6 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             glTF = gl.createTransformFeedback();
             webgpuBufferBytes = interleaved.byteLength * 2;
             webgpuBufferLimitBytes = 0;
-            webgpuHashEntries = 0;
 
             activeBackend = 'WEBGL2_TF';
             updateMemoryTelemetry();
@@ -2797,6 +3475,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // MAIN SIMULATION & RENDER LOOP
         // ====================================================================
         function frameLoop() {
+            diagState.beats = (diagState.beats || 0) + 1;
+            diagState.vis = document.visibilityState;
             const t0 = performance.now();
             const dt = 0.024;
             simTime += dt * simSpeed;
@@ -2820,6 +3500,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 document.getElementById('valThroughput').innerText = `${((N * fps) / 1e6).toFixed(1)}M parts/sec`;
                 frameCount = 0;
                 lastFpsTime = now;
+                updatePassTimingTelemetry();
+                diagFlush();
             }
 
             requestAnimationFrame(frameLoop);
@@ -2830,12 +3512,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 canvas.width = canvas.clientWidth;
                 canvas.height = canvas.clientHeight;
             }
-            let adaptiveRefreshDue = false;
+            // Adaptive metadata refresh (P7): schedule at frame start, before
+            // this frame's passes are encoded, so the GPU->CPU copy cannot
+            // race the compute dispatches.
+            maybeStartAdaptiveRefresh();
 
-            // Write Uniforms
-            const uniforms = new ArrayBuffer(96);
-            const floatView = new Float32Array(uniforms);
-            const uintView = new Uint32Array(uniforms);
+            // Write uniforms into the preallocated staging block (T4: zero
+            // per-frame allocations).
+            const floatView = simUniformF;
+            const uintView = simUniformU;
 
             floatView[0] = dt;
             floatView[1] = simTime;
@@ -2855,8 +3540,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             floatView[15] = core2.y;
             uintView[16] = (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) ? 1 : 0;
             uintView[17] = (webgpuAdaptiveEnabled && useAdaptiveFmm) ? 1 : 0;
+            uintView[18] = fmmLeafBits;
+            // Per-list P2P sample cap: 128 up to 500k (full traversal for all
+            // but the densest cells), then scaled down so total near-field
+            // work stays roughly flat (>= 16 samples/list at 5M keeps the
+            // force noise floor comparable to the old visual-quality budget).
+            uintView[19] = N <= 500000 ? 128 : Math.max(16, Math.round((128 * 500000) / N));
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, uniforms);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 80);
 
             const commandEncoder = webgpuDevice.createCommandEncoder();
 
@@ -2869,88 +3560,147 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: beginIdx, endOfPassWriteIndex: endIdx } }
                 : {};
 
-            // Galaxy only: build atomic linked cell lists, leaf/parent moments, M2L, then L2P.
+            // Galaxy only: counting-sort cell lists, then the multi-level
+            // uniform FMM (P2M -> M2M chain -> per-level M2L -> L2L chain -> L2P).
             if (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm) {
-                const fmmParamData = new ArrayBuffer(16); const fmmU = new Uint32Array(fmmParamData); const fmmF = new Float32Array(fmmParamData);
-                fmmU[0] = N; fmmU[1] = Math.max(1, Math.floor(1000000 / Math.max(1, N))); fmmF[2] = 1.0 / 1000000.0; fmmU[3] = fmmOrder;
+                fmmProbeFrames++;
+                const leafCells = 1 << (2 * fmmLeafBits);
+                const K = fmmLevelCount();
+                // Fill all K+1 uniform blocks (256-byte stride): shared header
+                // fields + this level's geometry/bases in CELL units.
+                let momBase = 0, localBase = 0;
+                for (let l = 0; l <= K; l++) {
+                    const res = fmmLevelRes(l);
+                    const o = l * 64; // 256 bytes / 4
+                    fmmParamU[o + 0] = N; fmmParamU[o + 1] = fmmOrder; fmmParamU[o + 2] = fmmLeafBits; fmmParamU[o + 3] = K;
+                    fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
+                    if (l >= 1) localBase += res * res;
+                    momBase += res * res;
+                }
                 webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData);
                 const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
-                const runFmmInPass = (pass, name, groups) => { pass.setPipeline(webgpuFmmPipelines[name]); pass.setBindGroup(0, fmmGroup); pass.dispatchWorkgroups(groups); };
+                const runFmmInPass = (pass, name, groups, level = 0) => {
+                    pass.setPipeline(webgpuFmmPipelines[name]);
+                    pass.setBindGroup(0, fmmGroup, [level * 256]);
+                    pass.dispatchWorkgroups(groups);
+                };
 
-                // Pass 1: FMM Build (clear + build cells + leaf moments + parent moments)
+                // Pass 1: FMM Build — clear, counting sort (count/scan/scatter),
+                // leaf P2M, then the M2M chain up to the top level. Dispatches
+                // inside one compute pass are implicitly ordered with memory
+                // visibility in WebGPU.
+                const clearThreads = Math.max(leafCells, fmmTotalMomCells() * 3, fmmTotalLocalCells() * 3);
                 const fmmBuildPass = commandEncoder.beginComputePass(tsOpts(0, 1));
-                runFmmInPass(fmmBuildPass, 'clear_cells', 64);
-                runFmmInPass(fmmBuildPass, 'build_cells', Math.ceil(N / 256));
-                runFmmInPass(fmmBuildPass, 'build_moments', 64);
-                runFmmInPass(fmmBuildPass, 'parent_moments', 16);
+                runFmmInPass(fmmBuildPass, 'clear_cells', Math.ceil(clearThreads / 256));
+                runFmmInPass(fmmBuildPass, 'count_cells', Math.ceil(N / 256));
+                runFmmInPass(fmmBuildPass, 'scan_cells', 1);
+                runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
+                runFmmInPass(fmmBuildPass, 'build_moments', Math.ceil(leafCells / 64));
+                for (let l = 1; l <= K; l++) {
+                    runFmmInPass(fmmBuildPass, 'm2m_up', Math.ceil((fmmLevelRes(l) ** 2) / 64), l);
+                }
                 fmmBuildPass.end();
 
-                // Pass 2: FMM M2L (parent-level far-field, 1024 cells × 1024 sources)
+                // Pass 2: FMM far field — per-level M2L over the V-list rings.
                 const m2lPass = commandEncoder.beginComputePass(tsOpts(2, 3));
-                runFmmInPass(m2lPass, 'm2l', 16);
+                for (let l = 1; l <= K; l++) {
+                    runFmmInPass(m2lPass, 'm2l', Math.ceil((fmmLevelRes(l) ** 2) / 256), l);
+                }
                 m2lPass.end();
 
-                // Pass 3: FMM L2P (local-to-particle evaluation)
+                // Pass 2b: L2L chain back down to the parent level. Kept in its
+                // OWN pass: l2l_down ADDS into the level-(l-1) locals that the
+                // m2l dispatches in the previous pass wrote, and an add must
+                // never share a pass with its input writers.
+                const l2lPass = commandEncoder.beginComputePass();
+                for (let l = K; l >= 2; l--) {
+                    runFmmInPass(l2lPass, 'l2l_down', Math.ceil(((fmmLevelRes(l) * 2) ** 2) / 256), l);
+                }
+                l2lPass.end();
+
+                // Pass 3: FMM L2P (level-1 local expansion + leaf ring M2P),
+                // dispatched with the level-1 uniform block.
                 const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
-                runFmmInPass(l2pPass, 'l2p', Math.ceil(N / 256));
+                runFmmInPass(l2pPass, 'l2p', Math.ceil(N / 256), 1);
                 l2pPass.end();
+
+                // ?probe=1 validation: one-shot far-field readback + JS
+                // brute-force comparison (see scheduleFmmProbe).
+                if (FMM_PROBE && !fmmProbeDone && fmmProbeFrames >= 40) {
+                    fmmProbeDone = true;
+                    scheduleFmmProbe(commandEncoder, N);
+                }
+                if (FMM_DEBUG && !fmmDebugDone && fmmProbeFrames >= 40) {
+                    fmmDebugDone = true;
+                    scheduleFmmDebugDump(commandEncoder, N);
+                }
             }
 
-            // Adaptive CGR88 FMM: full multi-level pipeline with M2M/L2L/M2L/P2L
+            // Adaptive CGR88 FMM: full multi-level pipeline with M2M/L2L/M2L/P2L.
             if (scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm) {
                 const md = adaptiveMetadata;
                 const nn = md.totalNodes;
                 const depth = md.depth;
                 const order = Math.min(4, Math.max(1, fmmOrder));
 
-                // Write adaptive params
-                const aParamData = new ArrayBuffer(16);
-                const aU = new Uint32Array(aParamData);
-                aU[0] = N; aU[1] = nn; aU[2] = order; aU[3] = md.numLevels;
-                webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, aParamData);
+                // Write per-level uniform blocks (P6): each 256-byte block holds
+                // the common params plus levelBase = levelStart[l], selected at
+                // dispatch time via the bind group's dynamic offset. Block 0
+                // (levelBase 0) is shared by the clear/p2m/l2p whole-range passes.
+                const aU = adaptiveParamU;
+                for (let l = 0; l < md.numLevels; l++) {
+                    const base = l * 64; // 256 bytes / 4 = 64 u32 per block
+                    aU[base + 0] = N; aU[base + 1] = nn; aU[base + 2] = order; aU[base + 3] = md.numLevels;
+                    aU[base + 4] = md.levelStart[l];
+                }
+                webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, adaptiveParamData);
 
                 const aGroup = webgpuPingPong === 0 ? webgpuAdaptiveBindGroupA : webgpuAdaptiveBindGroupB;
-                const runAdaptive = (pass, name, groups) => {
+                const runAdaptive = (pass, name, groups, level) => {
                     pass.setPipeline(webgpuAdaptivePipelines[name]);
-                    pass.setBindGroup(0, aGroup);
+                    pass.setBindGroup(0, aGroup, [level * 256]);
                     pass.dispatchWorkgroups(groups);
                 };
 
-                // Pass 1: Clear multipoles and locals
+                // Pass 1: Clear multipoles and locals (covers ALL nodes)
                 const clearPass = commandEncoder.beginComputePass(tsOpts(0, 1));
-                runAdaptive(clearPass, 'clear', Math.ceil((nn * 3) / 256));
+                runAdaptive(clearPass, 'clear', Math.ceil((nn * 3) / 256), 0);
                 clearPass.end();
 
-                // Pass 2: P2M at terminal leaves
+                // Pass 2: P2M at terminal leaves (flat whole-range dispatch)
                 const p2mPass = commandEncoder.beginComputePass();
-                runAdaptive(p2mPass, 'p2m', Math.ceil(nn / 64));
+                runAdaptive(p2mPass, 'p2m', Math.ceil(nn / 64), 0);
                 p2mPass.end();
 
-                // Pass 3: M2M upward pass (deepest non-leaf level to root, with barriers)
+                // Pass 3: M2M upward pass. EXACT per-level ranges: dispatching
+                // levelCount[l] threads would address flat ids 0..4^l-1, i.e.
+                // the WRONG nodes, without the levelBase offset (P6 fix).
                 for (let l = depth - 1; l >= 0; l--) {
                     const lc = Math.ceil(md.levelCount[l] / 64);
                     if (lc === 0) continue;
                     const m2mPass = commandEncoder.beginComputePass();
-                    runAdaptive(m2mPass, 'm2m', lc);
+                    runAdaptive(m2mPass, 'm2m', lc, l);
                     m2mPass.end();
                 }
 
-                // Pass 4: L2L + M2L downward pass (level 1 to depth, with barriers)
+                // Pass 4: L2L + M2L downward pass (exact per-level ranges, so
+                // each node's locals are written exactly once per frame after
+                // the clear pass)
                 for (let l = 1; l <= depth; l++) {
                     const lc = Math.ceil(md.levelCount[l] / 64);
                     if (lc === 0) continue;
                     // L2L and M2L in separate passes for correct memory ordering
                     const l2lPass = commandEncoder.beginComputePass();
-                    runAdaptive(l2lPass, 'l2l', lc);
+                    runAdaptive(l2lPass, 'l2l', lc, l);
                     l2lPass.end();
                     const m2lPass = commandEncoder.beginComputePass();
-                    runAdaptive(m2lPass, 'm2l', lc);
+                    runAdaptive(m2lPass, 'm2l', lc, l);
                     m2lPass.end();
                 }
 
                 // Pass 5: L2P at particles (includes List 3 M2P and List 1 P2P)
                 const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
-                runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256));
+                runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256), 0);
                 l2pPass.end();
             }
 
@@ -3015,12 +3765,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
             const gpuSubmitTime = performance.now();
             webgpuDevice.queue.submit([commandEncoder.finish()]);
+            diagState.submits++;
             webgpuPingPong = 1 - webgpuPingPong;
 
-            // Measure actual GPU completion time via onSubmittedWorkDone fence
-            webgpuDevice.queue.onSubmittedWorkDone().then(() => {
-                webgpuGpuCompleteMs = performance.now() - gpuSubmitTime;
-            });
+            // Measure actual GPU completion time via onSubmittedWorkDone fence.
+            // Polled every ~30 frames instead of every frame — the promise
+            // allocation/resolve per frame showed up as CPU churn (T4).
+            webgpuFenceCounter++;
+            if (webgpuFenceCounter % 30 === 1) {
+                webgpuDevice.queue.onSubmittedWorkDone().then(() => {
+                    webgpuGpuCompleteMs = performance.now() - gpuSubmitTime;
+                });
+            }
 
             // Async readback: map any buffer that has data (state=1), read timestamps, then free it
             if (webgpuTimestampQueryEnabled && webgpuQuerySet) {
@@ -3039,6 +3795,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                                 webgpuPassTimings.mainCompute = nsToMs(data[7] - data[6]);
                                 webgpuPassTimings.render = nsToMs(data[9] - data[8]);
                                 webgpuPassTimings.totalGpu = nsToMs(data[9] - data[0]);
+                                diagState.maps++;
+                                diagState.lastTimings = { ...webgpuPassTimings };
                             } catch (_) {}
                             buf.unmap();
                             webgpuQueryBufState[bufIdx] = 0; // free
@@ -3102,6 +3860,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         function resetSimulation() {
             generateParticles();
             if (activeBackend === 'WEBGPU') {
+                // Resize GPU buffers if the particle count (or its derived
+                // leaf resolution) changed, then rebuild bind groups + upload.
+                ensureWebGPUCapacity(N);
+                recreateWebGPUBindGroups();
                 uploadWebGPUParticles();
                 rebuildAdaptiveMetadata();
             } else if (activeBackend === 'WEBGL2_TF') {
@@ -3194,14 +3956,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const useAdaptive = e.target.value === 'adaptive';
                 useAdaptiveFmm = useAdaptive && webgpuAdaptiveEnabled;
                 // When adaptive is selected but unavailable, keep fixed-grid
-                webgpuFmmEnabled = !useAdaptiveFmm;
+                // (and never claim fixed-grid FMM if its pipelines failed to build)
+                webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
                 const valFmmModeEl = document.getElementById('valFmmMode');
                 if (valFmmModeEl) {
                     valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
                 }
                 // Update engine badge
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Elastic-Hash FMM' : 'WebGPU Analytic Fallback')}`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
                 }
                 updateMemoryTelemetry();
             });
@@ -3209,7 +3972,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         // Presets
         const setPreset = (val, btn) => {
-            N = Math.min(MAX_P, Math.max(1000, val));
+            N = Math.min(maxRuntimeParticles, Math.max(1000, val));
+            if (val > N) console.warn(`Particle count clamped to device limit: ${val} -> ${N}`);
             document.getElementById('valParticles').innerText = N.toLocaleString();
             const slider = document.getElementById('sliderParticles');
             if (N <= 250000) {
@@ -3278,6 +4042,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         // Launch Engine
         initEngine();
+        setInterval(() => { diagState.timers = (diagState.timers || 0) + 1; diagFlush(); }, 1000);
     </script>
 </body>
 </html>

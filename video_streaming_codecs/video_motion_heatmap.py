@@ -1,8 +1,11 @@
 """
 Instant Video Heatmap & Motion Highlight Accumulator.
-Powered by Lock-Free Motion Vector Hashing & Spatial Energy Accumulation.
+Plain numpy spatial binning of motion-vector magnitudes.
 
-Computes 2D activity/traffic heatmaps across video hours in seconds for security cams, gaming replays, and sports streams.
+Computes 2D activity/traffic heatmaps for security cams, gaming replays, and
+sports streams. NOTE: no hash table and no FMM apply here — accumulation is
+array slicing; the decorative ElasticHashTable instance and "lock-free
+hashing" claims of earlier revisions were removed as untrue.
 """
 
 import numpy as np
@@ -12,7 +15,6 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
 
 class VideoMotionHeatmap:
     """
@@ -22,7 +24,6 @@ class VideoMotionHeatmap:
         self.grid_w = grid_w
         self.grid_h = grid_h
         self.heatmap = np.zeros((grid_h, grid_w), dtype=np.float32)
-        self.hash_table = ElasticHashTable(capacity=grid_w * grid_h * 2, delta=0.05)
 
     def accumulate_motion_vectors(self, motion_vectors: np.ndarray):
         """

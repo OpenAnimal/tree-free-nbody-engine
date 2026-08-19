@@ -10,6 +10,7 @@ from .volumetric_fmm_ao import (
     VolumetricFMMAmbientOcclusion,
     VolumetricSamplingMode,
     SparseVolumetricVoxelGrid,
+    VolumetricMonopoleAO,
 )
 from .dynamic_irradiance_cache import DynamicIrradianceCache
 from .async_zerocopy_streaming import AsyncZeroCopyGraphicsPipeline, StreamingTile, FrameRenderStats
@@ -33,6 +34,7 @@ __all__ = [
     "SurfelRadiosityGI",
     "Surfel",
     "VolumetricFMMAmbientOcclusion",
+    "VolumetricMonopoleAO",
     "VolumetricSamplingMode",
     "SparseVolumetricVoxelGrid",
     "DynamicIrradianceCache",

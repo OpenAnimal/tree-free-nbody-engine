@@ -164,7 +164,8 @@ __kernel void opencl_cgr88_fmm_2d(
     __global float2* out_forces,                // (N,)
     const int num_particles,
     const int order,
-    const float softening_sq
+    const float softening_sq,
+    const float cell_size // width of one uniform-grid leaf cell (world units)
 ) {
     int gid = get_global_id(0);
     if (gid >= num_particles) return;
@@ -194,20 +195,26 @@ __kernel void opencl_cgr88_fmm_2d(
     float phi = pot_comp.r;
     float2 force = (float2)(-deriv_comp.r, deriv_comp.i);
 
-    // Direct near-field summation
+    // Near-field P2P: direct summation restricted to same or geometrically
+    // adjacent clusters (Chebyshev center distance <= one cell) — the exact
+    // complement of the far-field well-separated pairs. Still scans all N;
+    // a per-cluster CSR range would remove the scan but needs extra buffers.
     for (int j = 0; j < num_particles; ++j) {
-        if (j != gid) {
-            float2 pos_j = positions[j];
-            float q_j = charges[j];
-            float2 diff = pos_i - pos_j;
-            float r_sq = dot(diff, diff) + softening_sq;
-            if (r_sq < 0.0025f) {
-                float r_sq_safe = max(r_sq, 1e-12f);
-                float inv_r2 = 1.0f / r_sq_safe;
-                phi += q_j * 0.5f * log(r_sq_safe);
-                force -= q_j * diff * inv_r2;
-            }
-        }
+        if (j == gid) continue;
+        int c_j = particle_cluster_ids[j];
+        float2 cj_center = cluster_centers[c_j];
+        bool near_cell =
+            c_j == c_id ||
+            (fabs(cj_center.x - c_center.x) <= 1.5f * cell_size &&
+             fabs(cj_center.y - c_center.y) <= 1.5f * cell_size);
+        if (!near_cell) continue;
+        float2 pos_j = positions[j];
+        float q_j = charges[j];
+        float2 diff = pos_i - pos_j;
+        float r_sq = dot(diff, diff) + softening_sq;
+        float inv_r2 = 1.0f / r_sq;
+        phi += q_j * 0.5f * log(r_sq);
+        force -= q_j * diff * inv_r2;
     }
 
     out_potentials[gid] = phi;
@@ -215,7 +222,11 @@ __kernel void opencl_cgr88_fmm_2d(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Ambient Occlusion / Volumetric Multipole Evaluation Kernel
+// 4. Ambient Occlusion / Volumetric Sampling Kernel
+// ---------------------------------------------------------------------------
+// NOTE: this kernel is NOT part of the FMM pipeline; it is a standalone
+// volumetric ambient-occlusion sampler kept in this file because
+// core/test_amd_radeon_compliance.py checks for its presence here.
 // ---------------------------------------------------------------------------
 __kernel void opencl_volumetric_ao_sample(
     __global const float* query_points,   // (N_queries, 3)

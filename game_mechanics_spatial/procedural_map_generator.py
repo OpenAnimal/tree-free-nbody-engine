@@ -1,8 +1,12 @@
 """
 Infinite Procedural Map & Terrain Biome Generator.
-Powered by Continuous Multipole Potential Field Harmonics & Spatiotemporal Morton Grids.
+Screened-RBF potential-field terrain synthesis over macro features.
 
-Generates boundless terrain elevation, biomes, and obstacle placement in O(1) query time without storing massive tile arrays.
+Generates boundless terrain elevation without storing tile arrays. Each query
+costs O(num_macro_features) work (vectorized), not O(1). NOTE: "Multipole" in
+the class name is a historical misnomer — the field is a plain screened radial
+basis sum; there is no multipole expansion and no FMM here, and the elastic
+hash adds nothing to this purely arithmetic generator (it was removed).
 """
 
 import numpy as np
@@ -12,22 +16,20 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
 
 class ProceduralMultipoleMapGenerator:
     """
-    Infinite Terrain & Biome Generator using Multipole Harmonics.
+    Infinite Terrain & Biome Generator using a screened RBF field (see module docstring).
     """
     def __init__(self, seed: int = 42, num_macro_features: int = 256):
         np.random.seed(seed)
         # Macro terrain poles (mountains, oceans, volcano hotspots)
         self.feature_centers = np.random.uniform(0, 1000, size=(num_macro_features, 2)).astype(np.float32)
         self.feature_amplitudes = np.random.uniform(-50.0, 100.0, size=num_macro_features).astype(np.float32)
-        self.hash_table = ElasticHashTable(capacity=1024, delta=0.05)
 
     def query_terrain_chunk(self, chunk_x: float, chunk_y: float, chunk_size: int = 64) -> Dict:
         """
-        Evaluates terrain heightfield over a (chunk_size x chunk_size) player view window in O(1).
+        Evaluates terrain heightfield over a (chunk_size x chunk_size) window (O(features), vectorized).
         """
         t0 = time.perf_counter()
         gx = np.linspace(chunk_x, chunk_x + 100.0, chunk_size)
@@ -35,7 +37,7 @@ class ProceduralMultipoleMapGenerator:
         X, Y = np.meshgrid(gx, gy)
         grid_pts = np.stack([X.ravel(), Y.ravel()], axis=1) # (N, 2)
         
-        # Multipole Green's harmonic potential evaluation
+        # Screened RBF terrain height evaluation
         diff = grid_pts[:, None, :] - self.feature_centers[None, :, :]
         r2 = np.sum(diff**2, axis=-1)
         # Screened RBF harmonic terrain height
@@ -54,7 +56,7 @@ class ProceduralMultipoleMapGenerator:
 
 def run_procedural_map_demo():
     print("==================================================================")
-    print(" GAME MECHANICS: INFINITE PROCEDURAL MAP GENERATION (MULTIPOLE HARMONICS)")
+    print(" GAME MECHANICS: INFINITE PROCEDURAL MAP GENERATION (SCREENED RBF FIELD)")
     print("==================================================================")
     print(f"Generating 64x64 terrain chunk (4,096 vertices) on-the-fly...")
     
@@ -67,3 +69,5 @@ def run_procedural_map_demo():
 
 if __name__ == '__main__':
     run_procedural_map_demo()
+
+ProceduralRBFMapGenerator = ProceduralMultipoleMapGenerator  # renamed alias

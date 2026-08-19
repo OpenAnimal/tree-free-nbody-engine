@@ -1,11 +1,12 @@
 """
-Application 4: Fast Multipole Boids with 1€ (One-Euro) Adaptive Filtering
+Application 4: Elastic-Hash Spatial Boids with 1€ (One-Euro) Adaptive Filtering
 & Optimal Non-Reordering Spatial Hashing (Farach-Colton et al. 2025).
 
 Combines:
 1. Multilevel Boids:
    - Near-field (direct separation & collision avoidance via 3x3 hash neighborhood)
-   - Far-field (multipole flock alignment & global barycenter attraction)
+   - Far-field (per-cell centroid velocity & barycenter attraction; a bucketed
+     centroid scheme, not a multipole expansion)
 2. 1€ Filter:
    - Adaptive low-pass filtering: high jitter reduction when cruising, zero lag during rapid avoidance maneuvers.
 3. Tree-Free Non-Reordering Hash:
@@ -68,9 +69,9 @@ class OneEuroFilter:
 
 
 # ----------------------------------------------------------------------
-# 2. Fast Multipole Boid Swarm Engine
+# 2. Elastic-Hash Boid Swarm Engine (spatial-hash neighbor queries)
 # ----------------------------------------------------------------------
-class FMMBoidSwarm:
+class ElasticHashBoidSwarm:
     def __init__(self, n_boids: int = 500, depth: int = 4):
         self.N = n_boids
         self.depth = depth
@@ -102,7 +103,7 @@ class FMMBoidSwarm:
         for key, p_indices in box_map.items():
             hash_table.insert(key, p_indices)
 
-        # 2. Far-Field Multipole Aggregation (Cluster Velocity Moments & Barycenters)
+        # 2. Far-field aggregation (per-cell centroid velocity & barycenters)
         cluster_barycenters = {}
         cluster_vel = {}
         for key, p_indices in box_map.items():
@@ -115,7 +116,7 @@ class FMMBoidSwarm:
         # Boid weights
         w_sep = 1.8   # Near-field separation
         w_ali = 1.0   # Alignment
-        w_coh = 0.8   # Cohesion (Multipole Far-Field)
+        w_coh = 0.8   # Cohesion (centroid far-field)
         
         for i in range(self.N):
             p_i = self.pos[i]
@@ -148,7 +149,7 @@ class FMMBoidSwarm:
             if near_count > 0:
                 ali_force = (ali_force / near_count) - v_i
                 
-            # --- Far-Field (M2L Cohesion via Cluster Multipoles) ---
+            # --- Far-field (centroid cohesion via cluster barycenters) ---
             coh_force = np.zeros(2)
             far_clusters = 0
             for f_key, barycenter in cluster_barycenters.items():
@@ -184,8 +185,8 @@ class FMMBoidSwarm:
 
 
 def run_boids_demo(n_boids: int = 400, steps: int = 40):
-    print(">>> Running Application 4: Fast Multipole Boid Swarm with 1€ Filter & Non-Reordering Hash")
-    swarm = FMMBoidSwarm(n_boids=n_boids, depth=4)
+    print(">>> Running Application 4: Elastic-Hash Boid Swarm with 1€ Filter & Non-Reordering Funnel Hash")
+    swarm = ElasticHashBoidSwarm(n_boids=n_boids, depth=4)
     
     # Store trajectories of leader boid to visualize 1€ filter jitter removal
     leader_raw_pos = []
@@ -212,7 +213,7 @@ def run_boids_demo(n_boids: int = 400, steps: int = 40):
         ax1.axvline(g, color='#30363D', lw=0.4, alpha=0.4)
         ax1.axhline(g, color='#30363D', lw=0.4, alpha=0.4)
         
-    ax1.set_title("Multilevel FMM Boid Swarm\n(Near-Field P2P Separation + Far-Field M2L Cohesion)", color='white', fontsize=11, fontweight='bold')
+    ax1.set_title("Elastic-Hash Boid Swarm\n(Near-Field Hash Separation + Far-Field Centroid Cohesion)", color='white', fontsize=11, fontweight='bold')
     ax1.set_xlim(0, 1)
     ax1.set_ylim(0, 1)
     ax1.legend(loc='upper right', facecolor='#161B22', edgecolor='#30363D', labelcolor='white')
@@ -250,7 +251,7 @@ def run_boids_demo(n_boids: int = 400, steps: int = 40):
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 4: Fast Multipole Boid Swarms with 1€ Adaptive Filtering\nPowered by Farach-Colton / Krapivin / Kuszmaul Elastic Hashing", 
+    fig.suptitle("Application 4: Elastic-Hash Boid Swarms with 1€ Adaptive Filtering\nPowered by Farach-Colton / Krapivin / Kuszmaul Funnel Hashing", 
                  color='white', fontsize=13, fontweight='bold')
     
     plt.tight_layout()

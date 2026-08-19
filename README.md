@@ -107,6 +107,8 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 |   **$N = 64,000$**   |   250,391.7 ms (250s)   |   151,104.7 ms (151s)   |        2,509.2 ms        |             **2,741.17 ms**             |      **$55.1\times$**      |
 |  **$N = 100,000$**  |   611,307.8 ms (611s)   |   368,908.0 ms (369s)   |        6,125.9 ms        |             **2,884.09 ms**             |     **$127.9\times$**     |
 
+> ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (see `apps/benchmark_suite.py`). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` (vectorized dense binning); the elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engine `TreeFreeElasticAdaptiveFMM` and the GPU kernels.
+
 ---
 
 ### Implementation Backends

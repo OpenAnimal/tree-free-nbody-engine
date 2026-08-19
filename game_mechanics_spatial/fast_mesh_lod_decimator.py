@@ -12,7 +12,8 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
+# NOTE: decimation is pure array quantization (np.unique + bincount); a hash
+# table adds nothing here and was removed.
 
 class FastMeshLODDecimator:
     """
@@ -21,7 +22,6 @@ class FastMeshLODDecimator:
     def __init__(self, lod_depth: int = 5):
         self.lod_depth = lod_depth
         self.grid_res = 1 << lod_depth
-        self.hash_table = ElasticHashTable(capacity=self.grid_res**3 * 2, delta=0.05)
 
     def decimate_mesh(self, vertices: np.ndarray, triangles: np.ndarray) -> Dict:
         """

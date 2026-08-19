@@ -138,7 +138,8 @@ __global__ void evaluate_cgr88_fmm_2d_kernel(
     float* __restrict__ out_potentials,
     float2* __restrict__ out_forces,
     int order,
-    float softening
+    float softening,
+    float cell_size // width of one uniform-grid leaf cell (world units)
 ) {
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= num_particles) return;
@@ -167,20 +168,29 @@ __global__ void evaluate_cgr88_fmm_2d_kernel(
     float2 force = make_float2(-deriv_complex.r, deriv_complex.i);
     float eps_sq = softening * softening;
 
-    // 2. Direct Near-Field P2P Tile Summation
+    // 2. Near-field P2P: direct summation restricted to particles whose
+    // cluster is the SAME as or GEOMETRICALLY ADJACENT to ours (Chebyshev
+    // center distance <= one cell). This is exactly the complement of the
+    // well-separated pairs handled by the far-field local expansions, so
+    // every pair is counted once. NOTE: still an O(N * particles_per_cell-
+    // neighborhood) scan over all N; a per-cluster particle-range CSR would
+    // remove the full scan but requires additional device buffers.
     for (int j = 0; j < num_particles; ++j) {
-        if (j != tid) {
-            Particle2D p_j = particles[j];
-            float dx = p_i.x - p_j.x;
-            float dy = p_i.y - p_j.y;
-            float r_sq = dx * dx + dy * dy + eps_sq;
-            if (r_sq < 0.0016f) { // Within local near-field radius
-                float inv_r2 = 1.0f / (r_sq + 1e-12f);
-                phi += p_j.q * 0.5f * logf(r_sq + 1e-12f);
-                force.x -= p_j.q * dx * inv_r2;
-                force.y -= p_j.q * dy * inv_r2;
-            }
-        }
+        if (j == tid) continue;
+        int c_j = particle_cluster_ids[j];
+        bool near_cell =
+            c_j == c_id ||
+            (fabsf(cluster_centers[c_j].x - c_center.x) <= 1.5f * cell_size &&
+             fabsf(cluster_centers[c_j].y - c_center.y) <= 1.5f * cell_size);
+        if (!near_cell) continue;
+        Particle2D p_j = particles[j];
+        float dx = p_i.x - p_j.x;
+        float dy = p_i.y - p_j.y;
+        float r_sq = dx * dx + dy * dy + eps_sq;
+        float inv_r2 = 1.0f / r_sq;
+        phi += p_j.q * 0.5f * logf(r_sq);
+        force.x -= p_j.q * dx * inv_r2;
+        force.y -= p_j.q * dy * inv_r2;
     }
 
     out_potentials[tid] = phi;

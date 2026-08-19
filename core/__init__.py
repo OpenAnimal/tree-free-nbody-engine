@@ -8,8 +8,13 @@ Non-Reordering Open Addressing Hash (Farach-Colton et al. 2025)
 
 from .elastic_hash import (
     ElasticHashTable,
+    ElasticBatchingHashTable,
+    funnel_probe,
     jax_hash_probe,
 )
+from .spatial_index import CellIndex, morton_2d_key, morton_3d_key
+from .validation import cross_validate, fmt_validation, assert_accuracy
+from .benchmark_kit import VariantBenchmark
 from .adaptive_gpu_metadata import (
     FlatAdaptiveMetadata,
     build_flat_adaptive_metadata,
@@ -128,6 +133,13 @@ else:
     compute_nbody_forces_jax = None
 
 __all__ = [
+    "CellIndex",
+    "morton_2d_key",
+    "morton_3d_key",
+    "cross_validate",
+    "fmt_validation",
+    "assert_accuracy",
+    "VariantBenchmark",
     "FlatAdaptiveMetadata",
     "build_flat_adaptive_metadata",
     "MAX_INTERACTIONS_PER_NODE",
@@ -150,6 +162,8 @@ __all__ = [
     "cgr88_m2p",
     "p2p_potential_and_force",
     "ElasticHashTable",
+    "ElasticBatchingHashTable",
+    "funnel_probe",
     "jax_hash_probe",
     "morton_encode_2d",
     "decode_morton_2d",

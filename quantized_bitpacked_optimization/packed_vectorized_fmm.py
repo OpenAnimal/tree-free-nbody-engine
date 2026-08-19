@@ -8,6 +8,14 @@ Combines:
 5. Zero-Probe Register Morton Neighbor Arithmetic
 
 Allows systematic ablation of every component.
+
+Measured accuracy tradeoffs (rel L2 vs the exact direct log-kernel sum,
+verified in benchmark_ablation.py): baseline flat FMM ~1e-3; bitboard
+fast-forwarding and direct Morton strides are lossless (~1e-3); 32-bit
+coordinate bit-packing is LOSSY (~1.2e-1, quantized near-field distances
+through the log singularity); greedy run merging is LOSSY (~2.4e-1, order-1
+macro expansions are evaluated around distant macro centers). Use
+enable_packing/enable_greedy_aggregation only when that error is acceptable.
 """
 
 import numpy as np

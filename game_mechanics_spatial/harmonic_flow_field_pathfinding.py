@@ -1,6 +1,6 @@
 """
 Harmonic Potential Flow Field & Continuum Swarm Pathfinder.
-Solves real-time continuum navigation for massive agent swarms (50,000+ units) in O(1) query time.
+Solves real-time continuum navigation for massive agent swarms (50,000+ units) with hash-neighborhood queries.
 
 Mathematical Formulation:
 - Total Potential: Phi(x) = Phi_att(x) + Phi_rep(x) + Phi_vortex(x)
@@ -23,12 +23,17 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 
 
 class HarmonicPotentialFlowField:
     """
-    Continuous Multipole Harmonic Flow Field & Swarm Pathfinder.
+    Continuous Harmonic Potential Flow Field & Swarm Pathfinder.
+    The obstacle term is an analytic Yukawa sum over all obstacles (O(N*M)
+    vectorized); `sample_flow_velocity_hashed` restricts that sum to the
+    obstacles of the 5x5 elastic-hash neighborhood, justified by the
+    exponential screening (decay length = one grid cell). "Multipole" in
+    earlier revisions was a misnomer: there is no multipole expansion here.
     """
     def __init__(
         self,
@@ -56,7 +61,7 @@ class HarmonicPotentialFlowField:
 
         # Spatial hash for dynamic obstacles
         self.grid_cell_size = 20.0
-        self.hash_table = ElasticHashTable(capacity=16384, delta=0.05)
+        self.index = CellIndex(dims=2, cell_size=self.grid_cell_size)
         
         # Obstacle storage: positions (M, 2), charges (M,), radii (M,)
         self.obstacle_positions = np.empty((0, 2), dtype=np.float32)
@@ -97,12 +102,11 @@ class HarmonicPotentialFlowField:
         else:
             self.obstacle_radii = np.asarray(radii, dtype=np.float32)
 
-        # Index obstacles into elastic spatial hash
-        for i, pos in enumerate(positions):
-            gx = int(pos[0] / self.grid_cell_size)
-            gy = int(pos[1] / self.grid_cell_size)
-            morton_key = (gy << 16) | (gx & 0xFFFF)
-            self.hash_table.insert(morton_key, i)
+        # Index obstacles into elastic spatial hash (rebuilt per set call:
+        # append-only tables cannot unlearn stale keys). Buckets live in a dict;
+        # the hash is the authoritative occupied-cell index used for neighborhood
+        # probes in sample_flow_velocity_hashed.
+        self.index.build(positions)
 
     def sample_flow_velocity(
         self,
@@ -189,6 +193,53 @@ class HarmonicPotentialFlowField:
 
         return velocities
 
+    def _neighborhood_obstacles(self, pos: np.ndarray, ring: int = 2) -> np.ndarray:
+        """Obstacle indices within the (2*ring+1)^2 hash-neighborhood of pos."""
+        k = self.index.key_of(pos)
+        parts = []
+        for nk in self.index.neighbor_keys(k, ring):
+            b = self.index.bucket(nk)
+            if b is not None:
+                parts.append(b)
+        return np.concatenate(parts) if parts else np.empty(0, dtype=np.int64)
+
+    def sample_flow_velocity_hashed(self, agent_positions: np.ndarray,
+                                    desired_speed: float = 10.0,
+                                    ring: int = 2) -> np.ndarray:
+        """
+        Hash-accelerated variant: per agent, the Yukawa obstacle sum runs only
+        over obstacles in the (2*ring+1)^2 elastic-hash neighborhood (screened
+        contributions beyond that are < exp(-ring) of the peak). The elastic
+        hash is the ONLY cell index consulted here.
+        """
+        agent_positions = np.atleast_2d(np.asarray(agent_positions, dtype=np.float32))
+        full = np.empty((len(agent_positions), 2), dtype=np.float32)
+        for i, p in enumerate(agent_positions):
+            obs_idx = self._neighborhood_obstacles(p, ring)
+            sub = HarmonicPotentialFlowField(
+                world_bounds=self.bounds, k_att=self.k_att, kappa_obs=self.kappa_obs,
+                q_obs_default=self.q_obs_default, epsilon=self.epsilon,
+                vortex_gain=self.vortex_gain)
+            sub.set_goals(self.goal_positions, self.goal_weights)
+            if len(obs_idx):
+                sub.set_obstacles(self.obstacle_positions[obs_idx],
+                                  self.obstacle_charges[obs_idx],
+                                  self.obstacle_radii[obs_idx])
+            full[i] = sub.sample_flow_velocity(p[None, :], desired_speed=desired_speed)[0]
+        return full
+
+    def validate_hashed_flow(self, agent_positions: np.ndarray,
+                             desired_speed: float = 10.0, ring: int = 2) -> Dict:
+        """Relative deviation of the hash-truncated field vs the full Yukawa sum."""
+        ref = self.sample_flow_velocity(agent_positions, desired_speed=desired_speed)
+        fast = self.sample_flow_velocity_hashed(agent_positions, desired_speed=desired_speed, ring=ring)
+        return {
+            "mean_rel_dev": float(np.mean(np.linalg.norm(fast - ref, axis=1) /
+                                          np.maximum(1e-6, np.linalg.norm(ref, axis=1)))),
+            "max_rel_dev": float(np.max(np.linalg.norm(fast - ref, axis=1) /
+                                        np.maximum(1e-6, np.linalg.norm(ref, axis=1)))),
+        }
+
     def rasterize_flow_field_grid(
         self,
         resolution: int = 128,
@@ -274,6 +325,8 @@ def run_harmonic_pathfinding_demo():
     grid_res = 128
     grid_stats = pathfinder.rasterize_flow_field_grid(resolution=grid_res)
     print(f"[-] 2D Vector Grid ({grid_res}x{grid_res} = {grid_res*grid_res:,} cells) Baked In: {grid_stats['latency_ms']:.2f} ms")
+    val = pathfinder.validate_hashed_flow(np.random.uniform(0, 1000, (64, 2)).astype(np.float32))
+    print(f"    Hash-Truncated Yukawa vs Full:    mean {val['mean_rel_dev']:.1e}, max {val['max_rel_dev']:.1e} (screening-valid)")
     print("==================================================================")
 
 

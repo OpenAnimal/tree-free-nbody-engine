@@ -72,7 +72,7 @@ def generate_simulation_gif(output_path=None, num_frames=48, width=860, height=4
         c2_x += cv2_x * dt
         c2_y += cv2_y * dt
 
-        # Gravitational acceleration from both galactic cores + multipole potential
+        # Gravitational acceleration from the two galactic cores (monopole point masses)
         d1x = c1_x - px
         d1y = c1_y - py
         d1_sq = d1x**2 + d1y**2 + 0.004
@@ -105,7 +105,7 @@ def generate_simulation_gif(output_path=None, num_frames=48, width=860, height=4
             gy = int(r * height / grid_rows)
             draw.line([(0, gy), (width, gy)], fill=(22, 27, 34), width=1)
 
-        # Far-field multipole isolines / shells around moving centers
+        # Decorative range shells around the moving galactic centers
         for rad in [28, 55, 90, 135]:
             # Core 1 shell
             sc1_x = int(c1_x * width)
@@ -164,7 +164,7 @@ def generate_simulation_gif(output_path=None, num_frames=48, width=860, height=4
 
         # Bottom legend badge
         draw.rounded_rectangle([16, height - 38, width - 16, height - 14], radius=4, fill=(22, 27, 34), outline=(48, 54, 61))
-        draw.text((28, height - 32), "• Cyan: Core Galaxy A    • Magenta: Core Galaxy B    • Far-Field M2L: Active    • Lock-Free CAS: Enabled", fill=(200, 210, 225))
+        draw.text((28, height - 32), "• Cyan: Core Galaxy A    • Magenta: Core Galaxy B    • Monopole core gravity (2 masses, direct)", fill=(200, 210, 225))
 
         frames.append(img)
 

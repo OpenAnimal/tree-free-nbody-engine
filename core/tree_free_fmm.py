@@ -1,7 +1,8 @@
 """
 Tree-Free Fast Multipole Method (FMM) in JAX & Python
-Powered by Elastic Non-Reordering Spatial Hash Table (Farach-Colton et al. 2025)
-and Carrier, Greengard, & Rokhlin (1988) / Greengard & Rokhlin (1987) mathematical formulations.
+Powered by the Non-Reordering Funnel Hash Table (Farach-Colton et al. 2025,
+arXiv:2501.02305) and Carrier, Greengard, & Rokhlin (1988) / Greengard &
+Rokhlin (1987) mathematical formulations.
 
 Implements:
 1. Spatial Morton 2D/3D z-order encoding
@@ -144,9 +145,22 @@ def eval_local_force(l_coeffs: np.ndarray, target_pt: complex, center: complex, 
 
 
 # -------------------------------------------------------------
-# 3. Complete Tree-Free FMM using Elastic Non-Reordering Hash
+# 3. Complete Tree-Free FMM using Non-Reordering Funnel Hash
 # -------------------------------------------------------------
 class TreeFreeFMM:
+    """
+    Regular fixed-depth FMM indexed by a non-reordering funnel hash
+    (core.elastic_hash.ElasticHashTable, Farach-Colton/Krapivin/Kuszmaul
+    2025).
+
+    Index split, honestly stated:
+      * `self.levels[lvl]` is a dict of the nodes alive at each fixed depth
+        of the uniform quadtree — the level hierarchy the M2M/L2L passes
+        must walk. It is a structural registry, not a spatial index.
+      * `self.hash_table` is the LEAF-BOX spatial index: Morton leaf key ->
+        node record. The near-field P2P pass resolves neighbor boxes
+        exclusively through funnel-hash lookups.
+    """
     def __init__(self, depth: int = 4, order: int = ORDER, softening: float = 0.0):
         if depth < 0 or order < 0:
             raise ValueError("depth and order must be non-negative")
@@ -154,7 +168,6 @@ class TreeFreeFMM:
         self.order = order
         self.softening = softening
         self.hash_table = ElasticHashTable(capacity=(1 << (2 * depth)) * 2, delta=0.05)
-        self.boxes: Dict[int, Dict] = {}
         self.levels: Dict[int, Dict[int, Dict]] = {}
         self.far_field = np.empty(0)
         self.near_field = np.empty(0)
@@ -166,9 +179,8 @@ class TreeFreeFMM:
             raise ValueError("positions must have shape (N, 2)")
         if charges.ndim != 1 or len(charges) != len(positions):
             raise ValueError("charges must have shape (N,) matching positions")
-            
+
         self.hash_table = ElasticHashTable(capacity=(1 << (2 * self.depth)) * 2, delta=0.05)
-        self.boxes.clear()
         self.levels.clear()
         
         leaf_map: Dict[int, List[int]] = {}
@@ -198,11 +210,11 @@ class TreeFreeFMM:
                     self.levels[level][key] = node
                 node['indices'].extend(indices)
                 
-        # Leaves use P2M; parents use M2M
+        # Leaves use P2M; parents use M2M. Leaf nodes are indexed in the
+        # funnel hash (Morton key -> node record) for the near-field pass.
         for node in self.levels.get(self.depth, {}).values():
             node['m_coeffs'] = p2m(positions[node['indices']], charges[node['indices']], node['center'], self.order)
-            self.boxes[node['key']] = node
-            self.hash_table.insert(node['key'], node['key'])
+            self.hash_table.insert(node['key'], node)
             
         for level in range(self.depth - 1, -1, -1):
             for node in self.levels[level].values():
@@ -245,7 +257,7 @@ class TreeFreeFMM:
                     
         grid = 1 << self.depth
         eps2 = self.softening * self.softening
-        for target in self.boxes.values():
+        for target in self.levels.get(self.depth, {}).values():
             for ti in target['indices']:
                 far[ti] = eval_local(target['l_coeffs'], complex(*positions[ti]), target['center'], self.order)
                 tx, ty = target['ix'], target['iy']
@@ -253,7 +265,8 @@ class TreeFreeFMM:
                     for dy in (-1, 0, 1):
                         nx, ny = tx + dx, ty + dy
                         key = morton_encode_2d((nx + 0.5) / grid, (ny + 0.5) / grid, self.depth) if 0 <= nx < grid and 0 <= ny < grid else None
-                        source = self.boxes.get(key)
+                        # Near-field neighbor resolution: funnel-hash lookup.
+                        source, _ = self.hash_table.lookup(key) if key is not None else (None, 0)
                         if source is not None:
                             for si in source['indices']:
                                 if si != ti:

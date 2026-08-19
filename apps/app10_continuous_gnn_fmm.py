@@ -1,27 +1,36 @@
 """
 Application 10: Continuous Graph Neural Network (GNN) Message Passing without Adjacency Matrices.
-Powered by Tree-Free Fast Multipole Method (FMM) & Farach-Colton Non-Reordering Hash.
+Cell index: Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash.
 
 Executes continuous spatial graph convolutions:
 h_i^(l+1) = ReLU( W_self * h_i + sum_{near} W_near * h_j + sum_{far} W_far * Centroid_k )
-Scales to massive dynamic graphs without allocating N x N adjacency matrices or storing edge lists.
+
+Method, stated honestly: near-field messages are exchanged exactly within
+the 3x3 funnel-hash neighborhood; far-field messages use per-cell
+centroid aggregation (a bucketed centroid scheme, not a multipole
+expansion -- the Gaussian message kernel is not the CGR88 log kernel).
+Scales without N x N adjacency matrices or stored edge lists. The
+approximation error vs a dense all-pairs message pass is measured and
+printed for a small graph.
 """
 
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 from typing import Tuple, List, Dict
 from core.elastic_hash import ElasticHashTable
 from core.tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
 
-class ContinuousFMMGNNLayer:
+class ContinuousSpatialGNNLayer:
     """
-    Graph Neural Network layer executing continuous spatial message passing in O(N).
-    Near-field: exact attention message exchange within hash neighborhood.
-    Far-field: multipole centroid message aggregation across distant graph clusters.
+    GNN layer with continuous spatial message passing.
+    Near-field: exact message exchange within the 3x3 hash neighborhood.
+    Far-field: per-cell centroid aggregation over distant cells.
     """
     def __init__(self, in_features: int = 32, out_features: int = 32, depth: int = 4):
         self.in_features = in_features
@@ -41,28 +50,27 @@ class ContinuousFMMGNNLayer:
         N = len(coords)
         grid_res = self.grid_res
         
-        # 1. Non-Reordering Hash Table Dynamic Indexing
+        # 1. Funnel hash = sole spatial index (cell key -> particle indices)
         hash_table = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-        bucket_map = {}
         for i in range(N):
             key = morton_encode_2d(coords[i, 0], coords[i, 1], depth=self.depth)
-            if key not in bucket_map:
-                bucket_map[key] = []
-            bucket_map[key].append(i)
-            
-        for key, p_indices in bucket_map.items():
-            hash_table.insert(key, p_indices)
-            
-        # 2. Far-Field Multipole Aggregation (Cluster Centroid Moments)
+            p_indices, _ = hash_table.lookup(key)
+            if p_indices is None:
+                hash_table.insert(key, [i])
+            else:
+                p_indices.append(i)
+
+        # 2. Far-field aggregation (per-cell centroid features)
         cluster_h = {}
         cluster_centers = {}
-        for key, p_indices in bucket_map.items():
+        for key in [k for k, _ in hash_table.items()]:
+            p_indices = hash_table.lookup(key)[0]
             _, ix, iy = decode_morton_2d(key)
             cx, cy = get_box_center_2d(self.depth, ix, iy)
             cluster_centers[key] = np.array([cx, cy])
             cluster_h[key] = np.mean(node_features[p_indices], axis=0)  # Aggregated node representation
             
-        # 3. Continuous Message Passing: Self + Near (P2P) + Far (M2L)
+        # 3. Continuous Message Passing: self + near (direct) + far (centroid)
         out_features = np.zeros((N, self.out_features))
         
         # Self-transformation: (N, out_features)
@@ -84,7 +92,7 @@ class ContinuousFMMGNNLayer:
                     if 0 <= nx < grid_res and 0 <= ny < grid_res:
                         n_key = (self.depth << 24) | morton_encode_2d((nx+0.5)/grid_res, (ny+0.5)/grid_res, depth=self.depth) & 0xFFFFFF
                         p_indices, _ = hash_table.lookup(n_key)
-                        if p_indices is not None and n_key in bucket_map:
+                        if p_indices is not None:
                             for j in p_indices:
                                 if i != j:
                                     d = np.linalg.norm(coords[i] - coords[j]) + 1e-4
@@ -95,7 +103,7 @@ class ContinuousFMMGNNLayer:
             if near_count > 0:
                 near_msg /= near_count
                 
-            # Far-field multipole message aggregation
+            # Far-field centroid message aggregation
             far_msg = np.zeros(self.in_features)
             far_count = 0
             for f_key, c_center in cluster_centers.items():
@@ -119,7 +127,7 @@ class ContinuousFMMGNNLayer:
 
 def run_continuous_gnn_demo():
     print("==================================================================")
-    print(" APP 10: CONTINUOUS GRAPH NEURAL NETWORK MESSAGE PASSING (FMM-GNN)")
+    print(" APP 10: CONTINUOUS GRAPH NEURAL NETWORK MESSAGE PASSING (spatial-hash GNN)")
     print("==================================================================")
     N_NODES = 2000
     in_dim = 32
@@ -136,13 +144,34 @@ def run_continuous_gnn_demo():
     node_features = np.random.randn(N_NODES, in_dim)
     
     # 1. Forward Pass Benchmark
-    gnn_layer = ContinuousFMMGNNLayer(in_features=in_dim, out_features=out_dim, depth=4)
+    gnn_layer = ContinuousSpatialGNNLayer(in_features=in_dim, out_features=out_dim, depth=4)
     t0 = time.perf_counter()
     out_h = gnn_layer.forward(coords, node_features)
     t_gnn = time.perf_counter() - t0
     
     print(f"[-] GNN Layer Execution Time: {t_gnn*1000:.2f} ms")
     print(f"[-] Edge Matrix Memory Stored: 0 MB (Completely Matrix-Free)")
+
+    # Dense all-pairs reference (small N) to quantify the far-field
+    # centroid approximation error.
+    N_small = 150
+    ref_layer = ContinuousSpatialGNNLayer(in_features=in_dim, out_features=out_dim, depth=4)
+    ref_layer.W_self = gnn_layer.W_self; ref_layer.W_near = gnn_layer.W_near
+    ref_layer.W_far = gnn_layer.W_far; ref_layer.bias = gnn_layer.bias
+    small_coords, small_feat = coords[:N_small], node_features[:N_small]
+    out_approx = ref_layer.forward(small_coords, small_feat)
+    W_near, W_far, bias = gnn_layer.W_near, gnn_layer.W_far, gnn_layer.bias
+    h_self = np.matmul(small_feat, gnn_layer.W_self)
+    dense = np.zeros_like(out_approx)
+    for i in range(N_small):
+        d = np.linalg.norm(small_coords[i] - small_coords, axis=1) + 1e-4
+        w = np.exp(-d ** 2 / 0.05); w[i] = 0.0
+        near_msg = (w[:, None] * small_feat).sum(axis=0) / max(w.sum(), 1e-9)
+        w_far = np.exp(-d ** 2 / 0.2); w_far[i] = 0.0
+        far_msg = (w_far[:, None] * small_feat).sum(axis=0) / max(w_far.sum(), 1e-9)
+        dense[i] = np.maximum(0.0, h_self[i] + near_msg @ W_near + far_msg @ W_far + bias)
+    rel = np.max(np.abs(out_approx - dense)) / (np.max(np.abs(dense)) + 1e-12)
+    print(f"[-] Max relative error vs dense all-pairs message pass (N={N_small}): {rel:.3e}")
     
     # 2. Visualization: Node Embeddings & Message Passing Field
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6.5), facecolor='#0B0E14')
@@ -158,7 +187,7 @@ def run_continuous_gnn_demo():
     
     ax1.set_title("Input Dynamic Graph Nodes (No Pre-Defined Edge List)", color='white', fontsize=11, fontweight='bold')
     
-    # Plot 2: Output Node Features after Dual-Scale Multipole Message Passing
+    # Plot 2: Output Node Features after Dual-Scale Spatial Message Passing
     ax2.set_facecolor('#0B0E14')
     out_energy = np.linalg.norm(out_h, axis=1)
     s2 = ax2.scatter(coords[:, 0], coords[:, 1], c=out_energy, cmap='viridis', s=18, alpha=0.85)
@@ -173,7 +202,7 @@ def run_continuous_gnn_demo():
         ax2.axvline(g, color='#30363D', lw=0.4, alpha=0.4)
         ax2.axhline(g, color='#30363D', lw=0.4, alpha=0.4)
         
-    ax2.set_title("Transformed Latent Node States (Continuous FMM Convolutions)", color='white', fontsize=11, fontweight='bold')
+    ax2.set_title("Transformed Latent Node States (Continuous Spatial Convolutions)", color='white', fontsize=11, fontweight='bold')
     
     for ax in (ax1, ax2):
         ax.set_xlim(0, 1)
@@ -182,7 +211,7 @@ def run_continuous_gnn_demo():
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 10: Matrix-Free Continuous Graph Neural Network (FMM-GNN)\nMessage Passing via Farach-Colton / Kuszmaul Non-Reordering Spatial Table", 
+    fig.suptitle("Application 10: Matrix-Free Continuous Graph Neural Network\nMessage Passing via Farach-Colton / Kuszmaul Funnel Hash (near exact / far centroid)", 
                  color='white', fontsize=13, fontweight='bold')
     plt.tight_layout()
     output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "app10_continuous_gnn_fmm.png")

@@ -236,7 +236,8 @@ __global__ void hip_evaluate_cgr88_fmm_2d_kernel(
     float* __restrict__ out_potentials,
     float2* __restrict__ out_forces,
     int order,
-    float softening
+    float softening,
+    float cell_size // width of one uniform-grid leaf cell (world units)
 ) {
     int tid = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
     if (tid >= num_particles) return;
@@ -264,19 +265,26 @@ __global__ void hip_evaluate_cgr88_fmm_2d_kernel(
     float2 force = make_float2(-deriv_complex.r, deriv_complex.i);
     float eps_sq = softening * softening;
 
+    // Near-field P2P: direct summation restricted to same or geometrically
+    // adjacent clusters (Chebyshev center distance <= one cell) — the exact
+    // complement of the far-field well-separated pairs. Still scans all N;
+    // a per-cluster CSR range would remove the scan but needs extra buffers.
     for (int j = 0; j < num_particles; ++j) {
-        if (j != tid) {
-            Particle2D p_j = particles[j];
-            float dx = p_i.x - p_j.x;
-            float dy = p_i.y - p_j.y;
-            float r_sq = dx * dx + dy * dy + eps_sq;
-            if (r_sq < 0.0016f) {
-                float inv_r2 = 1.0f / (r_sq + 1e-12f);
-                phi += p_j.q * 0.5f * logf(r_sq + 1e-12f);
-                force.x -= p_j.q * dx * inv_r2;
-                force.y -= p_j.q * dy * inv_r2;
-            }
-        }
+        if (j == tid) continue;
+        int c_j = particle_cluster_ids[j];
+        bool near_cell =
+            c_j == c_id ||
+            (fabsf(cluster_centers[c_j].x - c_center.x) <= 1.5f * cell_size &&
+             fabsf(cluster_centers[c_j].y - c_center.y) <= 1.5f * cell_size);
+        if (!near_cell) continue;
+        Particle2D p_j = particles[j];
+        float dx = p_i.x - p_j.x;
+        float dy = p_i.y - p_j.y;
+        float r_sq = dx * dx + dy * dy + eps_sq;
+        float inv_r2 = 1.0f / r_sq;
+        phi += p_j.q * 0.5f * logf(r_sq);
+        force.x -= p_j.q * dx * inv_r2;
+        force.y -= p_j.q * dy * inv_r2;
     }
 
     out_potentials[tid] = phi;

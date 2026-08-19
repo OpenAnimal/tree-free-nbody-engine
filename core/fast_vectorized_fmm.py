@@ -11,21 +11,32 @@ Implements:
 
 import numpy as np
 import math
-from typing import Tuple, Dict, Optional, Union
+from typing import Tuple, Dict, List, Optional, Union
 try:
     from .cgr88_adaptive_fmm import CGR88AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
-    from .elastic_hash import ElasticHashTable
     from .tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
+    from .elastic_hash import ElasticHashTable
 except ImportError:
     from cgr88_adaptive_fmm import CGR88AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
-    from elastic_hash import ElasticHashTable
     from tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
+    from elastic_hash import ElasticHashTable
 
 
 class FastVectorizedFMM:
     """
-    Vectorized FMM Engine with Farach-Colton Non-Reordering Hash & CGR88 expansions.
-    Executes cluster-cluster M2L interactions as a single vectorized matrix broadcast.
+    Flat (single-level) tree-free 2D FMM with CGR88 expansions.
+
+    Cell index of record: an ElasticHashTable (Farach-Colton/Krapivin/
+    Kuszmaul 2025 elastic hashing, core.elastic_hash) maps each occupied
+    Morton cell key to its dense cluster index.  Occupancy and 3x3
+    adjacency are resolved through hash lookups -- no sorted arrays, no
+    dicts, no pointers.  Hot numeric kernels remain vectorized NumPy.
+
+    Complexity, stated honestly: P2M/L2P are O(N p); M2L evaluates all
+    well-separated OCCUPIED cell pairs, which for a single-level scheme
+    is O(K^2 p^2) with K = number of occupied cells (K <= 4^depth, a
+    constant for fixed depth, so the scheme is linear in N with a
+    depth-dependent constant); near-field P2P is O(N * neighbors).
     """
     def __init__(
         self,
@@ -37,7 +48,6 @@ class FastVectorizedFMM:
         self.order = order
         self.softening = softening
         self.grid_res = 1 << depth
-        self.hash_table = ElasticHashTable(capacity=self.grid_res * self.grid_res * 2, delta=0.05)
 
     def evaluate(
         self,
@@ -63,7 +73,16 @@ class FastVectorizedFMM:
         
         unique_keys, inverse_indices = np.unique(morton_keys, return_inverse=True)
         num_clusters = len(unique_keys)
-        
+
+        # Elastic hash = authoritative occupied-cell index (key -> cluster id)
+        self.hash_table = ElasticHashTable(
+            capacity=max(16, 2 * num_clusters), delta=0.05
+        )
+        for c, key in enumerate(unique_keys):
+            ok, _ = self.hash_table.insert(int(key), c)
+            if not ok:
+                raise RuntimeError(f"elastic hash insert failed for cell key {key}")
+
         cluster_ix = (unique_keys >> 12) & 0xFFF
         cluster_iy = unique_keys & 0xFFF
         cx = (cluster_ix + 0.5) * box_size
@@ -132,7 +151,21 @@ class FastVectorizedFMM:
         
         # 5. Fast Local Direct Near-Field P2P (Evaluate self and adjacent 3x3 neighbor buckets)
         cluster_indices_list = [np.where(inverse_indices == c)[0] for c in range(num_clusters)]
-        near_cluster_pairs = np.argwhere((np.abs(dx) <= 1) & (np.abs(dy) <= 1))
+        # Near-field pair list resolved through funnel-hash neighbor lookups:
+        # for each occupied cell, probe the 3x3 Morton neighborhood in the
+        # elastic hash; only cells the hash reports as occupied take part.
+        near_pairs = []
+        key_depth = self.depth << 24
+        for c in range(num_clusters):
+            kx, ky = int(cluster_ix[c]), int(cluster_iy[c])
+            for ox in (-1, 0, 1):
+                for oy in (-1, 0, 1):
+                    nx_, ny_ = kx + ox, ky + oy
+                    if 0 <= nx_ < grid_res and 0 <= ny_ < grid_res:
+                        v, _ = self.hash_table.lookup(key_depth | (nx_ << 12) | ny_)
+                        if v is not None:
+                            near_pairs.append((c, v))
+        near_cluster_pairs = np.array(near_pairs, dtype=np.int64).reshape(-1, 2)
         eps2 = self.softening * self.softening
 
         for c1, c2 in near_cluster_pairs:

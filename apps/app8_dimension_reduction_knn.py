@@ -4,7 +4,7 @@ Powered by Farach-Colton / Krapivin / Kuszmaul (2025) Non-Reordering Open Addres
 
 Demonstrates the core intuitive concept:
 1. Projects an 8-dimensional non-linear manifold (Swiss Roll embedded in 8D) down to 2D.
-2. Uses Random Hyperplane Projections + Non-Reordering Hash Table to construct the clean k-NN graph in O(N) without O(N^2) pairwise comparisons.
+2. Uses Random Hyperplane Projections + Non-Reordering Hash Table to construct an approximate k-NN graph (O(N) hash inserts + bucket-local candidate comparisons) without O(N^2) pairwise comparisons.
 3. Computes isometric 2D manifold unfolding via graph geodesic distance embedding (Landmark Isomap / Shortest Paths).
 """
 
@@ -40,7 +40,8 @@ def generate_high_dim_swiss_roll(n_samples: int = 2500, ambient_dim: int = 8) ->
 
 def build_hash_knn_graph(points: np.ndarray, k_neighbors: int = 12, n_tables: int = 8, n_hyperplanes: int = 8) -> Dict[str, Any]:
     """
-    Constructs an approximate k-NN adjacency graph in O(N) using
+    Constructs an approximate k-NN adjacency graph in O(N) inserts plus
+    bucket-local comparisons using
     Multi-Table Locality Sensitive Hashing (LSH) + Elastic Non-Reordering Table.
     Uses candidate pool aggregation across tables followed by local distance ranking.
     """
@@ -233,7 +234,7 @@ def run_dimension_reduction_demo():
     
     ax2.set_xlabel("Unfolded Intrinsic Coordinate 1 (t / Spiral Arc)", color='#E6EDF3', fontsize=10)
     ax2.set_ylabel("Unfolded Intrinsic Coordinate 2 (h / Height)", color='#E6EDF3', fontsize=10)
-    ax2.set_title(f"Isometric 2D Unfolded Manifold (Hash-KNN Geodesic Embedding)\nPearson r(t) = {r_t:.3f}, r(h) = {r_h:.3f} (O(N) Graph)", 
+    ax2.set_title(f"Isometric 2D Unfolded Manifold (Hash-KNN Geodesic Embedding)\nPearson r(t) = {r_t:.3f}, r(h) = {r_h:.3f} (Hash-KNN Graph)", 
                   color='white', fontsize=11, fontweight='bold')
     ax2.tick_params(colors='#8B949E')
     for spine in ax2.spines.values():

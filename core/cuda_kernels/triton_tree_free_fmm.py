@@ -1,8 +1,10 @@
 """
-Tree-Free Fast Multipole Method (FMM) OpenAI Triton GPU Kernel
-==============================================================
-High-Throughput PyTorch/Triton implementation of continuous spatial attention
-and N-body potential fields with fused near-field block tiling and lock-free hashing.
+Direct O(N^2) N-Body Reference Solver (OpenAI Triton GPU Kernel)
+================================================================
+NOTE: this is NOT a Fast Multipole Method. It is a direct all-pairs
+Coulomb P2P solver with block tiling, kept as a GPU reference baseline
+for cross-validating approximate FMM engines. Despite the historic
+filename, no multipole operators are implemented here.
 """
 
 from typing import Tuple, Optional
@@ -86,14 +88,15 @@ if HAS_TRITON:
         tl.store(out_forces_ptr + offsets * 3 + 2, acc_fz, mask=mask)
 
 
-    def triton_tree_free_nbody(
+    def triton_direct_nbody(
         coords: torch.Tensor,
         charges: torch.Tensor,
         softening: float = 1e-3,
         block_size: int = 128
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        PyTorch entrypoint for Triton GPU N-Body solver.
+        PyTorch entrypoint for the direct O(N^2) all-pairs Triton N-body
+        reference solver (potentials + forces).
         """
         assert (coords.is_cuda and charges.is_cuda) or (coords.device.type in ('cuda', 'hip') and charges.device.type in ('cuda', 'hip')), (
             "Inputs must be on a CUDA or AMD ROCm/HIP GPU device"
@@ -113,6 +116,10 @@ if HAS_TRITON:
             BLOCK_SIZE=block_size
         )
         return out_pot, out_forces
+
+
+    # Backwards-compatible alias (historic, misleading name kept for callers)
+    triton_tree_free_nbody = triton_direct_nbody
 
 
 def check_triton_availability():

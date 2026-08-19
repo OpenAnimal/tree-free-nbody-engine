@@ -1,14 +1,21 @@
 """
 Application 5: 3D Molecular Electrostatics & Solvation Free Energy (Bioinformatics / Drug Design).
-Powered by Tree-Free Fast Multipole Method (FMM) + Farach-Colton Non-Reordering Spatial Hash.
+Cell index: Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash
+(core.elastic_hash), queried in the compute path for cluster membership.
 
-Simulates screened Debye-Huckel & Coulomb potentials over a synthetic 3D Protein / RNA conformation.
+Method, stated honestly: the interaction kernel here is the 3D screened
+Yukawa (Debye-Huckel) potential, which does NOT match the 2D logarithmic
+CGR88 FMM in core/, so no FMM engine is used. Potentials are computed by
+direct O(K^2) summation between spatial clusters (bucketed centroids),
+with the funnel hash resolving cluster membership per atom.
 """
 
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 from core.elastic_hash import ElasticHashTable
@@ -48,17 +55,23 @@ def run_bioinformatics_demo(n_atoms: int = 3000):
     unique_keys, inverse = np.unique(morton_3d, return_inverse=True)
     num_clusters = len(unique_keys)
     
-    for k in unique_keys:
-        hash_table.insert(k, k)
-        
-    print(f"[-] 3D Protein spatial clusters: {num_clusters} | Hash Table Load: {hash_table.count / hash_table.capacity * 100:.2f}%")
+    for c, k in enumerate(unique_keys):
+        hash_table.insert(int(k), c)  # funnel hash: cell key -> cluster id
+
+    # Hash is load-bearing: resolve each atom's cluster id by LOOKUP, and
+    # drop the numpy inverse array from the compute path.
+    inverse = np.array([hash_table.lookup(int(k))[0] for k in morton_3d], dtype=np.int64)
+    assert (inverse >= 0).all(), "funnel hash lost an occupied cell key"
+    probe_count = sum(hash_table.lookup(int(k))[1] for k in unique_keys)
+    print(f"[-] 3D Protein spatial clusters: {num_clusters} | Hash Load: {hash_table.count / hash_table.capacity * 100:.2f}% "
+          f"| Avg occupancy lookup probes: {probe_count / num_clusters:.2f}")
     
     # 2. Vectorized 3D Debye-Huckel Screened Potential
     # Kappa: ionic screening parameter in water (debye length ~ 1nm)
     kappa = 2.0
     
     t0 = time.perf_counter()
-    # Direct Evaluation on subset / FMM approximation
+    # Direct O(K^2) screened-Coulomb evaluation between clusters
     cluster_centers = np.array([np.mean(coords[inverse == c], axis=0) for c in range(num_clusters)])
     cluster_q = np.bincount(inverse, weights=charges, minlength=num_clusters)
     
@@ -69,8 +82,8 @@ def run_bioinformatics_demo(n_atoms: int = 3000):
     
     cluster_pot = np.sum(cluster_q[None, :] * np.exp(-kappa * c_dist) / c_dist, axis=1)
     atom_potentials = cluster_pot[inverse]
-    t_fmm_3d = time.perf_counter() - t0
-    print(f"[-] 3D Molecular Electrostatics Evaluation Time: {t_fmm_3d*1000:.2f} ms")
+    t_eval = time.perf_counter() - t0
+    print(f"[-] 3D Molecular Electrostatics (direct cluster O(K^2)) Time: {t_eval*1000:.2f} ms")
     
     # 3. 3D Visualization of Electrostatic Surface Potential
     fig = plt.figure(figsize=(10, 8), facecolor='#0B0E14')
@@ -88,7 +101,7 @@ def run_bioinformatics_demo(n_atoms: int = 3000):
     cb.ax.yaxis.set_tick_params(color='#8B949E')
     plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color='#8B949E')
     
-    ax.set_title(f"Application 5: 3D Protein Electrostatic Potential Field\n(Tree-Free FMM + 3D Morton Elastic Hashing, N={n_atoms})", 
+    ax.set_title(f"Application 5: 3D Protein Electrostatic Potential Field\n(Spatial-Hash Clustered Electrostatics, direct O(K^2), N={n_atoms})", 
                  color='white', fontsize=12, fontweight='bold', pad=15)
     
     ax.xaxis.pane.fill = False

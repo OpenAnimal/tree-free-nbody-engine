@@ -133,7 +133,7 @@ def run_benchmarks():
     # Python reference
     py_m = py_p2m(src_pts, src_q, complex(*src_center), order=6)
     py_l = py_m2l(py_m, complex(*src_center), complex(*dst_center), order=6)
-    py_tgt_pot = np.array([py_eval_local(py_l, complex(p[0], p[1]), complex(*dst_center)) for p in tgt_pts])
+    py_tgt_pot = np.array([py_eval_local(py_l, complex(p[0], p[1]), complex(*dst_center), order=6) for p in tgt_pts])
 
     # Zig implementation
     zig_m = zig_2d_p2m(src_pts, src_q, src_center, order=6)

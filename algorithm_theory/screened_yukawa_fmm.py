@@ -20,7 +20,13 @@ Because K(r) decays exponentially past the Debye length lambda_D = 1 / \\kappa,
 interactions beyond the screening horizon R_cut = -ln(eps) / \\kappa become negligible.
 By coupling Elastic Spatial Hashing with a modified Yukawa Taylor/multipole expansion:
     K(r) \\approx exp(-\\kappa * R) / R * sum_{m=0}^p c_m(\\kappa, R) * P_m(cos theta)
-we compute millions of screened pairwise interactions in O(N) time with strict O(1) memory overhead.
+we compute millions of screened pairwise interactions in roughly O(N) time.
+
+Honesty note on terminology: this is a tree-code (Barnes-Hut with an order-1
+dipole correction) plus hard screening truncation at r_cut, NOT a
+Greengard-Rokhlin translation-based FMM — there are no M2M/M2L/L2L operator
+hierarchies. Measured accuracy vs the exact direct sum is ~1% relative L2 at
+default parameters (verified against direct_evaluate).
 """
 
 import time
