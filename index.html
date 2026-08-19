@@ -2409,12 +2409,32 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuBufferBytes = 0;
         let webgpuBufferLimitBytes = 0;
         // Fixed-grid leaf resolution & GPU capacity management.
-        // Leaf grid scales with N to keep average occupancy bounded:
-        // 64x64 up to ~150k particles, 128x128 up to ~1M, 256x256 beyond.
+        // Leaf grid auto-tunes with N to keep average occupancy near the
+        // ~8-16/cell P2P sweet spot: target side^2 ~ N/12 (=> ~12/cell), so
+        // leafBits = ceil(log2(sqrt(N/12))). Capped to [6, 10] -- 6 keeps a
+        // sane floor for tiny N, 10 (1024x1024 = 1M cells) bounds VRAM at
+        // extreme N. Round-5 baseline at 5M used a fixed 256x256 grid
+        // (avg 76.3/cell, P2P-dominated); the auto-tune raises 5M to
+        // 1024x1024 (avg ~4.8/cell) so the 3x3 near-field traversal does
+        // bounded work per particle. A manual override is available via
+        // ?leafBits=N (clamped to the same [6, 10] range).
         let maxRuntimeParticles = MAX_P; // clamped by device limits after init
         let particleCapacity = 0;        // currently allocated particle capacity
         let fmmLeafBits = 6;             // leaf grid is 2^bits x 2^bits cells
-        function leafBitsForCount(n) { return n <= 150000 ? 6 : (n <= 1000000 ? 7 : 8); }
+        const LEAF_BITS_MIN = 6;
+        const LEAF_BITS_MAX = 10;
+        const LEAF_BITS_OVERRIDE = parseInt(new URLSearchParams(location.search).get('leafBits') || '0', 10) || 0;
+        function leafBitsForCount(n) {
+            if (LEAF_BITS_OVERRIDE >= LEAF_BITS_MIN && LEAF_BITS_OVERRIDE <= LEAF_BITS_MAX) {
+                return LEAF_BITS_OVERRIDE;
+            }
+            // target ~12 particles/cell: side = sqrt(N/12), bits = ceil(log2(side))
+            const targetSide = Math.sqrt(n / 12);
+            let bits = Math.ceil(Math.log2(targetSide));
+            if (bits < LEAF_BITS_MIN) bits = LEAF_BITS_MIN;
+            if (bits > LEAF_BITS_MAX) bits = LEAF_BITS_MAX;
+            return bits;
+        }
         // Debug/validation switches (query params):
         //   ?fmm2level=1 -> force K=1 (the original 2-level scheme; identical
         //                   far-field coverage, O(occ^2) M2L — for A/B checks)
