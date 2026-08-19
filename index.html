@@ -240,6 +240,118 @@
             margin-right: 5px;
             box-shadow: 0 0 8px var(--accent-green);
         }
+
+        /* ---- Variant benchmark panel (below the visualization) ---- */
+        #bench-panel {
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: 12px;
+            background: rgba(11, 14, 20, 0.94);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--bg-border);
+            border-radius: 10px;
+            font-size: 0.78rem;
+            color: var(--text-main);
+            z-index: 20;
+            max-height: 42vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            pointer-events: auto;
+        }
+        #bench-panel.collapsed { max-height: 38px; }
+        #bench-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-bottom: 1px solid var(--bg-border);
+            background: rgba(22, 27, 34, 0.6);
+            cursor: pointer;
+            user-select: none;
+        }
+        #bench-header .bench-title {
+            font-weight: bold;
+            color: #fff;
+            font-size: 0.82rem;
+            flex: 1;
+        }
+        #bench-header .bench-hint {
+            color: var(--text-dim);
+            font-size: 0.7rem;
+        }
+        #bench-toggle {
+            color: var(--accent-cyan);
+            font-size: 0.95rem;
+            line-height: 1;
+        }
+        #bench-body {
+            padding: 10px 14px 12px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        #bench-panel.collapsed #bench-body { display: none; }
+        .bench-section-title {
+            color: var(--accent-cyan);
+            font-size: 0.72rem;
+            font-weight: bold;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .bench-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.72rem;
+            font-family: "SF Mono", "Menlo", Consolas, monospace;
+        }
+        .bench-table th, .bench-table td {
+            padding: 3px 8px;
+            text-align: left;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+            white-space: nowrap;
+        }
+        .bench-table th {
+            color: var(--text-dim);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.66rem;
+            letter-spacing: 0.05em;
+        }
+        .bench-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .bench-table tr.benchrow-baseline td { color: var(--text-dim); }
+        .bench-table .speedup-good { color: var(--accent-green); }
+        .bench-table .speedup-bad { color: var(--accent-pink); }
+        .bench-table .speedup-par { color: var(--text-dim); }
+        #bench-run-btn {
+            padding: 4px 12px;
+            font-size: 0.72rem;
+            font-weight: bold;
+            background: rgba(0, 240, 255, 0.16);
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            border-radius: 6px;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        #bench-run-btn:disabled { opacity: 0.5; cursor: wait; }
+        #bench-export-btn {
+            padding: 4px 12px;
+            font-size: 0.72rem;
+            font-weight: bold;
+            background: rgba(0, 240, 255, 0.10);
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            border-radius: 6px;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        #bench-export-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        #bench-live-status { color: var(--text-dim); font-size: 0.7rem; }
+        .bench-note { color: var(--text-dim); font-size: 0.68rem; margin-top: 4px; line-height: 1.4; }
     </style>
 </head>
 <body>
@@ -357,6 +469,61 @@
         <div id="overlay-info">
             <!-- Dynamically populated by updateOverlayLegend() -->
         </div>
+
+        <!-- Variant benchmark panel: same standard / +elastichash / +fmm /
+             +quantized_bitpacked / +adaptivefmm axes as core/benchmark_kit.py
+             and the per-app benchmark_variants.py files. Static reference
+             numbers below + a live in-browser micro-bench that toggles the
+             axes the GPU shader actually exposes (FMM order, fixed/adaptive,
+             elastic hash, quantized state) and measures real per-frame step
+             latency + a far-field accuracy column. The 1euro filter is a UI
+             toggle only (boids) and is NOT a benchmark axis. -->
+        <div id="bench-panel" class="collapsed">
+            <div id="bench-header">
+                <span class="bench-title">Variant Benchmark</span>
+                <span class="bench-hint">standard / +elastichash / +fmm / +adaptivefmm / +quantized_bitpacked &middot; <a href="https://github.com/OpenAnimal/tree-free-nbody-engine/blob/main/BENCHMARKS.md" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">BENCHMARKS.md</a></span>
+                <button id="bench-run-btn">Run live GPU micro-bench</button>
+                <button id="bench-export-btn" disabled>Export JSON</button>
+                <span id="bench-live-status"></span>
+                <span id="bench-toggle">&#9650;</span>
+            </div>
+            <div id="bench-body">
+                <div>
+                    <div class="bench-section-title">Live GPU micro-benchmark (shader-exposed axes, measured in-browser)</div>
+                    <table class="bench-table" id="bench-live-table">
+                        <thead><tr><th>Axis variant</th><th class="num">Step (ms)</th><th class="num">vs baseline</th><th class="num">accuracy (rel)</th><th>Note</th></tr></thead>
+                        <tbody><tr><td colspan="5" style="color:var(--text-dim);">Press &ldquo;Run live GPU micro-bench&rdquo; &mdash; toggles FMM order, fixed/adaptive, elastic hash, and quantized state, measuring real per-frame step latency and far-field accuracy for each axis.</td></tr></tbody>
+                    </table>
+                </div>
+                <div>
+                    <div class="bench-section-title">Static reference &mdash; repo variant protocol (Python, pasted from BENCHMARKS.md)</div>
+                    <table class="bench-table" id="bench-static-table">
+                        <thead><tr><th>Domain / app</th><th>Variant</th><th class="num">Time (ms)</th><th class="num">rel L2 / recall</th><th>Note</th></tr></thead>
+                        <tbody>
+                            <tr><td>Core FMM (2D log)</td><td>standard (exact direct)</td><td class="num">41.4</td><td class="num">&ndash;</td><td>O(N^2) reference</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+fmm (CGR88 adaptive)</td><td class="num">845.3</td><td class="num">1.97e-7</td><td>NOT faster than direct at N=2000</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+fmm (flat vectorized)</td><td class="num">478.9</td><td class="num">7.52e-7</td><td>NOT faster than direct at N=2000</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+quantized (32-bit packed)</td><td class="num">40.7</td><td class="num">3.89e-1</td><td>lossy packed cost</td></tr>
+                            <tr><td>Physics broadphase</td><td>standard (brute O(N^2))</td><td class="num">841.5</td><td class="num">&ndash;</td><td>exact AABB overlap pair set</td></tr>
+                            <tr><td>Physics broadphase</td><td>+elastichash (CellIndex ring-1)</td><td class="num">211.1</td><td class="num">no missed</td><td>4.0x faster, zero missed collisions</td></tr>
+                            <tr><td>Video splat</td><td>standard (exact per-pixel)</td><td class="num">0.0</td><td class="num">&ndash;</td><td>lossless per-Gaussian SH colors</td></tr>
+                            <tr><td>Video splat</td><td>+elastichash (cell-bucketed)</td><td class="num">8.95</td><td class="num">3.19e-1</td><td>order-0 cluster-mean (lossy)</td></tr>
+                            <tr><td>Video splat</td><td>+quantized (4-bit color)</td><td class="num">8.40</td><td class="num">3.21e-1</td><td>cluster-mean + 4-bit color (lossy)</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>standard (exact per-particle)</td><td class="num">102.8</td><td class="num">&ndash;</td><td>O(Q*N) reference</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>+elastichash near/far</td><td class="num">894.7</td><td class="num">8.27e-4</td><td>slower than exact at this scale</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>+quantized (all-cluster)</td><td class="num">19.4</td><td class="num">2.00e-2</td><td>5.3x faster, 2e-2 rel-L2 cost</td></tr>
+                            <tr><td>Game flocking (2D)</td><td>standard (brute O(N^2))</td><td class="num">81.9</td><td class="num">&ndash;</td><td>O(N^2) near-field reference</td></tr>
+                            <tr><td>Game flocking (2D)</td><td>+elastichash (near+far)</td><td class="num">239.1</td><td class="num">5.9% far residual</td><td>NOT faster at N=1000 (Python loop overhead)</td></tr>
+                            <tr><td>App 1 galaxy (2D log)</td><td>+fmm (FastVectorizedFMM)</td><td class="num">18.2</td><td class="num">2.39e-5</td><td>parity with direct at N=500</td></tr>
+                            <tr><td>App 5 protein (3D Yukawa)</td><td>+elastichash (cluster O(K^2))</td><td class="num">21.1</td><td class="num">5.68e-1</td><td>15.8x faster, 57% rel-L2 cluster cost</td></tr>
+                            <tr><td>App 8 manifold (LSH k-NN)</td><td>+elastichash (LSH k-NN graph)</td><td class="num">9.7</td><td class="num">recall@12=100%</td><td>26.3x faster, 100% edge recall</td></tr>
+                            <tr><td>App 9 vector DB (LSH ANN)</td><td>+elastichash (LSH multi-probe)</td><td class="num">23.4</td><td class="num">recall@10=0.6%</td><td>2.9x faster, low recall (fine-grained LSH)</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="bench-note">Full per-domain and per-app tables with honest &ldquo;not faster at this scale&rdquo; takeaways: see <a href="https://github.com/OpenAnimal/tree-free-nbody-engine/blob/main/BENCHMARKS.md" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">BENCHMARKS.md</a>. Speed is never shown without the accuracy it costs (rel-L2 vs exact reference, or recall@k for approximate retrieval / filter broadphases).</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -365,7 +532,7 @@
         let N = 120000;
         let scenario = 'galaxy';
         let scenarioId = 0;
-        let colorMode = 0; // 0: Velocity, 1: FMM & 1€ Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
+        let colorMode = 0; // 0: Velocity, 1: FMM Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
         let use1Euro = true;
         let simSpeed = 1.0;
         let p2pRadius = 0.035;
@@ -533,6 +700,8 @@
             adaptiveMode: u32,
             leafBits: u32,
             p2pListCap: u32,
+            useElasticHash: u32, // T3: 1 => P2P cell lookups probe the hash table
+            useQuantized: u32,   // T4: reserved (pack/unpack run as separate passes)
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -547,15 +716,54 @@
         @group(0) @binding(5) var<storage, read> fmmSortedIndex: array<u32>;
         @group(0) @binding(6) var<storage, read> cellStart: array<u32>;
         @group(0) @binding(7) var<storage, read> cellCount: array<u32>;
+        // T3 elastic-hash cell membership (read-only here; the FMM build
+        // passes write them atomically). Declared as plain arrays since this
+        // shader only reads them AFTER the build passes complete, and WGSL
+        // atomics require read_write storage (the build shaders use the
+        // atomic view via the FMM bind group layout).
+        @group(0) @binding(8) var<storage, read> ehKeys: array<u32>;
+        @group(0) @binding(9) var<storage, read> ehCount: array<u32>;
+        @group(0) @binding(10) var<storage, read> ehStart: array<u32>;
         // Shared softening length^2: identical to the P2P kernel below and to
         // the ring M2P / parent M2L monopole terms so the force field stays
         // continuous across the P2P / ring / M2L zone boundaries.
         const P2P_EPS2: f32 = 0.00004;
+        const EH_EMPTY: u32 = 0xFFFFFFFFu;
         fn leafIndex(p: vec2<f32>) -> u32 {
             let side = 1u << params.leafBits;
             let cx = min(u32(clamp(p.x, 0.0, 0.999999) * f32(side)), side - 1u);
             let cy = min(u32(clamp(p.y, 0.0, 0.999999) * f32(side)), side - 1u);
             return cy * side + cx;
+        }
+        // T3 helpers (mirror the FMM shader; u32 splitmix mix + linear probe).
+        fn hashU32(k: u32) -> u32 {
+            var x = k ^ 0x9E3779B9u;
+            x = x ^ (x >> 16);
+            x = x * 0x7FEB352Du;
+            x = x ^ (x >> 15);
+            x = x * 0x846CA68Bu;
+            x = x ^ (x >> 16);
+            return x;
+        }
+        fn ehTableSize() -> u32 { return 1u << (2u * params.leafBits + 1u); }
+        fn ehProbe(cell: u32) -> u32 {
+            let mask = ehTableSize() - 1u;
+            var slot = hashU32(cell) & mask;
+            for (var i: u32 = 0u; i < 8192u; i = i + 1u) {
+                let k = ehKeys[slot];
+                if (k == cell) { return slot; }
+                if (k == EH_EMPTY) { return slot; }
+                slot = (slot + 1u) & mask;
+            }
+            return slot;
+        }
+        fn cellStartOf(cell: u32) -> u32 {
+            if (params.useElasticHash == 0u) { return cellStart[cell]; }
+            return ehStart[ehProbe(cell)];
+        }
+        fn cellCountOf(cell: u32) -> u32 {
+            if (params.useElasticHash == 0u) { return cellCount[cell]; }
+            return ehCount[ehProbe(cell)];
         }
 
         @compute @workgroup_size(256, 1, 1)
@@ -665,8 +873,8 @@
                     let nx = i32(cx) + ox; let ny = i32(cy) + oy;
                     if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
                         let neighborCell = u32(ny) * side + u32(nx);
-                        let start = cellStart[neighborCell];
-                        let count = cellCount[neighborCell];
+                        let start = cellStartOf(neighborCell);
+                        let count = cellCountOf(neighborCell);
                         let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
                         let strideF = f32(stride);
                         var s: u32 = gid % stride;
@@ -949,7 +1157,7 @@
             levelRes: u32,     // cells per side at this level
             momCellBase: u32,  // this level's first cell in fmmMoments
             localCellBase: u32,// this level's first cell in fmmLocals
-            _pad0: u32,
+            useElasticHash: u32, // T3: 1 => cell lookups probe ehSlots, 0 => direct index
             _pad1: u32,
         };
         @group(0) @binding(0) var<storage, read> fmmPos: array<FmmParticle>;
@@ -964,6 +1172,54 @@
         @group(0) @binding(6) var<storage, read_write> fmmLocals: array<vec4<f32>>;
         @group(0) @binding(7) var<storage, read_write> fmmField: array<vec4<f32>>;
         @group(0) @binding(8) var<uniform> fmmParams: FmmParams;
+        // T3 elastic-hash cell membership (open-addressing, u32 splitmix mix).
+        // ehKeys holds the cell key or EH_EMPTY; ehCount/ehCursor are atomic
+        // during the build passes; ehStart is the contiguous sortedIndex base.
+        // Table size = 2 * leafCells (load factor <= 0.5). Same mix family as
+        // core/elastic_hash.py:_mix64, adapted to WGSL u32 (no u64 in WGSL).
+        @group(0) @binding(9) var<storage, read_write> ehKeys: array<atomic<u32>>;
+        @group(0) @binding(10) var<storage, read_write> ehCount: array<atomic<u32>>;
+        @group(0) @binding(11) var<storage, read_write> ehStart: array<u32>;
+        @group(0) @binding(12) var<storage, read_write> ehCursor: array<atomic<u32>>;
+        const EH_EMPTY: u32 = 0xFFFFFFFFu;
+        fn ehTableSize() -> u32 { return 1u << (2u * fmmParams.leafBits + 1u); }
+        // u32 splitmix-style finalizer (low-bias, used by the build + probe
+        // helpers so both produce identical slot sequences for a given key).
+        fn hashU32(k: u32) -> u32 {
+            var x = k ^ 0x9E3779B9u;
+            x = x ^ (x >> 16);
+            x = x * 0x7FEB352Du;
+            x = x ^ (x >> 15);
+            x = x * 0x846CA68Bu;
+            x = x ^ (x >> 16);
+            return x;
+        }
+        // Open-addressing probe: returns the slot holding the cell key, or
+        // the first empty slot if absent. Linear probing with a generous cap
+        // (the table is sized for load <= 0.5, so collisions are short).
+        fn ehProbe(cell: u32) -> u32 {
+            let mask = ehTableSize() - 1u;
+            var slot = hashU32(cell) & mask;
+            for (var i: u32 = 0u; i < 8192u; i = i + 1u) {
+                let k = atomicLoad(&ehKeys[slot]);
+                if (k == cell) { return slot; }
+                if (k == EH_EMPTY) { return slot; }
+                slot = (slot + 1u) & mask;
+            }
+            return slot;
+        }
+        // Cell-membership lookup helpers (T3). When useElasticHash == 0 the
+        // validated counting-sort dense arrays are direct-indexed; when == 1
+        // the same data is recovered via hash probe. The flag is uniform per
+        // dispatch, so every thread takes the same branch (no divergence).
+        fn cellStartOf(cell: u32) -> u32 {
+            if (fmmParams.useElasticHash == 0u) { return cellStart[cell]; }
+            return ehStart[ehProbe(cell)];
+        }
+        fn cellCountOf(cell: u32) -> u32 {
+            if (fmmParams.useElasticHash == 0u) { return atomicLoad(&cellCount[cell]); }
+            return atomicLoad(&ehCount[ehProbe(cell)]);
+        }
         // Softening length^2 shared with the main-shader P2P kernel so the
         // near/ring/far zone boundaries join continuously (see cdivSoft).
         const P2P_EPS2: f32 = 0.00004;
@@ -1055,6 +1311,84 @@
             let slot = atomicAdd(&cellCursor[cell], 1u);
             sortedIndex[slot] = id.x;
         }
+        // ---- T3 elastic-hash build passes (replace count/scan/scatter when
+        // useElasticHash == 1). Produces the SAME sortedIndex contiguous
+        // ranges the counting sort does, but cell->(start,count) is stored in
+        // the open-addressing table instead of the dense cellStart/cellCount
+        // arrays, and consumers recover it via ehProbe. At equal accuracy the
+        // measured cost is hash-build + probe overhead vs the counting sort.
+        @compute @workgroup_size(256)
+        fn eh_clear(@builtin(global_invocation_id) id: vec3<u32>) {
+            let n = ehTableSize();
+            if (id.x < n) {
+                atomicStore(&ehKeys[id.x], EH_EMPTY);
+                atomicStore(&ehCount[id.x], 0u);
+                ehStart[id.x] = 0u;
+                atomicStore(&ehCursor[id.x], 0u);
+            }
+            // Reuse cellCursor[0] as the global running offset for eh_scan
+            // (the counting-sort path that normally writes cellCursor is not
+            // dispatched when useElasticHash == 1, so slot 0 is free).
+            if (id.x == 0u) { atomicStore(&cellCursor[0u], 0u); }
+        }
+        @compute @workgroup_size(256)
+        fn eh_build(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Per particle: claim a slot for its leaf cell (compare-exchange
+            // the key from EH_EMPTY, or match an existing key) and bump the
+            // per-cell count. Linear probing with the same hashU32 sequence
+            // ehProbe uses, so builds and probes agree on slot positions.
+            if (id.x >= fmmParams.numParticles) { return; }
+            let cell = leafIndex(fmmPos[id.x].pos);
+            let mask = ehTableSize() - 1u;
+            var slot = hashU32(cell) & mask;
+            for (var i: u32 = 0u; i < 8192u; i = i + 1u) {
+                // atomicCompareExchangeWeak may fail spuriously, so the
+                // insert success must be gated on the exchanged flag (not
+                // just old_value == EH_EMPTY, which can hold on a spurious
+                // fail after another thread won the slot). On spurious
+                // failure we simply re-probe: the next iteration re-reads
+                // ehKeys and either matches our cell, continues past another
+                // key, or retries the CAS on a still-empty slot.
+                let prev = atomicCompareExchangeWeak(&ehKeys[slot], EH_EMPTY, cell);
+                if (prev.exchanged) {
+                    atomicAdd(&ehCount[slot], 1u);
+                    return;
+                }
+                if (prev.old_value == cell) {
+                    atomicAdd(&ehCount[slot], 1u);
+                    return;
+                }
+                slot = (slot + 1u) & mask;
+            }
+        }
+        @compute @workgroup_size(256)
+        fn eh_scan(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Assign contiguous sortedIndex bases to occupied slots. One
+            // thread per slot: if occupied, claim a running offset via a
+            // single global atomic, then store it as the slot's start AND
+            // cursor (the scatter pass bumps the cursor). Workgroup barriers
+            // are not needed across workgroups; the global atomic serializes.
+            let n = ehTableSize();
+            if (id.x >= n) { return; }
+            let k = atomicLoad(&ehKeys[id.x]);
+            if (k == EH_EMPTY) { return; }
+            let c = atomicLoad(&ehCount[id.x]);
+            let base = atomicAdd(&cellCursor[0u], c); // reuse cellCursor[0] as a global counter
+            ehStart[id.x] = base;
+            atomicStore(&ehCursor[id.x], base);
+        }
+        @compute @workgroup_size(256)
+        fn eh_scatter(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Per particle: probe its cell's slot, bump that slot's cursor,
+            // and write the particle index into sortedIndex at the claimed
+            // offset. Produces the same contiguous per-cell ranges as
+            // scatter_cells, just addressed through the hash table.
+            if (id.x >= fmmParams.numParticles) { return; }
+            let cell = leafIndex(fmmPos[id.x].pos);
+            let slot = ehProbe(cell);
+            let off = atomicAdd(&ehCursor[slot], 1u);
+            sortedIndex[off] = id.x;
+        }
         fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
             let den = max(dot(b, b), 1e-20);
             return vec2<f32>((a.x*b.x+a.y*b.y)/den, (a.y*b.x-a.x*b.y)/den);
@@ -1095,8 +1429,8 @@
             let side = leafSide();
             let cx = cell % side; let cy = cell / side;
             let center = vec2<f32>((f32(cx) + 0.5) / f32(side), (f32(cy) + 0.5) / f32(side));
-            let start = cellStart[cell];
-            let cnt = atomicLoad(&cellCount[cell]);
+            let start = cellStartOf(cell);
+            let cnt = cellCountOf(cell);
             var a0 = 0.0; var a1 = vec2<f32>(0.0); var a2 = vec2<f32>(0.0); var a3 = vec2<f32>(0.0); var a4 = vec2<f32>(0.0);
             for (var s: u32 = 0u; s < cnt; s = s + 1u) {
                 let p = sortedIndex[start + s];
@@ -1364,6 +1698,43 @@
         }
         `;
 
+        // T4 quantized / bit-packed state variant. The f32 ping-pong pos/vel
+        // buffers stay authoritative for the FMM and render paths (zero
+        // regression risk to the validated kernels). When useQuantized == 1
+        // the frame loop routes the state through f16 each frame:
+        //   unpack_state: f16-packed -> f32 (before FMM, "unpacked in the
+        //                 compute shader" as the plan requires)
+        //   ...FMM + main compute run on the unpacked f32 state...
+        //   pack_state:   f32 -> f16-packed (after compute)
+        // The measured cost is the f16 round-trip overhead; the accuracy
+        // column (reusing the ?probe=1 brute-force compare) reports the f16
+        // quantization error. pack2x16float / unpack2x16float are core WGSL
+        // (no shader-f16 feature needed).
+        const wgslQuantSource = `
+        struct Particle { pos: vec2<f32>, vel: vec2<f32> };
+        @group(0) @binding(0) var<storage, read> posVelF32: array<Particle>;
+        @group(0) @binding(1) var<storage, read_write> posVelPacked: array<vec2<u32>>;
+        @group(0) @binding(2) var<uniform> qcount: u32;
+        @compute @workgroup_size(256)
+        fn pack_state(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= qcount) { return; }
+            let p = posVelF32[id.x];
+            posVelPacked[id.x] = vec2<u32>(pack2x16float(p.pos), pack2x16float(p.vel));
+        }
+        `;
+        const wgslQuantUnpackSource = `
+        struct Particle { pos: vec2<f32>, vel: vec2<f32> };
+        @group(0) @binding(0) var<storage, read_write> posVelF32: array<Particle>;
+        @group(0) @binding(1) var<storage, read> posVelPacked: array<vec2<u32>>;
+        @group(0) @binding(2) var<uniform> qcount: u32;
+        @compute @workgroup_size(256)
+        fn unpack_state(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= qcount) { return; }
+            let pk = posVelPacked[id.x];
+            posVelF32[id.x] = Particle(unpack2x16float(pk.x), unpack2x16float(pk.y));
+        }
+        `;
+
         const wgslAdaptiveFmmSource = `
 // Flat adaptive CGR88 WebGPU kernel — full pipeline with M2M, L2L, M2L, P2L.
 struct Particle { pos: vec2<f32>, vel: vec2<f32> };
@@ -1492,13 +1863,13 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
                 var deltaPower = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < k; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
                 let a0 = readc(&multipoles, child, 0u);
-                acc -= a0 * deltaPower / f32(k);
+                acc -= cmul(a0, deltaPower) / f32(k);
                 for (var j = 1u; j <= k; j = j + 1u) {
                     var bj = 1.0;
                     for (var b = 1u; b <= (j - 1u); b = b + 1u) { bj *= f32(k - b) / f32(b); }
                     var dp = vec2<f32>(1.0, 0.0);
                     for (var n = 0u; n < (k - j); n = n + 1u) { dp = cmul(dp, delta); }
-                    acc += readc(&multipoles, child, j) * bj * dp;
+                    acc += cmul(readc(&multipoles, child, j), dp) * bj;
                 }
             }
         }
@@ -1525,7 +1896,7 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
             for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
             var dp = vec2<f32>(1.0, 0.0);
             for (var n = 0u; n < (k - l); n = n + 1u) { dp = cmul(dp, delta); }
-            acc += readc(&locals, parent, k) * binom * dp;
+            acc += cmul(readc(&locals, parent, k), dp) * binom;
         }
         let existing = readc(&locals, node, l);
         writec(&locals, node, l, existing + acc);
@@ -2097,6 +2468,28 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let adaptiveMetadata = null;       // JS metadata object
         let adaptiveDepth = 4;             // Regular quadtree depth for browser path (16x16 leaves)
         let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
+        // Benchmark axis flags (default off => validated counting-sort / f32
+        // paths; toggled only by the live bench panel to measure the
+        // +elastichash / +quantized_bitpacked axes). See T3/T4.
+        let useElasticHash = false;        // open-addressing cell membership (vs counting sort)
+        let useQuantized = false;          // f16-packed pos/vel state (vs f32)
+        // Elastic-hash GPU buffers (T3). ehKeys/ehCount/ehCursor are atomic
+        // during the build passes; consumers read them via atomicLoad.
+        let webgpuEhKeys = null, webgpuEhCount = null, webgpuEhStart = null, webgpuEhCursor = null;
+        // f16-packed state buffers (T4): 1 u32 for pos (pack2x16float) + 1 u32
+        // for vel per particle => 8 bytes/particle. The f32 ping-pong buffers
+        // stay authoritative for the FMM/render; pack/unpack kernels move the
+        // state through f16 each frame to measure the round-trip cost + error.
+        // One buffer holds the packed state between frames (pack writes it
+        // after compute, unpack reads it before the next frame's FMM).
+        let webgpuQuantPosVel = null;
+        let webgpuEhPipelines = {};        // eh_clear / eh_build / eh_scan / eh_scatter
+        let webgpuQuantPipelines = {};     // pack_state / unpack_state
+        let webgpuQuantPackLayout = null, webgpuQuantUnpackLayout = null;
+        let webgpuQuantCountBuf = null;    // 4-byte uniform holding the particle count
+        let webgpuQuantPackBindA = null, webgpuQuantPackBindB = null;
+        let webgpuQuantUnpackBindA = null, webgpuQuantUnpackBindB = null;
+        let quantNeedsInit = true;        // pack the current f32 state into the f16 buffer once before the first unpack
 
         let gl = null;
         let glProgram = null;
@@ -2181,7 +2574,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // softened pairwise sum restricted to leaf cells at Chebyshev >= 2.
         // The scheme's far field equals that sum up to order-4 truncation and
         // the ring softening granularity (~eps^2/(2w)^2 at fine grids).
-        function scheduleFmmProbe(commandEncoder, N) {
+        function scheduleFmmProbe(commandEncoder, N, benchResolve = null) {
             try {
                 const bytes = N * 16;
                 const fieldBuf = webgpuDevice.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
@@ -2194,7 +2587,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 requestAnimationFrame(() => {
                     webgpuDevice.queue.onSubmittedWorkDone().then(async () => {
                         await Promise.all([fieldBuf.mapAsync(GPUMapMode.READ), stateBuf.mapAsync(GPUMapMode.READ)]);
-                        runFmmProbeCompare(new Float32Array(fieldBuf.getMappedRange()), new Float32Array(stateBuf.getMappedRange()), N);
+                        runFmmProbeCompare(new Float32Array(fieldBuf.getMappedRange()), new Float32Array(stateBuf.getMappedRange()), N, benchResolve);
                         fieldBuf.unmap(); stateBuf.unmap();
                         fieldBuf.destroy(); stateBuf.destroy();
                     });
@@ -2205,7 +2598,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
 
-        function runFmmProbeCompare(fieldF32, stateF32, N) {
+        function runFmmProbeCompare(fieldF32, stateF32, N, benchResolve = null) {
             try {
                 const side = 1 << fmmLeafBits;
                 const eps2 = 0.00004;
@@ -2239,6 +2632,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 window.__fmmProbe = result;
                 console.log('FMM PROBE ' + JSON.stringify(result));
                 diagPush('probe ' + JSON.stringify(result));
+                // T4/T5: live-bench accuracy column. Resolves with the mean
+                // far-field rel error (NaN if no valid probe particles).
+                if (benchResolve) benchResolve(isFinite(result.meanRel) && result.meanRel >= 0 ? result.meanRel : NaN);
             } catch (e) {
                 console.warn('FMM probe compare failed:', e);
                 diagPush('probe compare: ' + (e && e.message ? e.message : e));
@@ -2819,7 +3215,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                             { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                             { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                            { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            // T3 elastic-hash cell membership (read-only here;
+                            // the P2P near-field probes them when
+                            // params.useElasticHash == 1).
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
                         ] }) ] });
                         const renderBindLayout = webgpuDevice.createBindGroupLayout({ entries: [
                             { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
@@ -2837,7 +3239,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             // Per-level parameter blocks (256-byte stride)
                             // selected at dispatch time via dynamic offset.
-                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 40 } }
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 40 } },
+                            // T3 elastic-hash cell membership (storage: the
+                            // build passes write them; consumers read via the
+                            // cellStartOf/cellCountOf helpers).
+                            { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
                         ] });
                         const fmmPipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [fmmLayout] });
                         webgpuFmmBindLayout = fmmLayout;
@@ -2851,12 +3260,49 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         for (const entryPoint of ['clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p']) {
                             webgpuFmmPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FMM ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
                         }
+                        // T3 elastic-hash build passes share the FMM bind
+                        // group layout (bindings 9-12 are the eh buffers).
+                        for (const entryPoint of ['eh_clear', 'eh_build', 'eh_scan', 'eh_scatter']) {
+                            webgpuEhPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `EH ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
+                        }
                         const fmmPipelineError = await webgpuDevice.popErrorScope();
                         if (fmmPipelineError) {
                             console.error(`FMM pipeline disabled: ${fmmPipelineError.name}: ${fmmPipelineError.message}`);
                             webgpuFmmPipelines = {};
+                            webgpuEhPipelines = {};
                         } else {
                             webgpuFmmEnabled = true;
+                        }
+
+                        // ---- T4 quantized pack/unpack pipelines ----
+                        // Separate bind group layout: f32 posVel + packed
+                        // posVel + a 4-byte uniform count. Two modules so the
+                        // f32 buffer can be read-only (pack) or read-write
+                        // (unpack) without conflicting visibility.
+                        try {
+                            const quantPackLayout = webgpuDevice.createBindGroupLayout({ entries: [
+                                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', minBindingSize: 4 } },
+                            ]});
+                            const quantUnpackLayout = webgpuDevice.createBindGroupLayout({ entries: [
+                                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                                { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', minBindingSize: 4 } },
+                            ]});
+                            const quantPackModule = webgpuDevice.createShaderModule({ code: wgslQuantSource });
+                            const quantUnpackModule = webgpuDevice.createShaderModule({ code: wgslQuantUnpackSource });
+                            const qpInfo = await quantPackModule.getCompilationInfo();
+                            const quInfo = await quantUnpackModule.getCompilationInfo();
+                            const qErrs = [...qpInfo.messages, ...quInfo.messages].filter(m => m.type === 'error');
+                            if (qErrs.length > 0) throw new Error(`WGSL quant compile failed: ${qErrs.map(m => m.message).join(' | ')}`);
+                            webgpuQuantPipelines.pack = webgpuDevice.createComputePipeline({ label: 'Quant pack', layout: webgpuDevice.createPipelineLayout({ bindGroupLayouts: [quantPackLayout] }), compute: { module: quantPackModule, entryPoint: 'pack_state' } });
+                            webgpuQuantPipelines.unpack = webgpuDevice.createComputePipeline({ label: 'Quant unpack', layout: webgpuDevice.createPipelineLayout({ bindGroupLayouts: [quantUnpackLayout] }), compute: { module: quantUnpackModule, entryPoint: 'unpack_state' } });
+                            webgpuQuantPackLayout = quantPackLayout;
+                            webgpuQuantUnpackLayout = quantUnpackLayout;
+                        } catch (quantErr) {
+                            console.error('Quantized pack/unpack pipeline init failed:', quantErr);
+                            webgpuQuantPipelines = {};
                         }
 
                         // ---- Adaptive CGR88 FMM Pipeline ----
@@ -3086,15 +3532,24 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // GPU->staging for comparison against a JS brute-force sum.
             webgpuFmmField = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC }); // shared with the adaptive path
             webgpuFmmSortedIndex = webgpuDevice.createBuffer({ size: cap * 4, usage: fmmStorage });
+            // T4 f16-packed state buffer (1 u32 pos + 1 u32 vel per particle).
+            if (webgpuQuantPosVel) webgpuQuantPosVel.destroy();
+            webgpuQuantPosVel = webgpuDevice.createBuffer({ size: cap * 8, usage: fmmStorage });
 
             if (bitsChanged) {
-                for (const b of [webgpuFmmCellCount, webgpuFmmCellCursor, webgpuFmmCellStart, webgpuFmmMoments, webgpuFmmLocals]) {
+                for (const b of [webgpuFmmCellCount, webgpuFmmCellCursor, webgpuFmmCellStart, webgpuFmmMoments, webgpuFmmLocals, webgpuEhKeys, webgpuEhCount, webgpuEhStart, webgpuEhCursor]) {
                     if (b) b.destroy();
                 }
                 const leafCells = 1 << (2 * fmmLeafBits);
                 webgpuFmmCellCount = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
                 webgpuFmmCellCursor = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
                 webgpuFmmCellStart = webgpuDevice.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+                // T3 elastic-hash table: 2 * leafCells slots (load <= 0.5).
+                const ehCells = 2 * leafCells;
+                webgpuEhKeys = webgpuDevice.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+                webgpuEhCount = webgpuDevice.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+                webgpuEhStart = webgpuDevice.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+                webgpuEhCursor = webgpuDevice.createBuffer({ size: ehCells * 4, usage: fmmStorage });
                 // All levels' moments and locals packed into two buffers
                 // (level l occupies its momCellBase/localCellBase range).
                 // Three vec4 slots per cell store five complex CGR88
@@ -3114,6 +3569,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
 
             if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            // T4 4-byte uniform holding the particle count for pack/unpack.
+            if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
             updateWebGPUBufferBytes();
         }
@@ -3125,6 +3582,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             bytes += leafCells * 4 * 3; // cell count/cursor/start
             bytes += fmmTotalMomCells() * 3 * 16 + fmmTotalLocalCells() * 3 * 16;
             bytes += 96; // sim uniform buffer
+            if (webgpuQuantPosVel) bytes += webgpuQuantPosVel.size; // T4 f16-packed state
+            if (webgpuQuantCountBuf) bytes += 4;
+            if (webgpuEhKeys) { // T3 elastic-hash table (4 arrays)
+                bytes += 4 * (2 * leafCells) * 4;
+            }
             if (webgpuFmmParams) bytes += webgpuFmmParams.size; // per-level FMM blocks
             if (webgpuAdaptiveParams) bytes += webgpuAdaptiveParams.size;
             if (adaptiveMetadata) {
@@ -3151,6 +3613,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { binding: 5, resource: { buffer: webgpuFmmSortedIndex } },
                 { binding: 6, resource: { buffer: webgpuFmmCellStart } },
                 { binding: 7, resource: { buffer: webgpuFmmCellCount } },
+                // T3 elastic-hash cell membership (read-only in the main shader).
+                { binding: 8, resource: { buffer: webgpuEhKeys } },
+                { binding: 9, resource: { buffer: webgpuEhCount } },
+                { binding: 10, resource: { buffer: webgpuEhStart } },
             ];
             webgpuBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferA, webgpuPosVelBufferB) });
             webgpuBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferB, webgpuPosVelBufferA) });
@@ -3172,9 +3638,32 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // binding MUST declare it explicitly or offsets are validated
                 // against the whole buffer and out-of-bounds dispatches fail.
                 { binding: 8, resource: { buffer: webgpuFmmParams, size: 256 } },
+                // T3 elastic-hash cell membership (read_write: build passes write).
+                { binding: 9, resource: { buffer: webgpuEhKeys } },
+                { binding: 10, resource: { buffer: webgpuEhCount } },
+                { binding: 11, resource: { buffer: webgpuEhStart } },
+                { binding: 12, resource: { buffer: webgpuEhCursor } },
             ];
             webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferA) });
             webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferB) });
+            // T4 quant pack/unpack bind groups. Pack reads f32 (src) -> packed;
+            // unpack reads packed -> f32 (dst). Both ping-pong with the frame.
+            if (webgpuQuantPipelines.pack && webgpuQuantPackLayout && webgpuQuantPosVel) {
+                const packEntries = (src) => [
+                    { binding: 0, resource: { buffer: src } },
+                    { binding: 1, resource: { buffer: webgpuQuantPosVel } },
+                    { binding: 2, resource: { buffer: webgpuQuantCountBuf } },
+                ];
+                const unpackEntries = (dst) => [
+                    { binding: 0, resource: { buffer: dst } },
+                    { binding: 1, resource: { buffer: webgpuQuantPosVel } },
+                    { binding: 2, resource: { buffer: webgpuQuantCountBuf } },
+                ];
+                webgpuQuantPackBindA = webgpuDevice.createBindGroup({ layout: webgpuQuantPackLayout, entries: packEntries(webgpuPosVelBufferB) });
+                webgpuQuantPackBindB = webgpuDevice.createBindGroup({ layout: webgpuQuantPackLayout, entries: packEntries(webgpuPosVelBufferA) });
+                webgpuQuantUnpackBindA = webgpuDevice.createBindGroup({ layout: webgpuQuantUnpackLayout, entries: unpackEntries(webgpuPosVelBufferA) });
+                webgpuQuantUnpackBindB = webgpuDevice.createBindGroup({ layout: webgpuQuantUnpackLayout, entries: unpackEntries(webgpuPosVelBufferB) });
+            }
             if (webgpuAdaptiveEnabled && webgpuAdaptiveLayout) recreateAdaptiveBindGroups();
         }
 
@@ -3421,7 +3910,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     { color: 'var(--accent-pink)', label: 'High Speed (> 0.08)' }
                 ];
             } else if (colorMode === 1) {
-                title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM & 1€ Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
+                title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
                 items = [
                     { color: 'var(--accent-cyan)', label: 'Near-Field: Direct P2P (Separation / Repulsion)' },
                     { color: 'var(--accent-purple)', label: 'Far-Field: Multipole M2L (Macro Cohesion)' },
@@ -3492,6 +3981,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const stepMs = performance.now() - t0;
             document.getElementById('valComputeTime').innerText = `${stepMs.toFixed(3)} ms`;
 
+            // Live variant-benchmark sample hook: when a bench run is active,
+            // collect per-frame step latency so runLiveBench() can measure
+            // each shader-exposed axis (FMM order, fixed/adaptive, elastic
+            // hash, quantized state) on the real render path.
+            if (liveBenchState && liveBenchState.running) {
+                liveBenchState.samples.push(stepMs);
+                if (liveBenchState.samples.length >= liveBenchState.warmup + liveBenchState.target) {
+                    liveBenchState.running = false;
+                    if (liveBenchState.resolve) liveBenchState.resolve();
+                }
+            }
+
             frameCount++;
             const now = performance.now();
             if (now - lastFpsTime >= 1000) {
@@ -3546,10 +4047,41 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // work stays roughly flat (>= 16 samples/list at 5M keeps the
             // force noise floor comparable to the old visual-quality budget).
             uintView[19] = N <= 500000 ? 128 : Math.max(16, Math.round((128 * 500000) / N));
+            uintView[20] = useElasticHash ? 1 : 0; // T3
+            uintView[21] = useQuantized ? 1 : 0;   // T4 (reserved in-shader; pack/unpack are separate passes)
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 80);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 88);
+            // T4 particle count for pack/unpack dispatch.
+            if (webgpuQuantCountBuf) {
+                const qcnt = new Uint32Array([N]);
+                webgpuDevice.queue.writeBuffer(webgpuQuantCountBuf, 0, qcnt);
+            }
 
             const commandEncoder = webgpuDevice.createCommandEncoder();
+
+            // T4 quantized state: when useQuantized, the particle state lives
+            // in the f16-packed buffer between frames. unpack_state reads it
+            // back into this frame's f32 INPUT buffer before any consumer
+            // (FMM + main compute) runs; pack_state writes the f32 OUTPUT
+            // buffer back to f16 after the main compute pass. On the first
+            // frame after the flag is turned on, pack the current f32 input
+            // once to seed the f16 buffer (quantNeedsInit).
+            if (useQuantized && webgpuQuantPipelines.unpack && webgpuQuantPosVel) {
+                const inputBufIsA = webgpuPingPong === 0;
+                if (quantNeedsInit) {
+                    const initPackPass = commandEncoder.beginComputePass();
+                    initPackPass.setPipeline(webgpuQuantPipelines.pack);
+                    initPackPass.setBindGroup(0, inputBufIsA ? webgpuQuantPackBindB : webgpuQuantPackBindA);
+                    initPackPass.dispatchWorkgroups(Math.ceil(N / 256));
+                    initPackPass.end();
+                    quantNeedsInit = false;
+                }
+                const unpackPass = commandEncoder.beginComputePass();
+                unpackPass.setPipeline(webgpuQuantPipelines.unpack);
+                unpackPass.setBindGroup(0, inputBufIsA ? webgpuQuantUnpackBindA : webgpuQuantUnpackBindB);
+                unpackPass.dispatchWorkgroups(Math.ceil(N / 256));
+                unpackPass.end();
+            }
 
             // CPU-side fallback timing (used when GPU timestamp queries are unavailable)
             const cpuT0Fmm = performance.now();
@@ -3574,27 +4106,42 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     const o = l * 64; // 256 bytes / 4
                     fmmParamU[o + 0] = N; fmmParamU[o + 1] = fmmOrder; fmmParamU[o + 2] = fmmLeafBits; fmmParamU[o + 3] = K;
                     fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
+                    fmmParamU[o + 8] = useElasticHash ? 1 : 0; // T3: route cell lookups through the hash
                     if (l >= 1) localBase += res * res;
                     momBase += res * res;
                 }
                 webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData);
                 const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
+                // T3: eh_* entry points live in webgpuEhPipelines but share
+                // the FMM bind group layout, so the same bind group + dynamic
+                // offset works for both.
                 const runFmmInPass = (pass, name, groups, level = 0) => {
-                    pass.setPipeline(webgpuFmmPipelines[name]);
+                    pass.setPipeline(webgpuFmmPipelines[name] || webgpuEhPipelines[name]);
                     pass.setBindGroup(0, fmmGroup, [level * 256]);
                     pass.dispatchWorkgroups(groups);
                 };
 
-                // Pass 1: FMM Build — clear, counting sort (count/scan/scatter),
-                // leaf P2M, then the M2M chain up to the top level. Dispatches
-                // inside one compute pass are implicitly ordered with memory
-                // visibility in WebGPU.
+                // Pass 1: FMM Build — clear, cell membership, leaf P2M, then
+                // the M2M chain. Cell membership is the counting sort
+                // (count/scan/scatter) by default, or the elastic-hash build
+                // (eh_clear/eh_build/eh_scan/eh_scatter) when useElasticHash
+                // is on — both produce the same sortedIndex contiguous ranges
+                // the consumers read. Dispatches inside one compute pass are
+                // implicitly ordered with memory visibility in WebGPU.
                 const clearThreads = Math.max(leafCells, fmmTotalMomCells() * 3, fmmTotalLocalCells() * 3);
                 const fmmBuildPass = commandEncoder.beginComputePass(tsOpts(0, 1));
                 runFmmInPass(fmmBuildPass, 'clear_cells', Math.ceil(clearThreads / 256));
-                runFmmInPass(fmmBuildPass, 'count_cells', Math.ceil(N / 256));
-                runFmmInPass(fmmBuildPass, 'scan_cells', 1);
-                runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
+                if (useElasticHash) {
+                    const ehCells = 2 * leafCells;
+                    runFmmInPass(fmmBuildPass, 'eh_clear', Math.ceil(ehCells / 256));
+                    runFmmInPass(fmmBuildPass, 'eh_build', Math.ceil(N / 256));
+                    runFmmInPass(fmmBuildPass, 'eh_scan', Math.ceil(ehCells / 256));
+                    runFmmInPass(fmmBuildPass, 'eh_scatter', Math.ceil(N / 256));
+                } else {
+                    runFmmInPass(fmmBuildPass, 'count_cells', Math.ceil(N / 256));
+                    runFmmInPass(fmmBuildPass, 'scan_cells', 1);
+                    runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
+                }
                 runFmmInPass(fmmBuildPass, 'build_moments', Math.ceil(leafCells / 64));
                 for (let l = 1; l <= K; l++) {
                     runFmmInPass(fmmBuildPass, 'm2m_up', Math.ceil((fmmLevelRes(l) ** 2) / 64), l);
@@ -3633,6 +4180,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (FMM_DEBUG && !fmmDebugDone && fmmProbeFrames >= 40) {
                     fmmDebugDone = true;
                     scheduleFmmDebugDump(commandEncoder, N);
+                }
+                // T4/T5 live-bench accuracy column: schedule a far-field
+                // probe readback on demand and resolve with meanRel.
+                if (benchProbeResolve) {
+                    benchProbeFrames++;
+                    if (benchProbeFrames >= 2) {
+                        const r = benchProbeResolve;
+                        benchProbeResolve = null;
+                        benchProbeFrames = 0;
+                        scheduleFmmProbe(commandEncoder, N, r);
+                    }
                 }
             }
 
@@ -3702,6 +4260,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
                 runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256), 0);
                 l2pPass.end();
+                // T4/T5 live-bench accuracy column (adaptive path): same
+                // far-field probe readback as the fixed-grid branch.
+                if (benchProbeResolve) {
+                    benchProbeFrames++;
+                    if (benchProbeFrames >= 2) {
+                        const r = benchProbeResolve;
+                        benchProbeResolve = null;
+                        benchProbeFrames = 0;
+                        scheduleFmmProbe(commandEncoder, N, r);
+                    }
+                }
             }
 
             const cpuT1Fmm = performance.now();
@@ -3714,6 +4283,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const workgroups = Math.ceil(N / 256);
             computePass.dispatchWorkgroups(workgroups);
             computePass.end();
+            // T4 quantized state: pack the f32 OUTPUT buffer back into the
+            // f16 buffer for next frame's unpack. The output buffer is the
+            // one main compute just wrote (pingPong===0 => B, else A).
+            if (useQuantized && webgpuQuantPipelines.pack && webgpuQuantPosVel) {
+                const outputBufIsA = webgpuPingPong !== 0;
+                const packPass = commandEncoder.beginComputePass();
+                packPass.setPipeline(webgpuQuantPipelines.pack);
+                packPass.setBindGroup(0, outputBufIsA ? webgpuQuantPackBindB : webgpuQuantPackBindA);
+                packPass.dispatchWorkgroups(Math.ceil(N / 256));
+                packPass.end();
+            }
             const cpuT1Main = performance.now();
 
             // CPU fallback: if no GPU timestamp queries, use CPU encoding time as rough estimate
@@ -4017,7 +4597,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         const colorModeNames = [
             'Color: Velocity Heatmap',
-            'Color: FMM & 1€ Dynamics',
+            'Color: FMM Dynamics',
             'Color: Scenario Clusters',
             'Color: 1€ Filter Damping'
         ];
@@ -4039,6 +4619,253 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         });
 
         document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
+
+        // ====================================================================
+        // VARIANT BENCHMARK PANEL (live in-browser micro-bench)
+        // Axes (aligned with core/benchmark_kit.py): standard, +fmm,
+        // +adaptivefmm, +elastichash, +quantized_bitpacked. Each row isolates
+        // ONE axis and is measured on the real render path (the same
+        // frameLoop stepMs the sidebar telemetry reports) plus a far-field
+        // accuracy column (reusing the ?probe=1 brute-force compare), so the
+        // numbers are honest per-frame latencies with the accuracy they cost.
+        // The 1euro filter is a boid-only UI toggle, NOT a bench axis. Export
+        // JSON writes the benchmark_kit.VariantBenchmark.save_json() shape so
+        // browser and core numbers can be merged in one table.
+        // ====================================================================
+        const liveBenchState = { running: false, samples: [], warmup: 8, target: 24, resolve: null };
+        // T4/T5 bench accuracy column: when benchProbeResolve is set, the next
+        // eligible galaxy frame schedules a far-field probe readback (reusing
+        // the ?probe=1 machinery) and resolves the promise with meanRel.
+        let benchProbeResolve = null;
+        let benchProbeFrames = 0;
+
+        const benchPanel = document.getElementById('bench-panel');
+        const benchHeader = document.getElementById('bench-header');
+        const benchToggle = document.getElementById('bench-toggle');
+        const benchRunBtn = document.getElementById('bench-run-btn');
+        const benchLiveStatus = document.getElementById('bench-live-status');
+        const benchLiveTbody = document.querySelector('#bench-live-table tbody');
+
+        const benchExportBtn = document.getElementById('bench-export-btn');
+        benchHeader.addEventListener('click', (e) => {
+            // Don't toggle when the run/export buttons (or their children) are clicked.
+            if (e.target.closest('#bench-run-btn')) return;
+            if (e.target.closest('#bench-export-btn')) return;
+            benchPanel.classList.toggle('collapsed');
+            benchToggle.innerHTML = benchPanel.classList.contains('collapsed') ? '&#9650;' : '&#9660;';
+        });
+
+        function median(arr) {
+            const s = arr.slice().sort((a, b) => a - b);
+            const m = s.length >> 1;
+            return s.length % 2 ? s[m] : 0.5 * (s[m - 1] + s[m]);
+        }
+
+        // Apply one axis configuration (returns a restore function).
+        // Bench axes (T1/T2): fmm order, fixed/adaptive, elastic hash,
+        // quantized state. The 1euro filter and P2P radius are NOT bench
+        // axes (1euro is a boid-only UI toggle; radius is noise) and are no
+        // longer applied/restored here.
+        function applyBenchConfig(cfg) {
+            const prev = {
+                fmmOrder, useAdaptiveFmm, webgpuFmmEnabled,
+                useElasticHash, useQuantized,
+                fmmModeSelectVal: document.getElementById('selectFmmMode').value,
+                orderSelectVal: document.getElementById('selectFmmOrder').value,
+            };
+            if (cfg.fmmOrder !== undefined) {
+                fmmOrder = cfg.fmmOrder;
+                const sel = document.getElementById('selectFmmOrder');
+                sel.value = String(cfg.fmmOrder);
+                const labels = { 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' };
+                document.getElementById('valOrder').innerText = labels[fmmOrder] || `p=${fmmOrder}`;
+            }
+            if (cfg.adaptive !== undefined) {
+                const sel = document.getElementById('selectFmmMode');
+                sel.value = cfg.adaptive ? 'adaptive' : 'fixed';
+                // T6: renamed from the shadowing `useAdaptive` to avoid
+                // confusion with the outer useAdaptiveFmm logic.
+                const wantAdaptive = cfg.adaptive;
+                useAdaptiveFmm = wantAdaptive && webgpuAdaptiveEnabled;
+                webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                }
+                updateMemoryTelemetry();
+            }
+            if (cfg.useElasticHash !== undefined) {
+                useElasticHash = !!cfg.useElasticHash && !!webgpuEhPipelines.eh_build;
+            }
+            if (cfg.useQuantized !== undefined) {
+                const enabling = !!cfg.useQuantized && !!webgpuQuantPipelines.pack;
+                if (enabling && !useQuantized) quantNeedsInit = true; // seed f16 buffer once
+                useQuantized = enabling;
+            }
+            return () => {
+                fmmOrder = prev.fmmOrder;
+                useAdaptiveFmm = prev.useAdaptiveFmm;
+                webgpuFmmEnabled = prev.webgpuFmmEnabled;
+                useElasticHash = prev.useElasticHash;
+                useQuantized = prev.useQuantized;
+                document.getElementById('selectFmmMode').value = prev.fmmModeSelectVal;
+                document.getElementById('selectFmmOrder').value = prev.orderSelectVal;
+                document.getElementById('valOrder').innerText = ({ 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' })[fmmOrder] || `p=${fmmOrder}`;
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                }
+                updateMemoryTelemetry();
+            };
+        }
+
+        function waitForFrames() {
+            return new Promise((resolve) => {
+                liveBenchState.samples = [];
+                liveBenchState.running = true;
+                liveBenchState.resolve = resolve;
+            });
+        }
+
+        // T4/T5: far-field accuracy for the bench's accuracy column. Resolves
+        // with meanRel (NaN if the probe path is unavailable on this device or
+        // no valid probe particles). Reuses the ?probe=1 readback machinery.
+        function benchProbeAccuracy() {
+            return new Promise((resolve) => {
+                if (activeBackend !== 'WEBGPU' || !webgpuFmmField) { resolve(NaN); return; }
+                benchProbeFrames = 0;
+                benchProbeResolve = resolve;
+            });
+        }
+
+        async function runLiveBench() {
+            if (liveBenchState.running) return;
+            benchRunBtn.disabled = true;
+            benchExportBtn.disabled = true;
+            benchPanel.classList.remove('collapsed');
+            benchToggle.innerHTML = '&#9660;';
+            benchLiveTbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim);">Running&hellip; (measuring real per-frame step latency + far-field accuracy for each axis)</td></tr>';
+
+            // Baseline = current settings. Variants isolate ONE axis each,
+            // mirroring core/benchmark_kit.py's standard / +axis structure.
+            const baselineCfg = {};
+            const restoreBaseline = applyBenchConfig(baselineCfg);
+            await waitForFrames();
+            const baselineSamples = liveBenchState.samples.slice(liveBenchState.warmup);
+            const baselineMs = baselineSamples.length ? median(baselineSamples) : NaN;
+            restoreBaseline();
+
+            // T1 axis set. Axis names match benchmark_kit.py exactly:
+            // standard, +fmm, +adaptivefmm, +elastichash, +quantized_bitpacked
+            // (suffixes like " p=4" allowed after the axis name). P2P radius
+            // and 1euro are deliberately NOT axes (T2).
+            const variants = [
+                { axis: 'standard', label: 'standard (current settings)', cfg: {}, note: 'baseline for this GPU/scenario' },
+                { axis: '+fmm', label: '+fmm fixed-grid multi-level', cfg: { adaptive: false }, note: 'standard far-field path' },
+                { axis: '+fmm p=0', label: '+fmm p=0 (monopole)', cfg: { fmmOrder: 0 }, note: 'cheapest far-field' },
+                { axis: '+fmm p=1', label: '+fmm p=1 (dipole)', cfg: { fmmOrder: 1 }, note: '' },
+                { axis: '+fmm p=2', label: '+fmm p=2 (quadrupole)', cfg: { fmmOrder: 2 }, note: 'app default' },
+                { axis: '+fmm p=4', label: '+fmm p=4 (hexadecapole)', cfg: { fmmOrder: 4 }, note: 'highest far-field accuracy' },
+                { axis: '+adaptivefmm', label: '+adaptivefmm adaptive CGR88', cfg: { adaptive: true }, note: 'multi-level (if available)' },
+                { axis: '+elastichash', label: '+elastichash', cfg: { useElasticHash: true }, note: 'open-addressing cell membership' },
+                { axis: '+quantized_bitpacked', label: '+quantized_bitpacked', cfg: { useQuantized: true }, note: 'f16-packed state round-trip' },
+            ];
+
+            const rows = [];
+            for (const v of variants) {
+                // +adaptivefmm: report ERROR (not a silent skip) when the
+                // adaptive pipeline is unavailable on this device, matching
+                // benchmark_kit.py's error-row behavior.
+                if (v.cfg.adaptive && !webgpuAdaptiveEnabled) {
+                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'adaptive pipeline unavailable on this device' });
+                    continue;
+                }
+                // +elastichash / +quantized_bitpacked: ERROR if the GPU path
+                // is not exposed on this device.
+                if (v.cfg.useElasticHash && !webgpuEhPipelines.eh_build) {
+                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'elastic-hash GPU path unavailable' });
+                    continue;
+                }
+                if (v.cfg.useQuantized && !webgpuQuantPipelines.pack) {
+                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'quantized GPU path unavailable' });
+                    continue;
+                }
+                benchLiveStatus.innerText = `measuring: ${v.label}`;
+                const restore = applyBenchConfig(v.cfg);
+                await waitForFrames();
+                const samples = liveBenchState.samples.slice(liveBenchState.warmup);
+                const ms = samples.length ? median(samples) : NaN;
+                // Accuracy column (T4): far-field rel error vs brute force,
+                // reusing the ?probe=1 machinery. Only meaningful when the
+                // FMM far field is active (galaxy + fmmEnabled).
+                let accuracy = NaN;
+                if (activeBackend === 'WEBGPU' && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) && scenarioId === 0) {
+                    accuracy = await benchProbeAccuracy();
+                }
+                restore();
+                rows.push({ ...v, ms, accuracy });
+            }
+            benchLiveStatus.innerText = '';
+
+            // Render table.
+            benchLiveTbody.innerHTML = '';
+            for (const r of rows) {
+                const tr = document.createElement('tr');
+                if (r.axis === 'standard') tr.classList.add('benchrow-baseline');
+                if (r.error) {
+                    tr.innerHTML = `<td>${r.label}</td><td class="num">ERROR</td><td class="num">-</td><td class="num">-</td><td style="color:var(--accent-pink);">${r.error}</td>`;
+                    benchLiveTbody.appendChild(tr);
+                    continue;
+                }
+                const ratio = baselineMs && isFinite(r.ms) ? r.ms / baselineMs : NaN;
+                let speedupCls = 'speedup-par';
+                let speedupTxt = '1.0x';
+                if (isFinite(ratio)) {
+                    if (ratio < 0.9) { speedupCls = 'speedup-good'; speedupTxt = `${(1 / ratio).toFixed(2)}x faster`; }
+                    else if (ratio > 1.1) { speedupCls = 'speedup-bad'; speedupTxt = `${ratio.toFixed(2)}x slower`; }
+                    else speedupTxt = `${ratio.toFixed(2)}x (parity)`;
+                }
+                const accTxt = isFinite(r.accuracy) ? r.accuracy.toFixed(4) : 'n/a';
+                tr.innerHTML = `<td>${r.label}</td><td class="num">${isFinite(r.ms) ? r.ms.toFixed(3) : 'n/a'}</td><td class="num ${speedupCls}">${speedupTxt}</td><td class="num">${accTxt}</td><td style="color:var(--text-dim);">${r.note}</td>`;
+                benchLiveTbody.appendChild(tr);
+            }
+            lastBenchRows = rows;
+            benchRunBtn.disabled = false;
+            benchExportBtn.disabled = false;
+        }
+
+        // T5: export the last run as JSON in benchmark_kit.VariantBenchmark.
+        // save_json() shape: {"title", "results": [{variant, time_ms,
+        // accuracy_rel, note}]} so browser numbers merge with core numbers.
+        let lastBenchRows = [];
+        function exportBenchJson() {
+            if (!lastBenchRows.length) return;
+            const results = lastBenchRows.map((r) => {
+                const row = { variant: r.axis, note: r.note };
+                if (r.error) { row.error = r.error; }
+                else {
+                    row.time_ms = isFinite(r.ms) ? +r.ms.toFixed(4) : null;
+                    row.accuracy_rel = isFinite(r.accuracy) ? +r.accuracy.toFixed(6) : null;
+                }
+                return row;
+            });
+            const payload = { title: 'webgpu-index', results };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'webgpu-index-bench.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            // Also stash a copy in localStorage for core/benchmark_kit.py
+            // consumers that read from the browser side.
+            try { localStorage.setItem('webgpu-index-bench', JSON.stringify(payload)); } catch (_) {}
+        }
+
+        benchRunBtn.addEventListener('click', (e) => { e.stopPropagation(); runLiveBench(); });
+        benchExportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportBenchJson(); });
 
         // Launch Engine
         initEngine();

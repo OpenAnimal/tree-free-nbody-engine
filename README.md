@@ -87,14 +87,20 @@ By synthesizing **Optimal Non-Reordering Elastic Open Addressing** with the **Fa
 
 ## Performance & Scaling Benchmarks
 
+This repo runs **two distinct, complementary benchmark protocols**. They answer different questions and are both reported honestly, including "not faster at this scale" results:
+
+1. **Scaling / asymptotic crossover** (this section, `apps/benchmark_suite.py`) — *how does latency grow with $N$, and where does FMM overtake the $O(N^2)$ baselines?* One workload (2D log potential), four backends, swept across $N$.
+2. **Variant protocol** (next section, [`BENCHMARKS.md`](BENCHMARKS.md)) — *what does each influence cost in accuracy vs speed, on a fixed workload?* The repo-wide `core/benchmark_kit.VariantBenchmark` axes `standard / +elastichash / +fmm / +quantized` per domain and per app, each row reporting `rel L2` (or `recall@k` for approximate retrieval) next to its latency. Speed is never shown without the accuracy it costs.
+
 Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized NumPy matrix kernels, JAX JIT compilation, and the Tree-Free FMM pipeline from $N = 100$ to $N = 100,000$ particles:
 
 <p align="center">
   <img src="assets/benchmark_scaling_analysis.png" width="95%" alt="Scaling Benchmark Analysis">
 </p>
 
-### Execution Latency Benchmark Table
+### Scaling / Asymptotic Crossover — Execution Latency by $N$
 
+> **Purpose of this table:** it is a *scaling* benchmark, not the variant protocol. It shows how each backend's latency grows with $N$ and where the $O(N)$ FMM crosses over the $O(N^2)$ baselines (Naive $\to$ NumPy $\to$ JAX $\to$ FMM). It does **not** report per-variant `rel L2` or the `+elastichash / +quantized` axes — those live in the [variant table below](#variant-protocol--what-each-influence-costs) and in [`BENCHMARKS.md`](BENCHMARKS.md). The "Speedup vs NumPy" column answers the crossover question, not the accuracy-cost question.
 
 | Particle Count ($N$) | Naive Python CPU$O(N^2)$ | Vectorized NumPy$O(N^2)$ | JAX JIT Compiled$O(N^2)$ | **Vectorized Tree-Free FMM** **$O(N)$** |  Speedup vs. NumPy Direct  |
 | :--------------------: | :------------------------: | :------------------------: | :------------------------: | :---------------------------------------: | :--------------------------: |
@@ -108,6 +114,28 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 |  **$N = 100,000$**  |   611,307.8 ms (611s)   |   368,908.0 ms (369s)   |        6,125.9 ms        |             **2,884.09 ms**             |     **$127.9\times$**     |
 
 > ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (see `apps/benchmark_suite.py`). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` (vectorized dense binning); the elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engine `TreeFreeElasticAdaptiveFMM` and the GPU kernels.
+
+### Variant Protocol — What Each Influence Costs
+
+The repo-wide `VariantBenchmark` protocol (`core/benchmark_kit.py`) runs the same four axes — `standard` (exact/dense reference), `+elastichash` (elastic-hash `CellIndex` near-field / cluster path), `+fmm` (CGR88 / flat FMM, only where the 2D log kernel applies), `+quantized` (bit-packed variant where one exists) — on every domain folder and every `apps/` case study. Each row reports latency **and** the accuracy it cost (`rel L2` vs the exact reference, or `recall@k` for approximate retrieval / filter broadphases). The `+fmm` axis is omitted with reason where the app's kernel is not the 2D log kernel (3D Yukawa, Gaussian RBF, nearest-point proximity, high-dim cosine). The summary below is a representative slice; the full per-domain and per-app tables with honest "not faster at this scale" takeaways are in [`BENCHMARKS.md`](BENCHMARKS.md).
+
+| Domain / App | Kernel | Variant | Time (ms) | rel L2 / recall | Honest takeaway |
+| :--- | :--- | :--- | ---: | :--- | :--- |
+| Core FMM (2D log, $N{=}2000$) | 2D log potential | `standard` (exact direct) | 41.4 | – | $O(N^2)$ reference |
+| Core FMM | 2D log potential | `+fmm` (CGR88 adaptive) | 845.3 | 1.97e-7 | NOT faster than direct at $N{=}2000$ (Python tree traversal) |
+| Core FMM | 2D log potential | `+fmm` (flat vectorized) | 478.9 | 7.52e-7 | NOT faster than direct at $N{=}2000$ ($K^2$ M2L dominates) |
+| Core FMM | 2D log potential | `+quantized` (32-bit packed) | 40.7 | 3.89e-1 | parity in speed, 39% rel-L2 packed cost |
+| Physics broadphase | 3D AABB overlap | `+elastichash` (CellIndex ring-1) | 211.1 | no missed | **4.0× faster**, zero missed collisions |
+| Graphics AO | 3D inverse-square | `+quantized` (all-cluster) | 19.4 | 2.00e-2 | **5.3× faster**, 2e-2 rel-L2 cost |
+| Graphics AO | 3D inverse-square | `+elastichash` near/far | 894.7 | 8.27e-4 | NOT faster than exact at this scale |
+| Video splat | 3D Gaussian | `+elastichash` (cell-bucketed) | 8.95 | 3.19e-1 | lossy order-0 cluster-mean |
+| Game flocking | 2D boid rules | `+elastichash` (near+far) | 239.1 | 5.9% far residual | NOT faster at $N{=}1000$ (Python loop overhead) |
+| App 1 galaxy | 2D log gravity | `+fmm` (FastVectorizedFMM) | 18.2 | 2.39e-5 | parity with direct at $N{=}500$, sub-1e-4 accuracy |
+| App 5 protein | 3D Debye-Hückel | `+elastichash` (cluster $O(K^2)$) | 21.1 | 5.68e-1 | **15.8× faster**, 57% rel-L2 cluster cost |
+| App 8 manifold | 8D LSH k-NN | `+elastichash` (LSH k-NN graph) | 9.7 | recall@12 = 100% | **26.3× faster**, 100% edge recall |
+| App 9 vector DB | 128D LSH ANN | `+elastichash` (multi-probe) | 23.4 | recall@10 = 0.6% | **2.9× faster**, low recall (fine-grained LSH) |
+
+> ℹ️ **How to reproduce:** every domain folder and every `apps/appN_*` script has a paired `benchmark_variants.py` that runs through `core.benchmark_kit.VariantBenchmark`. Run any of them directly, e.g. `python -X utf8 core/benchmark_variants.py` or `python -X utf8 apps/app1_benchmark_variants.py`. The live WebGL/WebGPU demo (`index.html`) also prints a variant benchmark table below the visualization — a static reference table plus a live in-browser micro-bench that toggles the shader-exposed axes (FMM order, fixed/adaptive, 1€ filter, P2P radius) and measures real per-frame step latency for each.
 
 ---
 
@@ -143,7 +171,7 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 
 ## Application Suite & Domain Case Studies
 
-The `apps/` directory provides ten complete, runnable domain demonstrations:
+The `apps/` directory provides ten complete, runnable domain demonstrations. Each app has a paired `apps/appN_benchmark_variants.py` that runs the repo-wide `VariantBenchmark` protocol (`standard / +elastichash / +fmm / +quantized`) on that app's own kernel, so every app is comparable on the same axes as the domain folders — see [`BENCHMARKS.md`](BENCHMARKS.md) for the verbatim tables.
 
 ### Application 1: Dynamic N-Body Galaxy Collision
 
