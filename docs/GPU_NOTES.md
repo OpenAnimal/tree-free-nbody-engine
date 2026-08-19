@@ -145,3 +145,38 @@ before finding room; mean probes = beta * E[slabs visited] ≈ 9 * 3.7 ≈
 cost materialized as a concrete number at this geometry, not a bug or
 a miscalibration — the Zig and Python implementations agree on it to
 four decimals.
+
+---
+
+## 4. WebGPU demo per-pass timings at 1M and 5M (round-5 browser verification)
+
+Captured 2026-08-19 by driving the live demo (`index.html` served locally)
+in a real browser on the dev machine (WebGPU adapter: nvidia lovelace).
+Values are the sidebar telemetry panel read out verbatim after the sim had
+settled (5M: ~60 frames after preset click; 1M: read shortly after a
+`Set`-triggered rebuild, so its step latency still includes first-frame
+transients — noted below). Default preset parameters: Fixed-Grid 2-Level
+mode, p=2 quadrupole CGR88, P2P radius 0.035, full x9 cell lists.
+
+| Preset | FMM Build | FMM M2L | FMM L2P | Main Compute | Render | Total GPU | FPS  | Buffers | Cell occupancy |
+| ------ | --------- | ------- | ------- | ------------ | ------ | --------- | ---- | ------- | -------------- |
+| 1M     | 7.570 ms  | 0.269 ms | 5.674 ms | 90.563 ms | 1.687 ms | 105.783 ms | 10 | 192 MiB | avg 61.0/cell (128x128) |
+| 5M     | 2.997 ms  | 0.270 ms | 4.221 ms | 59.284 ms | 1.772 ms | 68.565 ms  | 14 | 617 MiB | avg 76.3/cell (256x256) |
+
+5M Extreme Mode block (verbatim): `ACTIVE (WebGPU)`, P2P Budget `6/leaf`,
+Peak Step `126.90 ms`, Avg Step (60-frame rolling) `39.78 ms (n=60)`.
+
+Caveats, stated plainly:
+
+- The 1M row's "Main Compute" (90.6 ms) exceeds the 5M row's (59.3 ms)
+  because the 1M readout was taken within a few frames of the rebuild
+  (cold JIT/warmup transients), while 5M shows a settled rolling state.
+  The honest comparison for steady state is 5M Avg Step 39.78 ms vs 1M
+  single-frame snapshot 105.8 ms total; treat the 1M pass split as
+  transient-contaminated, not a clean scaling point.
+- "Main Compute" (the P2P near-field pass) dominates both profiles
+  (5M: 59.3 of 68.6 ms = 86%); the FMM multipole chain (Build+M2L+L2P =
+  7.5 ms) is a small fraction. Any 5M optimization work should target the
+  P2P pass first — this is the measured evidence for the round-6 priority.
+- "GPU Complete" (~23-33 s) is a cold-start/first-dispatch artifact, not
+  a steady-state number; ignore it.
