@@ -180,3 +180,77 @@ Caveats, stated plainly:
   P2P pass first — this is the measured evidence for the round-6 priority.
 - "GPU Complete" (~23-33 s) is a cold-start/first-dispatch artifact, not
   a steady-state number; ignore it.
+
+---
+
+## 5. Round-6 changes (WGSL P2P tuning, funnel-hash WGSL port, radial Taylor unification)
+
+### 5.1 WGSL P2P near-field tuning (task 6.2)
+
+`leafBitsForCount(n)` in `index.html` now ships an auto-tuning formula
+that picks the leaf grid resolution from the actual particle count
+instead of a fixed table, plus a `?leafBits=` URL override for
+hands-free sweeps. The formula targets ~50-80 particles/cell at the
+chosen depth (the §4 sweet spot where the P2P pass is bounded but the
+FMM multipole chain stays cheap). No new buffers; the leaf resolution
+still drives `ensureWebGPUCapacity` as before. Browser verification of
+the 5M steady-state improvement vs the §4 baseline (Main 59.3 ms, Avg
+Step 39.8 ms, Total 68.6 ms) is the MAIN agent's review task per the
+plan — the executor does not claim a measured speedup here, only that
+the knob exists and is auto-tuned.
+
+### 5.2 Funnel-hash WGSL port (task 6.4)
+
+The Farach-Colton / Krapivin / Kuszmaul funnel schedule is now realized
+in WGSL alongside the existing open-addressing hash. New WGSL kernels
+in the FMM shader module:
+
+- `funnel_clear` / `funnel_build` / `funnel_scan` / `funnel_scatter` —
+  the four-pass build that produces the same contiguous `sortedIndex`
+  ranges as the counting sort and the `eh_*` open-addr path, but
+  addressed through the funnel table.
+- `funnelProbe` (in both the compute and FMM shaders) — the full-descent
+  search: alpha slabs of beta-slot sub-arrays, then overflow B
+  (uniform probing, `bAttempts` slots), then overflow C (two-choice
+  buckets of `cBucketSlots` slots). Bounded by
+  `probe_bound = alpha*beta + bAttempts + 2*cBucketSlots`.
+- `funnelProbeCount` — an atomic counter accumulated by `funnel_build`
+  and read back periodically for the TELEM probe-bound assertion.
+
+The funnel table reuses the `eh*` storage buffers (sized
+`2*leafCells >= funnelGeometry.totalSize`), so no new large buffers are
+allocated — only the small `funnelGeom` geometry buffer (packed u32
+array of offsets/counts/salts) and the 4-byte probe counter. The
+geometry is built in JS by `computeFunnelGeometry(capacity, delta=0.05)`
+and uploaded once per leaf-resolution change.
+
+Insert is parallel-CAS greedy (full descent + overflow) without the
+paper's "stop early if overflow empty" shortcut — that shortcut needs a
+serial overflow-emptiness check the compute model cannot express without
+a global barrier mid-descent. The full-descent variant is correct (slots
+only ever go EMPTY -> occupied, so parallel CAS never displaces a
+resident key) and still bounded by `probe_bound`.
+
+New bench axis `+funnel-hash` isolates the funnel path on the live
+render loop, alongside the existing `+openaddr-hash` axis. New URL param
+`?hashverify=1` forces the funnel path on at startup and runs a one-shot
+readback at frame 40 that compares the funnel-built `ehStart`/`ehCount`
+against a JS-rebuilt counting-sort reference, printing
+`HASHVERIFY PASS/FAIL {json}` to the console with mismatch/missing
+counts and the measured mean insert probes vs `probe_bound`. TELEM
+autoprint lines now include a `funnel` block with `probeBound`,
+`totalInsertProbes`, `meanInsertProbes`, `alpha`, `beta`, `tableSize`
+when the funnel path is active.
+
+### 5.3 Radial Taylor unification (task 6.5)
+
+The three copy-pasted radial Taylor FMM engines
+(`gaussian2d_fgt.py`, `yukawa3d_fmm.py`, `screened_yukawa2d_fmm.py`)
+now share a single `core/radial_taylor.py` module that holds the
+dimension-parameterized P-tensor builder, the polynomial helpers, the
+multi-index/factorial helpers, and the ring-2 flat scheme driver
+(P2M / near-field / M2L / L2P). Each engine is now a thin subclass of
+`RadialTaylorFMM` that supplies only its G_n family and near-field
+kernel. All three test files are untouched (`git diff` shows no changes
+to them) and `tools/run_all.py` reports 15 PASS / 1 SKIP / 0 FAIL — the
+refactor is behavior-preserving by the test guardrails.

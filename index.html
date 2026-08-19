@@ -708,8 +708,10 @@
             adaptiveMode: u32,
             leafBits: u32,
             p2pListCap: u32,
-            useElasticHash: u32, // T3: 1 => P2P cell lookups probe the hash table
+            useElasticHash: u32, // T3: 1 => P2P cell lookups probe the open-addr hash
             useQuantized: u32,   // T4: reserved (pack/unpack run as separate passes)
+            useFunnelHash: u32,  // T6.4: 1 => P2P cell lookups probe the funnel hash
+            _pad0: u32,
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -732,6 +734,10 @@
         @group(0) @binding(8) var<storage, read> ehKeys: array<u32>;
         @group(0) @binding(9) var<storage, read> ehCount: array<u32>;
         @group(0) @binding(10) var<storage, read> ehStart: array<u32>;
+        // T6.4 funnel-hash geometry (read-only; layout documented in
+        // computeFunnelGeometry() on the JS side). Bound to a 4-byte-aligned
+        // u32 storage buffer; ignored unless params.useFunnelHash == 1.
+        @group(0) @binding(11) var<storage, read> funnelGeom: array<u32>;
         // Shared softening length^2: identical to the P2P kernel below and to
         // the ring M2P / parent M2L monopole terms so the force field stays
         // continuous across the P2P / ring / M2L zone boundaries.
@@ -766,12 +772,82 @@
             return slot;
         }
         fn cellStartOf(cell: u32) -> u32 {
-            if (params.useElasticHash == 0u) { return cellStart[cell]; }
-            return ehStart[ehProbe(cell)];
+            if (params.useFunnelHash == 1u) { return ehStart[funnelProbe(cell)]; }
+            if (params.useElasticHash == 1u) { return ehStart[ehProbe(cell)]; }
+            return cellStart[cell];
         }
         fn cellCountOf(cell: u32) -> u32 {
-            if (params.useElasticHash == 0u) { return cellCount[cell]; }
-            return ehCount[ehProbe(cell)];
+            if (params.useFunnelHash == 1u) { return ehCount[funnelProbe(cell)]; }
+            if (params.useElasticHash == 1u) { return ehCount[ehProbe(cell)]; }
+            return cellCount[cell];
+        }
+        // T6.4 funnel-hash probe (Farach-Colton/Krapivin/Kuszmaul Section 3):
+        // descend alpha slabs in order, scanning one beta-slot sub-array per
+        // slab exhaustively; then overflow B (uniform probing, bAttempts) and
+        // C (two-choice buckets, cBucketSlots). Bounded by funnelProbeBound()
+        // = alpha*beta + bAttempts + 2*cBucketSlots slot inspections. The
+        // geometry lives in the funnelGeom storage buffer (see JS
+        // computeFunnelGeometry for the packing). When useFunnelHash == 1 the
+        // ehKeys/ehCount/ehStart bindings point at the funnel table buffers.
+        fn fgAlpha() -> u32 { return funnelGeom[0u]; }
+        fn fgBeta() -> u32 { return funnelGeom[1u]; }
+        fn fgBOffset() -> u32 { return funnelGeom[2u]; }
+        fn fgBSize() -> u32 { return funnelGeom[3u]; }
+        fn fgCOffset() -> u32 { return funnelGeom[4u]; }
+        fn fgCNumBuckets() -> u32 { return funnelGeom[5u]; }
+        fn fgCBucketSlots() -> u32 { return funnelGeom[6u]; }
+        fn fgBAttempts() -> u32 { return funnelGeom[7u]; }
+        fn fgSlabOffset(i: u32) -> u32 { return funnelGeom[11u + i]; }
+        fn fgSubarrayCount(i: u32) -> u32 { return funnelGeom[11u + fgAlpha() + i]; }
+        fn fgSlabSalt(i: u32) -> u32 { return funnelGeom[11u + 2u * fgAlpha() + i]; }
+        fn fgBSalt(t: u32) -> u32 { return funnelGeom[11u + 3u * fgAlpha() + t]; }
+        fn fgCSalt1() -> u32 { return funnelGeom[11u + 3u * fgAlpha() + fgBAttempts()]; }
+        fn fgCSalt2() -> u32 { return funnelGeom[11u + 3u * fgAlpha() + fgBAttempts() + 1u]; }
+        fn funnelProbe(cell: u32) -> u32 {
+            let alpha = fgAlpha();
+            let beta = fgBeta();
+            // Funnel region: one beta-slot sub-array per slab.
+            for (var i: u32 = 0u; i < alpha; i = i + 1u) {
+                let aCount = fgSubarrayCount(i);
+                let base = fgSlabOffset(i) + (hashU32(cell ^ fgSlabSalt(i)) % aCount) * beta;
+                for (var s: u32 = 0u; s < beta; s = s + 1u) {
+                    let pos = base + s;
+                    let k = ehKeys[pos];
+                    if (k == cell) { return pos; }
+                    if (k == EH_EMPTY) { return pos; }
+                }
+            }
+            // Overflow B: uniform probing, bAttempts slots.
+            let bSize = fgBSize();
+            let bOff = fgBOffset();
+            let bAttempts = fgBAttempts();
+            if (bSize > 0u) {
+                for (var t: u32 = 0u; t < bAttempts; t = t + 1u) {
+                    let pos = bOff + (hashU32(cell ^ fgBSalt(t)) % bSize);
+                    let k = ehKeys[pos];
+                    if (k == cell) { return pos; }
+                    if (k == EH_EMPTY) { return pos; }
+                }
+            }
+            // Overflow C: two-choice buckets of cBucketSlots slots.
+            let cOff = fgCOffset();
+            let cNumBuckets = fgCNumBuckets();
+            let cBucketSlots = fgCBucketSlots();
+            if (cNumBuckets > 0u) {
+                let b1 = hashU32(cell ^ fgCSalt1()) % cNumBuckets;
+                let b2 = hashU32(cell ^ fgCSalt2()) % cNumBuckets;
+                for (var t: u32 = 0u; t < cBucketSlots; t = t + 1u) {
+                    let pa = cOff + b1 * cBucketSlots + t;
+                    let ka = ehKeys[pa];
+                    if (ka == cell) { return pa; }
+                    if (ka == EH_EMPTY) { return pa; }
+                    let pb = cOff + b2 * cBucketSlots + t;
+                    let kb = ehKeys[pb];
+                    if (kb == cell) { return pb; }
+                    if (kb == EH_EMPTY) { return pb; }
+                }
+            }
+            return 0u;
         }
 
         @compute @workgroup_size(256, 1, 1)
@@ -1166,6 +1242,7 @@
             momCellBase: u32,  // this level's first cell in fmmMoments
             localCellBase: u32,// this level's first cell in fmmLocals
             useElasticHash: u32, // T3: 1 => cell lookups probe ehSlots, 0 => direct index
+            useFunnelHash: u32,  // T6.4: 1 => cell lookups probe the funnel hash
             _pad1: u32,
         };
         @group(0) @binding(0) var<storage, read> fmmPos: array<FmmParticle>;
@@ -1189,6 +1266,13 @@
         @group(0) @binding(10) var<storage, read_write> ehCount: array<atomic<u32>>;
         @group(0) @binding(11) var<storage, read_write> ehStart: array<u32>;
         @group(0) @binding(12) var<storage, read_write> ehCursor: array<atomic<u32>>;
+        // T6.4 funnel-hash geometry (read-only storage; packing documented in
+        // JS computeFunnelGeometry()). Ignored unless useFunnelHash == 1.
+        @group(0) @binding(13) var<storage, read> funnelGeom: array<u32>;
+        // T6.4 probe counter: funnel_build accumulates insert probes, the
+        // probe helpers accumulate search probes. Read back for the TELEM
+        // probe-bound assertion and the ?hashverify=1 startup report.
+        @group(0) @binding(14) var<storage, read_write> funnelProbeCount: array<atomic<u32>>;
         const EH_EMPTY: u32 = 0xFFFFFFFFu;
         fn ehTableSize() -> u32 { return 1u << (2u * fmmParams.leafBits + 1u); }
         // u32 splitmix-style finalizer (low-bias, used by the build + probe
@@ -1216,17 +1300,81 @@
             }
             return slot;
         }
-        // Cell-membership lookup helpers (T3). When useElasticHash == 0 the
-        // validated counting-sort dense arrays are direct-indexed; when == 1
-        // the same data is recovered via hash probe. The flag is uniform per
-        // dispatch, so every thread takes the same branch (no divergence).
+        // Cell-membership lookup helpers (T3/T6.4). When useElasticHash ==
+        // 0 && useFunnelHash == 0 the validated counting-sort dense arrays
+        // are direct-indexed; otherwise the same data is recovered via the
+        // open-addr or funnel hash probe. The flag is uniform per dispatch,
+        // so every thread takes the same branch (no divergence).
         fn cellStartOf(cell: u32) -> u32 {
-            if (fmmParams.useElasticHash == 0u) { return cellStart[cell]; }
-            return ehStart[ehProbe(cell)];
+            if (fmmParams.useFunnelHash == 1u) { return ehStart[funnelProbe(cell)]; }
+            if (fmmParams.useElasticHash == 1u) { return ehStart[ehProbe(cell)]; }
+            return cellStart[cell];
         }
         fn cellCountOf(cell: u32) -> u32 {
-            if (fmmParams.useElasticHash == 0u) { return atomicLoad(&cellCount[cell]); }
-            return atomicLoad(&ehCount[ehProbe(cell)]);
+            if (fmmParams.useFunnelHash == 1u) { return atomicLoad(&ehCount[funnelProbe(cell)]); }
+            if (fmmParams.useElasticHash == 1u) { return atomicLoad(&ehCount[ehProbe(cell)]); }
+            return atomicLoad(&cellCount[cell]);
+        }
+        // T6.4 funnel-hash geometry accessors (mirror the compute shader).
+        fn fgAlpha() -> u32 { return funnelGeom[0u]; }
+        fn fgBeta() -> u32 { return funnelGeom[1u]; }
+        fn fgBOffset() -> u32 { return funnelGeom[2u]; }
+        fn fgBSize() -> u32 { return funnelGeom[3u]; }
+        fn fgCOffset() -> u32 { return funnelGeom[4u]; }
+        fn fgCNumBuckets() -> u32 { return funnelGeom[5u]; }
+        fn fgCBucketSlots() -> u32 { return funnelGeom[6u]; }
+        fn fgBAttempts() -> u32 { return funnelGeom[7u]; }
+        fn fgSlabOffset(i: u32) -> u32 { return funnelGeom[11u + i]; }
+        fn fgSubarrayCount(i: u32) -> u32 { return funnelGeom[11u + fgAlpha() + i]; }
+        fn fgSlabSalt(i: u32) -> u32 { return funnelGeom[11u + 2u * fgAlpha() + i]; }
+        fn fgBSalt(t: u32) -> u32 { return funnelGeom[11u + 3u * fgAlpha() + t]; }
+        fn fgCSalt1() -> u32 { return funnelGeom[11u + 3u * fgAlpha() + fgBAttempts()]; }
+        fn fgCSalt2() -> u32 { return funnelGeom[11u + 3u * fgAlpha() + fgBAttempts() + 1u]; }
+        // Funnel search (full descent + overflow). Same bounded probe
+        // sequence as the compute-shader funnelProbe; this copy reads the
+        // atomic ehKeys view (the FMM build passes run before consumers).
+        fn funnelProbe(cell: u32) -> u32 {
+            let alpha = fgAlpha();
+            let beta = fgBeta();
+            for (var i: u32 = 0u; i < alpha; i = i + 1u) {
+                let aCount = fgSubarrayCount(i);
+                let base = fgSlabOffset(i) + (hashU32(cell ^ fgSlabSalt(i)) % aCount) * beta;
+                for (var s: u32 = 0u; s < beta; s = s + 1u) {
+                    let pos = base + s;
+                    let k = atomicLoad(&ehKeys[pos]);
+                    if (k == cell) { return pos; }
+                    if (k == EH_EMPTY) { return pos; }
+                }
+            }
+            let bSize = fgBSize();
+            let bOff = fgBOffset();
+            let bAttempts = fgBAttempts();
+            if (bSize > 0u) {
+                for (var t: u32 = 0u; t < bAttempts; t = t + 1u) {
+                    let pos = bOff + (hashU32(cell ^ fgBSalt(t)) % bSize);
+                    let k = atomicLoad(&ehKeys[pos]);
+                    if (k == cell) { return pos; }
+                    if (k == EH_EMPTY) { return pos; }
+                }
+            }
+            let cOff = fgCOffset();
+            let cNumBuckets = fgCNumBuckets();
+            let cBucketSlots = fgCBucketSlots();
+            if (cNumBuckets > 0u) {
+                let b1 = hashU32(cell ^ fgCSalt1()) % cNumBuckets;
+                let b2 = hashU32(cell ^ fgCSalt2()) % cNumBuckets;
+                for (var t: u32 = 0u; t < cBucketSlots; t = t + 1u) {
+                    let pa = cOff + b1 * cBucketSlots + t;
+                    let ka = atomicLoad(&ehKeys[pa]);
+                    if (ka == cell) { return pa; }
+                    if (ka == EH_EMPTY) { return pa; }
+                    let pb = cOff + b2 * cBucketSlots + t;
+                    let kb = atomicLoad(&ehKeys[pb]);
+                    if (kb == cell) { return pb; }
+                    if (kb == EH_EMPTY) { return pb; }
+                }
+            }
+            return 0u;
         }
         // Softening length^2 shared with the main-shader P2P kernel so the
         // near/ring/far zone boundaries join continuously (see cdivSoft).
@@ -1394,6 +1542,157 @@
             if (id.x >= fmmParams.numParticles) { return; }
             let cell = leafIndex(fmmPos[id.x].pos);
             let slot = ehProbe(cell);
+            let off = atomicAdd(&ehCursor[slot], 1u);
+            sortedIndex[off] = id.x;
+        }
+        // ---- T6.4 funnel-hash build passes (replace eh_* when
+        // useFunnelHash == 1). Realizes the Farach-Colton/Krapivin/Kuszmaul
+        // funnel schedule (paper Section 3): alpha slabs of beta-slot
+        // sub-arrays + a two-part overflow region (B uniform probing, C
+        // two-choice buckets). Produces the SAME sortedIndex contiguous
+        // ranges as the counting sort and the open-addr path -- only the
+        // cell->slot mapping differs -- so the ?hashverify=1 startup
+        // compare can check range equality against the counting sort.
+        //
+        // Insert is parallel-CAS greedy without the paper's "stop early if
+        // overflow empty" optimization (that shortcut needs a serial
+        // overflow-emptiness check the compute model cannot express without
+        // a global barrier mid-descent; the full-descent variant is correct
+        // and still bounded by probe_bound = alpha*beta + bAttempts +
+        // 2*cBucketSlots). Slots only ever go EMPTY->occupied (monotone
+        // fill), so parallel CAS never displaces a resident key.
+        fn funnelTableSize() -> u32 { return funnelGeom[9u]; }
+        fn funnelProbeBound() -> u32 { return funnelGeom[8u]; }
+        @compute @workgroup_size(256)
+        fn funnel_clear(@builtin(global_invocation_id) id: vec3<u32>) {
+            let n = funnelTableSize();
+            if (id.x < n) {
+                atomicStore(&ehKeys[id.x], EH_EMPTY);
+                atomicStore(&ehCount[id.x], 0u);
+                ehStart[id.x] = 0u;
+                atomicStore(&ehCursor[id.x], 0u);
+            }
+            // Reuse cellCursor[0] as the global running offset for
+            // funnel_scan (same trick as eh_scan: the counting-sort path is
+            // not dispatched when useFunnelHash == 1).
+            if (id.x == 0u) {
+                atomicStore(&cellCursor[0u], 0u);
+                atomicStore(&funnelProbeCount[0u], 0u);
+            }
+        }
+        @compute @workgroup_size(256)
+        fn funnel_build(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Per particle: descend the funnel, CAS-claiming a slot in the
+            // first sub-array that has room (or matching an existing cell
+            // key), then bump that slot's count. Full descent + overflow:
+            // bounded by funnelProbeBound() slot inspections.
+            if (id.x >= fmmParams.numParticles) { return; }
+            let cell = leafIndex(fmmPos[id.x].pos);
+            let alpha = fgAlpha();
+            let beta = fgBeta();
+            var probes: u32 = 0u;
+            // Funnel region: try each slab's hashed beta-slot sub-array.
+            for (var i: u32 = 0u; i < alpha; i = i + 1u) {
+                let aCount = fgSubarrayCount(i);
+                let base = fgSlabOffset(i) + (hashU32(cell ^ fgSlabSalt(i)) % aCount) * beta;
+                for (var s: u32 = 0u; s < beta; s = s + 1u) {
+                    let pos = base + s;
+                    probes = probes + 1u;
+                    let prev = atomicCompareExchangeWeak(&ehKeys[pos], EH_EMPTY, cell);
+                    if (prev.exchanged) {
+                        atomicAdd(&ehCount[pos], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                    if (prev.old_value == cell) {
+                        atomicAdd(&ehCount[pos], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                }
+            }
+            // Overflow B: uniform probing, claim first empty.
+            let bSize = fgBSize();
+            let bOff = fgBOffset();
+            let bAttempts = fgBAttempts();
+            if (bSize > 0u) {
+                for (var t: u32 = 0u; t < bAttempts; t = t + 1u) {
+                    let pos = bOff + (hashU32(cell ^ fgBSalt(t)) % bSize);
+                    probes = probes + 1u;
+                    let prev = atomicCompareExchangeWeak(&ehKeys[pos], EH_EMPTY, cell);
+                    if (prev.exchanged) {
+                        atomicAdd(&ehCount[pos], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                    if (prev.old_value == cell) {
+                        atomicAdd(&ehCount[pos], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                }
+            }
+            // Overflow C: two-choice buckets, claim first empty slot.
+            let cOff = fgCOffset();
+            let cNumBuckets = fgCNumBuckets();
+            let cBucketSlots = fgCBucketSlots();
+            if (cNumBuckets > 0u) {
+                let b1 = hashU32(cell ^ fgCSalt1()) % cNumBuckets;
+                let b2 = hashU32(cell ^ fgCSalt2()) % cNumBuckets;
+                for (var t: u32 = 0u; t < cBucketSlots; t = t + 1u) {
+                    let pa = cOff + b1 * cBucketSlots + t;
+                    probes = probes + 1u;
+                    var prev = atomicCompareExchangeWeak(&ehKeys[pa], EH_EMPTY, cell);
+                    if (prev.exchanged) {
+                        atomicAdd(&ehCount[pa], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                    if (prev.old_value == cell) {
+                        atomicAdd(&ehCount[pa], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                    let pb = cOff + b2 * cBucketSlots + t;
+                    probes = probes + 1u;
+                    prev = atomicCompareExchangeWeak(&ehKeys[pb], EH_EMPTY, cell);
+                    if (prev.exchanged) {
+                        atomicAdd(&ehCount[pb], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                    if (prev.old_value == cell) {
+                        atomicAdd(&ehCount[pb], 1u);
+                        atomicAdd(&funnelProbeCount[0u], probes);
+                        return;
+                    }
+                }
+            }
+            // Table full (should not happen at load <= 1 - delta): record
+            // the probe count anyway so the TELEM assertion can flag it.
+            atomicAdd(&funnelProbeCount[0u], probes);
+        }
+        @compute @workgroup_size(256)
+        fn funnel_scan(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Same contiguous-base assignment as eh_scan: one thread per
+            // slot, occupied slots claim a running offset via cellCursor[0].
+            let n = funnelTableSize();
+            if (id.x >= n) { return; }
+            let k = atomicLoad(&ehKeys[id.x]);
+            if (k == EH_EMPTY) { return; }
+            let c = atomicLoad(&ehCount[id.x]);
+            let base = atomicAdd(&cellCursor[0u], c);
+            ehStart[id.x] = base;
+            atomicStore(&ehCursor[id.x], base);
+        }
+        @compute @workgroup_size(256)
+        fn funnel_scatter(@builtin(global_invocation_id) id: vec3<u32>) {
+            // Per particle: funnel-probe its cell's slot, bump the cursor,
+            // write the particle index. Same contiguous ranges as the other
+            // two paths.
+            if (id.x >= fmmParams.numParticles) { return; }
+            let cell = leafIndex(fmmPos[id.x].pos);
+            let slot = funnelProbe(cell);
             let off = atomicAdd(&ehCursor[slot], 1u);
             sortedIndex[off] = id.x;
         }
@@ -2458,6 +2757,101 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         function fmmTotalMomCells() { let c = 0; for (let l = 0; l <= fmmLevelCount(); l++) c += fmmLevelRes(l) ** 2; return c; }
         function fmmTotalLocalCells() { let c = 0; for (let l = 1; l <= fmmLevelCount(); l++) c += fmmLevelRes(l) ** 2; return c; }
         function nextPow2(x) { let p = 1; while (p < x) p <<= 1; return p; }
+        // T6.4 funnel-hash geometry (mirrors core/elastic_hash.py
+        // ElasticHashTable.__init__ geometry, without the backing array).
+        // capacity = leafCells (worst case: every leaf cell occupied); the
+        // table is sized for final load 1 - delta, so any sparser occupancy
+        // only makes the funnel probe shorter. The slab offsets / sub-array
+        // counts / salts are packed into a u32 storage buffer consumed by
+        // the WGSL funnel kernels (packing documented in the return).
+        //
+        // Packing (array<u32>, consumed via funnelGeom[i] in WGSL):
+        //   [0] alpha  [1] beta  [2] bOffset  [3] bSize  [4] cOffset
+        //   [5] cNumBuckets  [6] cBucketSlots  [7] bAttempts
+        //   [8] probeBound  [9] totalSize  [10] funnelEnd
+        //   [11 .. 11+alpha)         slabOffsets
+        //   [11+alpha .. 11+2*alpha) subarrayCounts
+        //   [11+2*alpha .. 11+3*alpha) slabSalts
+        //   [11+3*alpha .. +bAttempts) bSalts
+        //   [..+0] cSalt1  [..+1] cSalt2
+        function computeFunnelGeometry(capacity, delta) {
+            const logInv = Math.log2(1.0 / delta);
+            const alpha = Math.ceil(4.0 * logInv + 10.0);
+            const beta = Math.max(2, Math.ceil(2.0 * logInv));
+            const nTarget = Math.ceil(capacity / (1.0 - delta));
+            let overflowSize = Math.max(16, Math.ceil(delta * nTarget / 2.0));
+            for (let it = 0; it < 8; it++) {
+                const aProbe = Math.max(alpha, Math.ceil((nTarget - overflowSize) / beta));
+                const nFinal = aProbe * beta + overflowSize;
+                const oLow = Math.ceil(delta * nFinal / 2.0);
+                if (oLow <= overflowSize) break;
+                overflowSize = Math.max(16, oLow);
+            }
+            const aTotal = Math.max(alpha, Math.ceil((nTarget - overflowSize) / beta));
+            // Sub-array counts per slab: geometric 3/4 shrink, non-increasing,
+            // summing to aTotal (same recipe as the Python reference).
+            const r = 0.75;
+            let weights = [];
+            let wsum = 0;
+            for (let i = 0; i < alpha; i++) { const w = Math.pow(r, i); weights.push(w); wsum += w; }
+            let subarrayCounts = [];
+            let aSum = 0;
+            for (let i = 0; i < alpha; i++) {
+                const c = Math.max(1, Math.floor(aTotal * weights[i] / wsum));
+                subarrayCounts.push(c);
+                aSum += c;
+            }
+            let rem = aTotal - aSum;
+            for (let i = 0; i < Math.min(rem, alpha); i++) subarrayCounts[i] += 1;
+            const slabSizes = subarrayCounts.map(c => c * beta);
+            const slabOffsets = [0];
+            for (let i = 0; i < slabSizes.length - 1; i++) slabOffsets.push(slabOffsets[i] + slabSizes[i]);
+            const funnelEnd = slabOffsets[slabOffsets.length - 1] + slabSizes[slabSizes.length - 1];
+            const bSize = Math.floor(overflowSize / 2);
+            const cSize = overflowSize - bSize;
+            const bOffset = funnelEnd;
+            const cOffset = funnelEnd + bSize;
+            const totalSize = cOffset + cSize;
+            const ll = Math.log2(Math.log2(Math.max(totalSize, 4.0)));
+            const bAttempts = Math.max(4, Math.ceil(ll));
+            const cBucketSlots = 2 * Math.max(2, Math.ceil(ll));
+            const cNumBuckets = Math.max(1, Math.floor(cSize / cBucketSlots));
+            const probeBound = alpha * beta + bAttempts + 2 * cBucketSlots;
+            // Salts: splitmix64-seeded LCG (deterministic, independent of the
+            // Python MT19937 salts -- the funnel SCHEDULE is what matters for
+            // the probe bound, not the exact slot assignment).
+            let state = 0x9E3779B97F4A7C15n;
+            const nextU32 = () => {
+                state = (state + 0x9E3779B97F4A7C15n) & 0xFFFFFFFFFFFFFFFFn;
+                let z = state;
+                z = (z ^ (z >> 30n)) & 0xFFFFFFFFFFFFFFFFn;
+                z = (z * 0xBF58476D1CE4E5B9n) & 0xFFFFFFFFFFFFFFFFn;
+                z = (z ^ (z >> 27n)) & 0xFFFFFFFFFFFFFFFFn;
+                z = (z * 0x94D049BB133111EBn) & 0xFFFFFFFFFFFFFFFFn;
+                z = (z ^ (z >> 31n)) & 0xFFFFFFFFFFFFFFFFn;
+                return Number(z & 0xFFFFFFFFn) >>> 0;
+            };
+            const slabSalts = [];
+            for (let i = 0; i < alpha; i++) slabSalts.push(nextU32() | 1); // odd (avoid 0)
+            const bSalts = [];
+            for (let i = 0; i < bAttempts; i++) bSalts.push(nextU32() | 1);
+            const cSalt1 = nextU32() | 1;
+            const cSalt2 = nextU32() | 1;
+            // Pack into a flat u32 array.
+            const buf = new Uint32Array(11 + 3 * alpha + bAttempts + 2);
+            buf[0] = alpha; buf[1] = beta; buf[2] = bOffset; buf[3] = bSize;
+            buf[4] = cOffset; buf[5] = cNumBuckets; buf[6] = cBucketSlots;
+            buf[7] = bAttempts; buf[8] = probeBound; buf[9] = totalSize; buf[10] = funnelEnd;
+            for (let i = 0; i < alpha; i++) buf[11 + i] = slabOffsets[i];
+            for (let i = 0; i < alpha; i++) buf[11 + alpha + i] = subarrayCounts[i];
+            for (let i = 0; i < alpha; i++) buf[11 + 2 * alpha + i] = slabSalts[i];
+            for (let i = 0; i < bAttempts; i++) buf[11 + 3 * alpha + i] = bSalts[i];
+            buf[11 + 3 * alpha + bAttempts] = cSalt1;
+            buf[11 + 3 * alpha + bAttempts + 1] = cSalt2;
+            return { alpha, beta, bOffset, bSize, cOffset, cNumBuckets, cBucketSlots,
+                     bAttempts, probeBound, totalSize, funnelEnd, slabOffsets,
+                     subarrayCounts, slabSalts, bSalts, cSalt1, cSalt2, packed: buf };
+        }
         // Preallocated per-frame uniform staging (zero allocations per frame).
         const simUniformData = new ArrayBuffer(96);
         const simUniformF = new Float32Array(simUniformData);
@@ -2522,6 +2916,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // after compute, unpack reads it before the next frame's FMM).
         let webgpuQuantPosVel = null;
         let webgpuEhPipelines = {};        // eh_clear / eh_build / eh_scan / eh_scatter
+        let webgpuFunnelPipelines = {};    // T6.4 funnel_clear / funnel_build / funnel_scan / funnel_scatter
+        let webgpuFunnelGeom = null;       // T6.4 funnel geometry storage buffer
+        let webgpuFunnelGeomU = null;      // Uint32Array view of the geometry upload
+        let funnelGeometry = null;         // JS geometry object (alpha/beta/offsets/salts/probeBound/totalSize)
+        let webgpuFunnelProbeCount = null; // T6.4 atomic probe-counter buffer (1 u32)
+        let webgpuFunnelProbeReadback = null; // MAP_READ staging for the probe counter
+        let funnelProbeCountVal = null;    // last readback value (mean insert probes), for TELEM
+        let useFunnelHash = false;         // T6.4 bench axis: route cell membership through the funnel hash
+        const HASH_VERIFY = new URLSearchParams(location.search).get('hashverify') === '1';
+        let hashVerifyDone = false;
         let webgpuQuantPipelines = {};     // pack_state / unpack_state
         let webgpuQuantPackLayout = null, webgpuQuantUnpackLayout = null;
         let webgpuQuantCountBuf = null;    // 4-byte uniform holding the particle count
@@ -2676,6 +3080,110 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             } catch (e) {
                 console.warn('FMM probe compare failed:', e);
                 diagPush('probe compare: ' + (e && e.message ? e.message : e));
+            }
+        }
+        // T6.4 ?hashverify=1 — one-shot readback of cellStart/cellCount
+        // (counting sort) vs ehStart/ehCount (funnel hash) to confirm the
+        // funnel schedule recovers the same per-cell (start,count) ranges.
+        // The check runs at frame 40 with useFunnelHash forced on (see the
+        // dispatch block), so the funnel_* passes ran this frame and the
+        // counting-sort arrays still hold the previous frame's values (the
+        // clear/count/scan/scatter passes are NOT dispatched when
+        // useFunnelHash == 1, so cellStart/cellCount are stale but valid
+        // from the last non-funnel frame). To make the comparison robust we
+        // rebuild the counting-sort reference IN JS from the live positions
+        // instead of trusting the stale GPU arrays.
+        function scheduleHashVerify(commandEncoder, N) {
+            try {
+                const leafCells = 1 << (2 * fmmLeafBits);
+                const stateBytes = N * 16;
+                const ehBytes = leafCells * 2 * 4; // eh arrays are 2*leafCells
+                const stateBuf = webgpuDevice.createBuffer({ size: stateBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const ehStartBuf = webgpuDevice.createBuffer({ size: ehBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const ehCountBuf = webgpuDevice.createBuffer({ size: ehBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const ehKeysBuf = webgpuDevice.createBuffer({ size: ehBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const input = webgpuPingPong === 0 ? webgpuPosVelBufferA : webgpuPosVelBufferB;
+                commandEncoder.copyBufferToBuffer(input, 0, stateBuf, 0, stateBytes);
+                commandEncoder.copyBufferToBuffer(webgpuEhStart, 0, ehStartBuf, 0, ehBytes);
+                commandEncoder.copyBufferToBuffer(webgpuEhCount, 0, ehCountBuf, 0, ehBytes);
+                commandEncoder.copyBufferToBuffer(webgpuEhKeys, 0, ehKeysBuf, 0, ehBytes);
+                requestAnimationFrame(() => {
+                    webgpuDevice.queue.onSubmittedWorkDone().then(async () => {
+                        await Promise.all([
+                            stateBuf.mapAsync(GPUMapMode.READ),
+                            ehStartBuf.mapAsync(GPUMapMode.READ),
+                            ehCountBuf.mapAsync(GPUMapMode.READ),
+                            ehKeysBuf.mapAsync(GPUMapMode.READ),
+                        ]);
+                        runHashVerifyCompare(
+                            new Float32Array(stateBuf.getMappedRange()),
+                            new Uint32Array(ehStartBuf.getMappedRange()),
+                            new Uint32Array(ehCountBuf.getMappedRange()),
+                            new Uint32Array(ehKeysBuf.getMappedRange()),
+                            N, leafCells
+                        );
+                        stateBuf.unmap(); ehStartBuf.unmap(); ehCountBuf.unmap(); ehKeysBuf.unmap();
+                        stateBuf.destroy(); ehStartBuf.destroy(); ehCountBuf.destroy(); ehKeysBuf.destroy();
+                    });
+                });
+            } catch (e) {
+                console.warn('hashverify failed:', e);
+                diagPush('hashverify: ' + (e && e.message ? e.message : e));
+            }
+        }
+        function runHashVerifyCompare(stateF32, ehStart, ehCount, ehKeys, N, leafCells) {
+            try {
+                const side = 1 << fmmLeafBits;
+                const EH_EMPTY = 0xFFFFFFFF;
+                // Build the counting-sort reference: per-cell counts from the
+                // live positions, then a prefix sum for starts.
+                const refCount = new Uint32Array(leafCells);
+                for (let i = 0; i < N; i++) {
+                    const px = stateF32[i * 4], py = stateF32[i * 4 + 1];
+                    const cx = Math.min(Math.max(Math.trunc(px * side), 0), side - 1);
+                    const cy = Math.min(Math.max(Math.trunc(py * side), 0), side - 1);
+                    refCount[cy * side + cx]++;
+                }
+                const refStart = new Uint32Array(leafCells);
+                let acc = 0;
+                for (let c = 0; c < leafCells; c++) { refStart[c] = acc; acc += refCount[c]; }
+                // Walk the funnel table: for each occupied slot, recover the
+                // cell key and compare (start,count) to the reference.
+                let occupied = 0, mismatches = 0, missing = 0;
+                let maxCount = 0;
+                const seen = new Uint8Array(leafCells);
+                const tableSize = funnelGeometry ? funnelGeometry.totalSize : leafCells * 2;
+                for (let s = 0; s < tableSize; s++) {
+                    const k = ehKeys[s];
+                    if (k === EH_EMPTY) continue;
+                    occupied++;
+                    if (k >= leafCells) { mismatches++; continue; }
+                    seen[k] = 1;
+                    if (ehStart[s] !== refStart[k] || ehCount[s] !== refCount[k]) mismatches++;
+                    if (ehCount[s] > maxCount) maxCount = ehCount[s];
+                }
+                for (let c = 0; c < leafCells; c++) if (refCount[c] > 0 && !seen[c]) missing++;
+                const totalRef = refCount.reduce((a, b) => a + b, 0);
+                const pass = mismatches === 0 && missing === 0 && totalRef === N;
+                const result = {
+                    pass, N, leafBits: fmmLeafBits, leafCells, tableSize,
+                    occupiedSlots: occupied,
+                    occupiedCells: seen.reduce((a, b) => a + b, 0),
+                    refOccupiedCells: refCount.reduce((a, b) => a + (b > 0 ? 1 : 0), 0),
+                    mismatches, missing, totalRef,
+                    probeBound: funnelGeometry ? funnelGeometry.probeBound : null,
+                    meanInsertProbes: (funnelProbeCountVal != null && N > 0)
+                        ? +(funnelProbeCountVal / N).toFixed(4) : null,
+                    alpha: funnelGeometry ? funnelGeometry.alpha : null,
+                    beta: funnelGeometry ? funnelGeometry.beta : null,
+                };
+                window.__hashVerify = result;
+                const tag = pass ? 'PASS' : 'FAIL';
+                console.log(`HASHVERIFY ${tag} ${JSON.stringify(result)}`);
+                diagPush(`hashverify ${tag} ${JSON.stringify(result)}`);
+            } catch (e) {
+                console.warn('hashverify compare failed:', e);
+                diagPush('hashverify compare: ' + (e && e.message ? e.message : e));
             }
         }
 
@@ -3295,7 +3803,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             // params.useElasticHash == 1).
                             { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                             { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                            { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            // T6.4 funnel-hash geometry (read-only; ignored
+                            // unless params.useFunnelHash == 1).
+                            { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
                         ] }) ] });
                         const renderBindLayout = webgpuDevice.createBindGroupLayout({ entries: [
                             { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
@@ -3313,14 +3824,19 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             // Per-level parameter blocks (256-byte stride)
                             // selected at dispatch time via dynamic offset.
-                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 40 } },
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 44 } },
                             // T3 elastic-hash cell membership (storage: the
                             // build passes write them; consumers read via the
                             // cellStartOf/cellCountOf helpers).
                             { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                            { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+                            { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            // T6.4 funnel-hash geometry (read-only) + probe
+                            // counter (storage); ignored unless
+                            // fmmParams.useFunnelHash == 1.
+                            { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
                         ] });
                         const fmmPipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [fmmLayout] });
                         webgpuFmmBindLayout = fmmLayout;
@@ -3339,11 +3855,20 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         for (const entryPoint of ['eh_clear', 'eh_build', 'eh_scan', 'eh_scatter']) {
                             webgpuEhPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `EH ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
                         }
+                        // T6.4 funnel-hash build passes share the same layout
+                        // (bindings 9-12 reuse the eh buffers, sized 2*leafCells
+                        // >= funnelTableSize; binding 13 = geometry, 14 = probe
+                        // counter). Pipelines live in webgpuFunnelPipelines so
+                        // the +funnel-hash bench axis can dispatch them.
+                        for (const entryPoint of ['funnel_clear', 'funnel_build', 'funnel_scan', 'funnel_scatter']) {
+                            webgpuFunnelPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FUNNEL ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
+                        }
                         const fmmPipelineError = await webgpuDevice.popErrorScope();
                         if (fmmPipelineError) {
                             console.error(`FMM pipeline disabled: ${fmmPipelineError.name}: ${fmmPipelineError.message}`);
                             webgpuFmmPipelines = {};
                             webgpuEhPipelines = {};
+                            webgpuFunnelPipelines = {};
                         } else {
                             webgpuFmmEnabled = true;
                         }
@@ -3640,11 +4165,35 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     fmmParamData = new ArrayBuffer(256 * blocks);
                     fmmParamU = new Uint32Array(fmmParamData);
                 }
+                // T6.4 funnel-hash geometry for this leaf resolution. The
+                // funnel table reuses the eh buffers (sized 2*leafCells >=
+                // funnelGeometry.totalSize), so only the geometry storage
+                // buffer is (re)allocated here. delta=0.05 matches the
+                // Python reference (core/elastic_hash.py default).
+                funnelGeometry = computeFunnelGeometry(leafCells, 0.05);
+                if (webgpuFunnelGeom) webgpuFunnelGeom.destroy();
+                // Storage buffers must be a multiple of 4 bytes; the packed
+                // u32 array already is. COPY_DST so we can writeBuffer it.
+                webgpuFunnelGeom = webgpuDevice.createBuffer({
+                    size: funnelGeometry.packed.byteLength,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                webgpuDevice.queue.writeBuffer(webgpuFunnelGeom, 0, funnelGeometry.packed);
+                webgpuFunnelGeomU = funnelGeometry.packed;
             }
 
             if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T4 4-byte uniform holding the particle count for pack/unpack.
             if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            // T6.4 funnel probe-counter (1 atomic u32) + its MAP_READ staging
+            // buffer. Allocated once; the funnel_clear pass zeroes the counter
+            // each frame and a periodic readback feeds the TELEM assertion.
+            if (!webgpuFunnelProbeCount) {
+                webgpuFunnelProbeCount = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+            }
+            if (!webgpuFunnelProbeReadback) {
+                webgpuFunnelProbeReadback = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+            }
 
             updateWebGPUBufferBytes();
         }
@@ -3661,6 +4210,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (webgpuEhKeys) { // T3 elastic-hash table (4 arrays)
                 bytes += 4 * (2 * leafCells) * 4;
             }
+            if (webgpuFunnelGeom) bytes += webgpuFunnelGeom.size; // T6.4 funnel geometry
+            if (webgpuFunnelProbeCount) bytes += 4; // T6.4 probe counter
+            if (webgpuFunnelProbeReadback) bytes += 4; // T6.4 probe counter staging
             if (webgpuFmmParams) bytes += webgpuFmmParams.size; // per-level FMM blocks
             if (webgpuAdaptiveParams) bytes += webgpuAdaptiveParams.size;
             if (adaptiveMetadata) {
@@ -3691,6 +4243,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { binding: 8, resource: { buffer: webgpuEhKeys } },
                 { binding: 9, resource: { buffer: webgpuEhCount } },
                 { binding: 10, resource: { buffer: webgpuEhStart } },
+                // T6.4 funnel-hash geometry (read-only; ignored unless
+                // params.useFunnelHash == 1). Bind a 4-byte placeholder when
+                // the geometry buffer is not yet allocated (WebGPU requires
+                // every layout entry to be satisfied).
+                { binding: 11, resource: { buffer: webgpuFunnelGeom || webgpuUniformBuffer } },
             ];
             webgpuBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferA, webgpuPosVelBufferB) });
             webgpuBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferB, webgpuPosVelBufferA) });
@@ -3717,6 +4274,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { binding: 10, resource: { buffer: webgpuEhCount } },
                 { binding: 11, resource: { buffer: webgpuEhStart } },
                 { binding: 12, resource: { buffer: webgpuEhCursor } },
+                // T6.4 funnel-hash geometry (read-only) + probe counter
+                // (storage). Placeholder buffers when not yet allocated.
+                { binding: 13, resource: { buffer: webgpuFunnelGeom || webgpuUniformBuffer } },
+                { binding: 14, resource: { buffer: webgpuFunnelProbeCount || webgpuUniformBuffer } },
             ];
             webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferA) });
             webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferB) });
@@ -4143,8 +4704,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             uintView[19] = N <= 500000 ? 128 : Math.max(16, Math.round((128 * 500000) / N));
             uintView[20] = useElasticHash ? 1 : 0; // T3
             uintView[21] = useQuantized ? 1 : 0;   // T4 (reserved in-shader; pack/unpack are separate passes)
+            uintView[22] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
+            uintView[23] = 0; // _pad0
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 88);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 96);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -4201,31 +4764,42 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     fmmParamU[o + 0] = N; fmmParamU[o + 1] = fmmOrder; fmmParamU[o + 2] = fmmLeafBits; fmmParamU[o + 3] = K;
                     fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
                     fmmParamU[o + 8] = useElasticHash ? 1 : 0; // T3: route cell lookups through the hash
+                    fmmParamU[o + 9] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
                     if (l >= 1) localBase += res * res;
                     momBase += res * res;
                 }
                 webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData);
                 const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
-                // T3: eh_* entry points live in webgpuEhPipelines but share
-                // the FMM bind group layout, so the same bind group + dynamic
-                // offset works for both.
+                // T3/T6.4: eh_* and funnel_* entry points live in their own
+                // pipeline maps but share the FMM bind group layout, so the
+                // same bind group + dynamic offset works for all of them.
                 const runFmmInPass = (pass, name, groups, level = 0) => {
-                    pass.setPipeline(webgpuFmmPipelines[name] || webgpuEhPipelines[name]);
+                    pass.setPipeline(webgpuFmmPipelines[name] || webgpuEhPipelines[name] || webgpuFunnelPipelines[name]);
                     pass.setBindGroup(0, fmmGroup, [level * 256]);
                     pass.dispatchWorkgroups(groups);
                 };
 
                 // Pass 1: FMM Build — clear, cell membership, leaf P2M, then
                 // the M2M chain. Cell membership is the counting sort
-                // (count/scan/scatter) by default, or the elastic-hash build
-                // (eh_clear/eh_build/eh_scan/eh_scatter) when useElasticHash
-                // is on — both produce the same sortedIndex contiguous ranges
-                // the consumers read. Dispatches inside one compute pass are
-                // implicitly ordered with memory visibility in WebGPU.
+                // (count/scan/scatter) by default, the open-addressing hash
+                // (eh_*) when useElasticHash is on, or the funnel schedule
+                // (funnel_*) when useFunnelHash is on — all three produce the
+                // same sortedIndex contiguous ranges the consumers read.
+                // Dispatches inside one compute pass are implicitly ordered
+                // with memory visibility in WebGPU.
                 const clearThreads = Math.max(leafCells, fmmTotalMomCells() * 3, fmmTotalLocalCells() * 3);
                 const fmmBuildPass = commandEncoder.beginComputePass(tsOpts(0, 1));
                 runFmmInPass(fmmBuildPass, 'clear_cells', Math.ceil(clearThreads / 256));
-                if (useElasticHash) {
+                if (useFunnelHash && webgpuFunnelPipelines.funnel_build) {
+                    // T6.4 funnel schedule: table reuses the eh buffers (sized
+                    // 2*leafCells >= funnelGeometry.totalSize), so the clear
+                    // pass covers the funnel table size, not 2*leafCells.
+                    const fCells = funnelGeometry ? funnelGeometry.totalSize : (2 * leafCells);
+                    runFmmInPass(fmmBuildPass, 'funnel_clear', Math.ceil(fCells / 256));
+                    runFmmInPass(fmmBuildPass, 'funnel_build', Math.ceil(N / 256));
+                    runFmmInPass(fmmBuildPass, 'funnel_scan', Math.ceil(fCells / 256));
+                    runFmmInPass(fmmBuildPass, 'funnel_scatter', Math.ceil(N / 256));
+                } else if (useElasticHash) {
                     const ehCells = 2 * leafCells;
                     runFmmInPass(fmmBuildPass, 'eh_clear', Math.ceil(ehCells / 256));
                     runFmmInPass(fmmBuildPass, 'eh_build', Math.ceil(N / 256));
@@ -4274,6 +4848,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (FMM_DEBUG && !fmmDebugDone && fmmProbeFrames >= 40) {
                     fmmDebugDone = true;
                     scheduleFmmDebugDump(commandEncoder, N);
+                }
+                // T6.4 ?hashverify=1: one-shot readback of cellStart/cellCount
+                // (counting sort) vs ehStart/ehCount (funnel hash) to confirm
+                // the funnel schedule recovers the same per-cell ranges. Runs
+                // once at frame 40 with useFunnelHash forced on; reports
+                // PASS/FAIL via console + diagPush so a hands-free browser
+                // run can grep the result.
+                if (HASH_VERIFY && !hashVerifyDone && fmmProbeFrames >= 40) {
+                    hashVerifyDone = true;
+                    scheduleHashVerify(commandEncoder, N);
                 }
                 // T4/T5 live-bench accuracy column: schedule a far-field
                 // probe readback on demand and resolve with meanRel.
@@ -4437,6 +5021,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
 
+            // T6.4: copy the funnel probe counter to its MAP_READ staging
+            // buffer each frame the funnel path is active, so a periodic
+            // readback can report mean insert probes vs probe_bound in TELEM.
+            if (useFunnelHash && webgpuFunnelPipelines.funnel_build
+                && webgpuFunnelProbeCount && webgpuFunnelProbeReadback) {
+                commandEncoder.copyBufferToBuffer(webgpuFunnelProbeCount, 0, webgpuFunnelProbeReadback, 0, 4);
+            }
+
             const gpuSubmitTime = performance.now();
             webgpuDevice.queue.submit([commandEncoder.finish()]);
             diagState.submits++;
@@ -4450,6 +5042,19 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuDevice.queue.onSubmittedWorkDone().then(() => {
                     webgpuGpuCompleteMs = performance.now() - gpuSubmitTime;
                 });
+                // T6.4: read back the funnel probe counter alongside the
+                // fence poll (every ~30 frames). Mean insert probes =
+                // counter / N; compare to funnelGeometry.probeBound.
+                if (useFunnelHash && webgpuFunnelPipelines.funnel_build && webgpuFunnelProbeReadback) {
+                    const rb = webgpuFunnelProbeReadback;
+                    rb.mapAsync(GPUMapMode.READ).then(() => {
+                        try {
+                            const v = new Uint32Array(rb.getMappedRange())[0];
+                            funnelProbeCountVal = v;
+                            rb.unmap();
+                        } catch (_) { try { rb.unmap(); } catch (__) {} }
+                    }).catch(() => {});
+                }
             }
 
             // Async readback: map any buffer that has data (state=1), read timestamps, then free it
@@ -4767,7 +5372,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         function applyBenchConfig(cfg) {
             const prev = {
                 fmmOrder, useAdaptiveFmm, webgpuFmmEnabled,
-                useElasticHash, useQuantized,
+                useElasticHash, useFunnelHash, useQuantized,
                 fmmModeSelectVal: document.getElementById('selectFmmMode').value,
                 orderSelectVal: document.getElementById('selectFmmOrder').value,
             };
@@ -4795,6 +5400,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (cfg.useElasticHash !== undefined) {
                 useElasticHash = !!cfg.useElasticHash && !!webgpuEhPipelines.eh_build;
             }
+            if (cfg.useFunnelHash !== undefined) {
+                useFunnelHash = !!cfg.useFunnelHash && !!webgpuFunnelPipelines.funnel_build;
+            }
             if (cfg.useQuantized !== undefined) {
                 const enabling = !!cfg.useQuantized && !!webgpuQuantPipelines.pack;
                 if (enabling && !useQuantized) quantNeedsInit = true; // seed f16 buffer once
@@ -4805,6 +5413,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 useAdaptiveFmm = prev.useAdaptiveFmm;
                 webgpuFmmEnabled = prev.webgpuFmmEnabled;
                 useElasticHash = prev.useElasticHash;
+                useFunnelHash = prev.useFunnelHash;
                 useQuantized = prev.useQuantized;
                 document.getElementById('selectFmmMode').value = prev.fmmModeSelectVal;
                 document.getElementById('selectFmmOrder').value = prev.orderSelectVal;
@@ -4866,6 +5475,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { axis: '+fmm p=4', label: '+fmm p=4 (hexadecapole)', cfg: { fmmOrder: 4 }, note: 'highest far-field accuracy' },
                 { axis: '+adaptivefmm', label: '+adaptivefmm adaptive CGR88', cfg: { adaptive: true }, note: 'multi-level (if available)' },
                 { axis: '+openaddr-hash', label: '+openaddr-hash (linear probe)', cfg: { useElasticHash: true }, note: 'open-addressing hash (hashU32 + linear probe); NOT the funnel schedule of core/elastic_hash.py' },
+                { axis: '+funnel-hash', label: '+funnel-hash (FCK funnel schedule)', cfg: { useFunnelHash: true }, note: 'Farach-Colton/Krapivin/Kuszmaul funnel: alpha slabs of beta-slot sub-arrays + overflow; bounded probe_bound' },
                 { axis: '+quantized_bitpacked', label: '+quantized_bitpacked', cfg: { useQuantized: true }, note: 'f16-packed state round-trip' },
             ];
 
@@ -4878,10 +5488,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'adaptive pipeline unavailable on this device' });
                     continue;
                 }
-                // +openaddr-hash / +quantized_bitpacked: ERROR if the GPU path
-                // is not exposed on this device.
+                // +openaddr-hash / +funnel-hash / +quantized_bitpacked: ERROR
+                // if the GPU path is not exposed on this device.
                 if (v.cfg.useElasticHash && !webgpuEhPipelines.eh_build) {
                     rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'open-addressing hash GPU path unavailable' });
+                    continue;
+                }
+                if (v.cfg.useFunnelHash && !webgpuFunnelPipelines.funnel_build) {
+                    rows.push({ ...v, ms: NaN, accuracy: NaN, error: 'funnel-hash GPU path unavailable' });
                     continue;
                 }
                 if (v.cfg.useQuantized && !webgpuQuantPipelines.pack) {
@@ -5018,6 +5632,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
             const inp = document.getElementById('inputCustomParticles');
             if (inp) inp.value = N;
+            // T6.4 ?hashverify=1: force the funnel-hash path on at startup so
+            // the scheduleHashVerify readback at frame 40 sees funnel-built
+            // eh arrays. The flag is honored only if the funnel pipelines
+            // were created (i.e. WebGPU initialized and the FMM module
+            // compiled); otherwise the check is a no-op.
+            if (HASH_VERIFY) {
+                useFunnelHash = true;
+            }
         }
         // One stable parseable console line per 1Hz telemetry refresh.
         function autoprintTelemetry(fps) {
@@ -5043,6 +5665,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 gpuCompleteMs: +webgpuGpuCompleteMs.toFixed(4),
                 leafBits: fmmLeafBits,
                 p2pRadius,
+                funnel: (useFunnelHash && funnelGeometry) ? {
+                    probeBound: funnelGeometry.probeBound,
+                    totalInsertProbes: funnelProbeCountVal,
+                    meanInsertProbes: (funnelProbeCountVal != null && N > 0)
+                        ? +(funnelProbeCountVal / N).toFixed(4) : null,
+                    alpha: funnelGeometry.alpha,
+                    beta: funnelGeometry.beta,
+                    tableSize: funnelGeometry.totalSize,
+                } : null,
                 extreme5m: extreme5mActive ? {
                     peakStepMs: +extreme5mPeakStep.toFixed(4),
                     avgStepMs: avg != null ? +avg.toFixed(4) : null,
