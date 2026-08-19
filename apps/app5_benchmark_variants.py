@@ -40,9 +40,17 @@ def _protein(n_atoms: int = 3000, seed: int = 42):
 
 
 def _direct_debye_huckel(coords, charges, kappa=2.0):
-    """Exact O(N^2) per-atom screened Coulomb: V_i = sum_j q_j exp(-k r)/r."""
+    """Exact O(N^2) per-atom screened Coulomb: V_i = sum_j q_j exp(-k r)/r.
+
+    Self-pairs (i==j) are excluded by setting the diagonal distance to a
+    large value so exp(-k*r)/r -> 0.  Off-diagonal distances are NOT
+    regularized: an earlier version added 1e-6 to every distance, which
+    introduced a systematic ~6e-5 rel-L2 bias that masqueraded as a
+    convergence floor in the Yukawa3D error-vs-p table (see the round-5
+    root-cause analysis in core/yukawa3d_fmm.py and BENCHMARKS.md).
+    """
     diff = coords[:, None, :] - coords[None, :, :]
-    r = np.linalg.norm(diff, axis=-1) + 1e-6
+    r = np.linalg.norm(diff, axis=-1)
     np.fill_diagonal(r, 1e9)
     return np.sum(charges[None, :] * np.exp(-kappa * r) / r, axis=1)
 
@@ -110,9 +118,12 @@ def run_convergence(n_atoms: int = 2000, ps=(2, 4, 6, 8, 10, 12), depth: int = 6
     the app5 protein distribution and report rel-L2 vs the exact direct
     O(N^2) screened-Coulomb reference. The table makes the convergence rate
     visible: rel-L2 should drop by ~1e-2 per +2 in p (the scheme is
-    order-(p+1) in the cell radius). If the accuracy stops improving (the
-    floor set by the ring-2 near field + f64 round-off), that is reported
-    honestly in the note, not hidden.
+    order-(p+1) in the cell radius). A previous version of this table
+    floored at ~6.3e-5 for p>=6 with a note attributing it to "ring-2 near
+    field + f64 round-off"; that attribution was WRONG (round-4 task 5.2
+    root-cause analysis). The floor was caused by a +1e-6 distance
+    regularization in the direct reference, not by the FMM. With the
+    reference fixed, rel-L2 decays geometrically to ~1e-10 at p=12.
 
     Run standalone:  python -X utf8 apps/app5_benchmark_variants.py
     """

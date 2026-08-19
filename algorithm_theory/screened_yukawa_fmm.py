@@ -27,6 +27,15 @@ dipole correction) plus hard screening truncation at r_cut, NOT a
 Greengard-Rokhlin translation-based FMM — there are no M2M/M2L/L2L operator
 hierarchies. Measured accuracy vs the exact direct sum is ~1% relative L2 at
 default parameters (verified against direct_evaluate).
+
+Round-5 update: a TRUE Taylor FMM on the 2D screened Yukawa (K0) kernel now
+exists in `core/screened_yukawa2d_fmm.py:ScreenedYukawa2DFMM` — a full
+order-p Taylor M2L far field with exact ring-2 near field, reaching ~6e-9
+rel-L2 at p=8 (six orders of magnitude better than this order-0 tree-code).
+See `algorithm_theory/benchmark_screened_yukawa2d_variants.py` for the
+head-to-head table on the same 2D K0 kernel. This 3D tree-code module is
+retained as the honest order-0 comparison row; the new engine is the
+recommended path for the 2D K0 kernel.
 """
 
 import time

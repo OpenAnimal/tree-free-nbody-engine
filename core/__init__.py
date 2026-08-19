@@ -69,6 +69,12 @@ from .gaussian2d_fgt import (
     gn_eigenfunction_sanity as gaussian2d_gn_eigenfunction_sanity,
     toy_2cell_check as gaussian2d_toy_2cell_check,
 )
+from .screened_yukawa2d_fmm import (
+    ScreenedYukawa2DFMM,
+    bessel_recursion_guard as screened_yukawa2d_bessel_recursion_guard,
+    derivative_fd_guard as screened_yukawa2d_derivative_fd_guard,
+    toy_2cell_check as screened_yukawa2d_toy_2cell_check,
+)
 from .bitboard_morton_avx import (
     BitboardMorton3D,
     morton_encode_3d_64bit,
@@ -189,6 +195,10 @@ __all__ = [
     "gaussian2d_derivative_fd_guard",
     "gaussian2d_gn_eigenfunction_sanity",
     "gaussian2d_toy_2cell_check",
+    "ScreenedYukawa2DFMM",
+    "screened_yukawa2d_bessel_recursion_guard",
+    "screened_yukawa2d_derivative_fd_guard",
+    "screened_yukawa2d_toy_2cell_check",
     "BitboardMorton3D",
     "morton_encode_3d_64bit",
     "is_zig_available",

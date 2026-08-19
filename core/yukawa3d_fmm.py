@@ -88,6 +88,44 @@ MATH (transcribed from the round-3 implementation plan, section 3.4).
 4. API: class Yukawa3DFMM(depth=6, p=8, kappa=1.0) with
    .evaluate(positions, charges) -> potentials (float64), occupying
    CellIndex for cells + funnel-hash cell->moments storage.
+
+------------------------------------------------------------------------------
+ROUND-5 TASK 5.2 ROOT-CAUSE ANALYSIS (the Yukawa3D p-floor).
+------------------------------------------------------------------------------
+The round-4 error-vs-p convergence table (apps/app5_benchmark_variants.py
+run_convergence) floored at ~6.27e-5 rel-L2 for p>=6, and the round-4 code
+attributed this to "ring-2 near field + f64 round-off".  That attribution
+was WRONG.  The measured evidence (tools/diag_yukawa3d_pfloor.py,
+tools/diag_yukawa3d_partition.py):
+
+  * P-tensor audit: every order |alpha|<=2p has nonzero P_{alpha,n}; the
+    top order |alpha|=2p is NOT empty (6117 nonzero entries at p=8).  No
+    off-by-one in the builder.
+  * Single-pair Taylor test (worst-converging far cell pair, |d_ts|/h=3.0):
+    rel-L2 decays geometrically: 7.4e-4 (p=4) -> 6.4e-5 (p=6) -> 5.8e-6
+    (p=8) -> 3.4e-7 (p=10) -> 1.05e-8 (p=12).  The operator is correct.
+  * ring_direct=3 sweep: the floor is unchanged (6.27e-5), so no ring-2
+    separation violation.
+  * Partition check: near+far covers all N-1 source particles per target
+    (count-complete), and the FMM far field vs an exact far-only direct
+    sum converges to 1.57e-9 at p=12.
+  * The residual ||pot_near + pot_far_exact - pot_direct|| = 6.27e-5,
+    i.e. the REFERENCE direct sum itself disagreed with the exact
+    partitioned sum by exactly the floor value.
+
+ROOT CAUSE: the direct reference `_direct_debye_huckel` in
+apps/app5_benchmark_variants.py added 1e-6 to EVERY pairwise distance
+(`r = np.linalg.norm(diff, axis=-1) + 1e-6`), not just the diagonal.  This
++1e-6 regularization shifted every off-diagonal kernel value by ~1e-6/r,
+producing a systematic ~6.27e-5 rel-L2 bias independent of p.  The FMM
+computes the TRUE kernel (no regularization) and was correct all along;
+its convergence was hidden by the buggy reference.
+
+FIX: the reference now sets only the diagonal to 1e9 (self-exclusion) and
+leaves off-diagonal distances untouched.  With the fix, rel-L2 vs the true
+direct reference decays geometrically: 1.87e-5 (p=4) -> 7.0e-7 (p=6) ->
+2.7e-8 (p=8) -> 1.8e-9 (p=10) -> 1.5e-10 (p=12).  The regression test
+test_yukawa3d_pfloor_regression in test_yukawa3d_fmm.py pins this.
 """
 
 from typing import Dict, List, Tuple

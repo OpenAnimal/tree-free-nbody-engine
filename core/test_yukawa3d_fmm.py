@@ -148,6 +148,61 @@ def test_toy_2cell_check():
     assert toy_2cell_check(kappa=1.0, p=8), "2-cell toy check failed (sign convention)"
 
 
+# =====================================================================
+# Test 5: round-5 p-floor regression (root cause: reference +1e-6 bias)
+# =====================================================================
+
+def test_yukawa3d_pfloor_regression():
+    """Pin the round-5 task 5.2 root-cause fix.
+
+    ROOT CAUSE: the app5 direct reference `_direct_debye_huckel` added 1e-6
+    to EVERY pairwise distance, introducing a systematic ~6.27e-5 rel-L2
+    bias that was independent of p and was wrongly attributed to "ring-2
+    near field + f64 round-off".  The FMM computes the true (unregularized)
+    kernel and converges geometrically with p.
+
+    This test asserts:
+      (a) the FMM vs the TRUE direct reference (no +1e-6) decays
+          geometrically and drops below 1e-8 at p=12;
+      (b) the +1e-6-regularized reference disagrees with the true reference
+          by ~6.3e-5 (the old floor), confirming the root cause.
+    """
+    from apps.app5_benchmark_variants import _protein, _direct_debye_huckel
+    coords, charges = _protein(n_atoms=2000, seed=42)
+    kappa = 2.0
+    # True direct reference (the fixed _direct_debye_huckel: diagonal-only).
+    ref_true = _direct_debye_huckel(coords, charges, kappa=kappa)
+    ref_norm = np.linalg.norm(ref_true)
+    # The buggy +1e-6-everywhere reference, reconstructed here to pin the
+    # root cause independently of the fix in _direct_debye_huckel.
+    diff = coords[:, None, :] - coords[None, :, :]
+    r_reg = np.linalg.norm(diff, axis=-1) + 1e-6
+    np.fill_diagonal(r_reg, 1e9)
+    ref_reg = np.sum(charges[None, :] * np.exp(-kappa * r_reg) / r_reg, axis=1)
+    bias = np.linalg.norm(ref_reg - ref_true) / ref_norm
+    print(f"  +1e-6-regularized reference bias vs true = {bias:.3e} "
+          f"(the old ~6.3e-5 floor)")
+    assert 5e-5 < bias < 8e-5, (
+        f"regularized-reference bias {bias:.2e} not in the expected "
+        f"~6.3e-5 band; root-cause characterization drifted")
+
+    # FMM convergence vs the TRUE reference: must drop below 1e-8 at p=12.
+    rels = {}
+    for p in (6, 8, 10, 12):
+        fmm = Yukawa3DFMM(depth=6, p=p, kappa=kappa)
+        est = fmm.evaluate(coords, charges)
+        rel = np.linalg.norm(est - ref_true) / ref_norm
+        rels[p] = rel
+        print(f"  p={p}: rel-L2 vs true = {rel:.3e}")
+    assert rels[12] < 1e-8, (
+        f"FMM rel-L2 at p=12 = {rels[12]:.2e} >= 1e-8; the p-floor was NOT "
+        f"caused by the reference and the root-cause analysis is wrong")
+    # Geometric decay sanity: each +2 in p should reduce rel by ~10x.
+    assert rels[10] < rels[8] < rels[6], (
+        "FMM error is not monotonically decreasing with p")
+    print("test_yukawa3d_pfloor_regression: PASS")
+
+
 def main():
     print("=== core.test_yukawa3d_fmm ===")
     test_derivative_fd_guard()
@@ -155,6 +210,7 @@ def main():
     test_kappa_zero_coulomb_limit()
     test_occupied_cell_set_matches_unique()
     test_clustered_accuracy_n2000()
+    test_yukawa3d_pfloor_regression()
     print("\nAll yukawa3d_fmm tests PASS")
 
 

@@ -240,6 +240,14 @@ class ElasticHashTable:
         self._slabs = list(zip(self.slab_offsets, self.subarray_counts,
                                self.salt_slab))
 
+        # Round-5 task 5.3 probe-count instrumentation: expose the probe
+        # count of the most recent insert/lookup as `last_probes` (and the
+        # `mean_probes_last_op` property) so external tooling can compare
+        # against the Zig port WITHOUT altering the probe behavior itself.
+        # The probe counts are already computed in the hot loops; this only
+        # records them.
+        self.last_probes: int = 0
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
@@ -248,6 +256,16 @@ class ElasticHashTable:
     def probe_bound(self) -> int:
         """Deterministic worst-case number of slot inspections for any search."""
         return self.alpha * self.beta + self.b_attempts + 2 * self.c_bucket_slots
+
+    @property
+    def mean_probes_last_op(self) -> float:
+        """Probe count of the most recent insert/lookup (single-op mean).
+
+        Round-5 task 5.3 instrumentation: the hot loops already count
+        probes; this exposes the last value for cross-language comparison
+        with the Zig port. Does NOT alter probe behavior.
+        """
+        return float(self.last_probes)
 
     def _fill(self, pos: int, key: int, value: Any) -> None:
         self.keys[pos] = key
@@ -350,6 +368,7 @@ class ElasticHashTable:
         region is also exhausted.
         """
         if self.count >= self.capacity:
+            self.last_probes = 0
             return False, 0
 
         k = int(key)
@@ -392,7 +411,9 @@ class ElasticHashTable:
         pos, p = self._place_overflow(k, value)
         probes += p
         if pos >= 0:
+            self.last_probes = probes
             return True, probes
+        self.last_probes = probes
         return False, probes
 
     def lookup(self, key: int) -> Tuple[Optional[Any], int]:
@@ -405,6 +426,7 @@ class ElasticHashTable:
         probing fallback.
         """
         pos, probes = self._search(int(key))
+        self.last_probes = probes
         return (self.values[pos] if pos >= 0 else None), probes
 
     def get(self, key: int, default: Optional[Any] = None) -> Any:

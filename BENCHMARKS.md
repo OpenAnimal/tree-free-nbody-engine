@@ -188,14 +188,14 @@ cohesion residual is the intentional extra term, reported honestly.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (direct O(N^2))    445.60                     -  exact per-atom screened Coulomb reference
-+elastichash (cluster O(K^2))     27.33 (16.3x)      5.682e-01  funnel-hash 3D Morton clusters, direct O(K^2) between centroids; lossy cluster-mean approximation
-+fmm (Yukawa3DFMM)       3836.71 (0.1x)      8.527e-05  single-level flat 3D Yukawa FMM, depth=6 p=8; closes INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)
+standard (direct O(N^2))    239.65                     -  exact per-atom screened Coulomb reference
++elastichash (cluster O(K^2))     15.01 (16.0x)      5.682e-01  funnel-hash 3D Morton clusters, direct O(K^2) between centroids; lossy cluster-mean approximation
++fmm (Yukawa3DFMM)       2915.43 (0.1x)      2.510e-08  single-level flat 3D Yukawa FMM, depth=6 p=8; closes INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)
 ```
 
-The funnel-hash cluster path is 16.3x faster than exact per-atom Debye-
-Huckel at N=3000 but pays a 57% rel-L2 cluster-mean cost. The new
-`+fmm (Yukawa3DFMM)` row reaches 8.5e-5 rel-L2 (three orders of magnitude
+The funnel-hash cluster path is 16.0x faster than exact per-atom Debye-
+Huckel at N=3000 but pays a 57% rel-L2 cluster-mean cost. The
+`+fmm (Yukawa3DFMM)` row reaches 2.5e-8 rel-L2 (seven orders of magnitude
 better than the cluster-mean path) but is NOT faster than direct at N=3000
 (0.1x) -- the single-level flat 3D FMM's per-cell Python loop over the
 derivative tensors dominates at this scale (Class D in
@@ -204,7 +204,7 @@ needs larger N or a compiled kernel. This closes the round-3 Class C gap:
 the 3D Yukawa kernel is no longer "right kernel, 2D-only FMM" -- it now has
 a 3D FMM in `core/yukawa3d_fmm.py`.
 
-#### Yukawa3D error-vs-p convergence (round-4 task 4.8)
+#### Yukawa3D error-vs-p convergence (round-5 task 5.2: p-floor root cause)
 
 `apps/app5_benchmark_variants.py:run_convergence` sweeps the expansion
 order p on the same protein distribution (N=2000, depth=6, kappa=2.0) and
@@ -213,20 +213,58 @@ reports rel-L2 vs the exact direct reference:
 ```
    p         rel-L2   build+eval (s)                                     note
 --------------------------------------------------------------------------------
-   2     7.2735e-04           0.2788
-   4     6.6945e-05           0.3763                       ~9.20e-02x vs prev
-   6     6.2681e-05           1.1403                       ~9.36e-01x vs prev
-   8     6.2711e-05           3.5983           no improvement (floor reached)
-  10     6.2712e-05          12.0784           no improvement (floor reached)
-  12     6.2712e-05          28.8699           no improvement (floor reached)
+   2     7.0357e-04           0.2417
+   4     1.8746e-05           0.3812                       ~2.66e-02x vs prev
+   6     7.0041e-07           0.9812                       ~3.74e-02x vs prev
+   8     2.7259e-08           2.9944                       ~3.89e-02x vs prev
+  10     1.8202e-09           8.7866                       ~6.68e-02x vs prev
+  12     1.5324e-10          23.9535                       ~8.42e-02x vs prev
 --------------------------------------------------------------------------------
 ```
 
-The scheme converges sharply from p=2 to p=4 (~9.2e-2x, consistent with
-the order-(p+1) rate), then hits a floor at p=6 (~6.27e-5) set by the
-ring-2 near-field softening + f64 round-off. The table reports "no
-improvement (floor reached)" honestly for p>=8 rather than hiding the
-plateau. Run with `python -X utf8 apps/app5_benchmark_variants.py`.
+The scheme now converges geometrically across the full p range, dropping
+~1e-2 per +2 in p down to 1.5e-10 at p=12 -- consistent with the
+order-(p+1) rate. The round-4 table floored at ~6.27e-5 for p>=6 with a
+note attributing it to "ring-2 near field + f64 round-off"; that
+attribution was WRONG. The round-5 root-cause analysis
+(`tools/diag_yukawa3d_pfloor.py`, `tools/diag_yukawa3d_partition.py`)
+showed the FMM operator is correct (single-pair Taylor converges to
+1e-8 at p=12; the P-tensor has no off-by-one; ring_direct=3 does not
+move the floor). The floor was caused by a `+1e-6` distance
+regularization in the direct reference `_direct_debye_huckel` (applied to
+ALL pairwise distances, not just the diagonal), which introduced a
+systematic ~6.27e-5 bias independent of p. The reference is fixed
+(diagonal-only self-exclusion); the regression test
+`test_yukawa3d_pfloor_regression` pins both the bias value and the
+geometric decay. Run with `python -X utf8 apps/app5_benchmark_variants.py`.
+
+### Screened Yukawa 2D (K0 kernel) -- Taylor FMM vs order-0 tree-code (round 5)
+
+`algorithm_theory/benchmark_screened_yukawa2d_variants.py` compares the
+old honest order-0 (monopole + dipole) tree-code — the approach
+`algorithm_theory/screened_yukawa_fmm.py` documents — against the new
+round-5 2D Taylor FMM (`core/screened_yukawa2d_fmm.py`), on the SAME 2D
+K0(kappa*r) kernel so the comparison is apples-to-apples:
+
+```
+Variant                 Time (ms)  rel L2 vs ref  Note
+------------------------------------------------------------------------------
+standard (direct O(N^2))    665.92                     -  exact per-particle K0(kappa*r) reference
++treecode (order-0)      4037.93 (0.2x)      2.422e-02  honest order-0 monopole+dipole tree-code (the old algorithm_theory/screened_yukawa_fmm.py approach, adapted to 2D K0); ~1% rel-L2 centroid approximation
++fmm (Taylor K0)          500.87 (1.3x)      6.153e-09  2D screened Yukawa Taylor FMM (core/screened_yukawa2d_fmm.py), depth=6 p=8; full order-p Taylor M2L far field, exact ring-2 near field; the round-5 upgrade of the old tree-code
+```
+
+The new `+fmm (Taylor K0)` row reaches 6.2e-9 rel-L2 — six orders of
+magnitude better than the order-0 tree-code's 2.4e-2 — and is 1.3x faster
+than the direct O(N^2) reference at N=2000 (the Taylor far field does
+less arithmetic than the dense sum, and at N=2000 the per-cell Python
+loop overhead is already below the O(N^2) matrix cost). The old tree-code
+is retained as the honest order-0 comparison row; its module docstring
+now points at the new engine. The K0 kernel's radial functions are built
+exactly once per p as Laurent polynomials a_n(z), b_n(z) via the literal
+plan recursion (verified by `bessel_recursion_guard` to 8e-10 rel vs
+central-difference (1/r d/dr)). Run with
+`python -X utf8 algorithm_theory/benchmark_screened_yukawa2d_variants.py`.
 
 ### App 6 -- MuJoCo footpad proximity (3D nearest-point search)
 
@@ -298,11 +336,30 @@ known price of the fine-grained partition, reported honestly.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (dense all-pairs)      4.49                     -  dense Gaussian message pass reference (no adjacency matrix)
-+elastichash (near+far centroid)     65.93 (0.1x)      1.791e-01  near exact (3x3 funnel hash) + far per-cell centroid; lossy far-field centroid approximation
+standard (dense all-pairs)      4.02                     -  dense Gaussian message pass reference (no adjacency matrix)
++elastichash (near+far centroid)     51.38 (0.1x)      1.791e-01  near exact (3x3 funnel hash) + far per-cell centroid; lossy far-field centroid approximation
++fmm (Taylor FGT)        1478.13 (0.0x)      3.719e-05  2D Gaussian Taylor FGT (core/gaussian2d_fgt.py) on both the near (h^2=0.05) and far (h^2=0.2) message kernels; exact spatial message pass via per-feature FGT + normalizer; self terms excluded (matches the dense reference w[i]=0)
 ```
 
 The near-exact/far-centroid GNN message pass is NOT faster than dense
 all-pairs at N=150 (per-cell Python loop overhead dominates at small N) and
-pays an 18% rel-L2 far-field centroid cost; +fmm is omitted (Gaussian
-message kernel, not 2D log kernel).
+pays an 18% rel-L2 far-field centroid cost. The new `+fmm (Taylor FGT)`
+row (round-5 task 5.5) reaches 3.7e-5 rel-L2 -- four orders of magnitude
+better than the centroid path -- by running the 2D Gaussian Taylor FGT
+once per feature dim plus once per-kernel normalizer on the app's two
+Gaussian message kernels (h^2 = 0.05 near, h^2 = 0.2 far; kernel equality
+asserted on a radial sweep first). It is NOT faster than dense at N=150
+(0.0x): 66 FGT `evaluate()` calls (32 near + 32 far + 2 normalizers) each
+loop over occupied cells in pure Python, and at N=150 that overhead
+dominates the single 4 ms dense matrix pass; the asymptotic win needs
+larger N or a compiled kernel.
+
+Honesty note on the 3.7e-5 residual: it is NOT the FGT truncation error.
+The dense reference regularizes every pairwise distance by +1e-4
+(`d = norm(...) + 1e-4`), which introduces a ~3.7e-5 systematic bias
+independent of the FGT order p (the same class of reference-regularization
+bias that caused the round-5 Yukawa3D p-floor in app5). Against an
+unregularized direct reference the FGT reaches 2.9e-8 rel-L2 at p=8. The
+self-term handling is correct: the dense reference zeroes self weights
+(w[i] = 0) and the FGT excludes self pairs, so no self-term restoration
+is needed (unlike app3, whose dense attention includes the self term).

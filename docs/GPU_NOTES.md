@@ -106,3 +106,42 @@ These are where funnel-hash constant factors vs dict/hashmap baselines
 should be benchmarked. The Python `benchmark_variants.py` tables in
 BENCHMARKS.md are correctness + asymptotic-order evidence, not GPU
 constant-factor evidence; conflating the two would overclaim.
+
+---
+
+## 3. Python vs Zig funnel-hash probe counts and throughput (round 5)
+
+`tools/compare_hash_python_zig.py` runs the SAME 1M splitmix64-key
+workload as `zig/bench.zig` (capacity=1_000_000, delta=0.05, seed=42)
+through the Python `core.elastic_hash.ElasticHashTable` and compares
+mean probes per pass and throughput against a fresh Zig
+`zig build run --release=fast` run. The Python salts use MT19937 while
+the Zig port uses a splitmix64-seeded LCG, so exact slot assignments
+differ — but the slab geometry (alpha=28, beta=9, total_slots=1_052_640,
+probe_bound=277) is identical and the probe counts are geometry-driven,
+not salt-driven.
+
+| Pass            | Python M keys/s | Zig M keys/s | Py/Zig | Python mean probes | Zig mean probes | Py/Zig |
+| --------------- | --------------- | ------------ | ------ | ------------------ | --------------- | ------ |
+| INSERT          | 0.16            | 14.64        | 0.011  | 32.9626            | 32.9630         | 1.000  |
+| LOOKUP (hits)   | 0.16            | 14.07        | 0.012  | 28.9557            | 28.9559         | 1.000  |
+| LOOKUP (absent) | 0.03            | 2.62         | 0.010  | 277.0000           | 277.0000        | 1.000  |
+
+The probe counts match to four decimals (well within the 2x acceptance
+band), confirming the Python reference and the Zig port implement the
+same funnel schedule. The throughput ratio is ~90-100x in Zig's favor,
+which is the expected Python-interpreter-overhead gap on the per-key
+path (the plan's "~100x" estimate). The absent-key mean probes equal
+`probe_bound=277` exactly in both implementations — the funnel hash's
+deterministic worst-case bound holds in both.
+
+**Why ~30 probes is expected at this load factor.** At delta=0.05 the
+funnel has alpha=28 slabs of beta=9 slots each, and the table is filled
+to load 0.95. A key descends the slabs in order, scanning one beta-slot
+sub-array per slab until it finds a free slot. At load 0.95 the early
+(large) slabs are nearly full, so a key visits ~3.7 slabs on average
+before finding room; mean probes = beta * E[slabs visited] ≈ 9 * 3.7 ≈
+33. This is the funnel hash's expected O(log 1/delta) insert/search
+cost materialized as a concrete number at this geometry, not a bug or
+a miscalibration — the Zig and Python implementations agree on it to
+four decimals.

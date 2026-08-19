@@ -35,6 +35,8 @@ ITEMS = [
      ["-m", "core.test_yukawa3d_fmm"], False),
     ("core.test_gaussian2d_fgt",
      ["-m", "core.test_gaussian2d_fgt"], False),
+    ("core.test_screened_yukawa2d_fmm",
+     ["-m", "core.test_screened_yukawa2d_fmm"], False),
     ("core.test_webgpu_parity",
      ["-m", "core.test_webgpu_parity"], True),
     ("graphics_rendering/test_graphics_rendering.py",
