@@ -1,5 +1,7 @@
 """Standardized variant benchmark for Application 9 (streaming vector DB).
 
+CAUTIONARY CASE STUDY: fine-grained LSH partitions collapse recall.
+
 Variants:
   standard      -- brute-force exact top-k cosine retrieval: scan all N
                    stored vectors per query (O(N*d) -- the reference for the
@@ -14,6 +16,22 @@ approximate nearest-neighbor retrieval, not a 2D/3D kernel sum.
 Accuracy semantics: LSH retrieval is approximate. The correctness metric is
 `recall@k` averaged over the query batch, reported in the note -- not a
 rel-L2 against an exact array.
+
+Why this is filed as cautionary (see docs/INAPPLICABILITY.md Class D-adjacent):
+the synthetic corpus is 20 tight Gaussian clusters (noise sigma=0.3 around
+unit-norm centers). For a query drawn near a cluster center, the true top-10
+are the 10 corpus vectors whose *noise direction* best aligns with the
+query's noise -- a fine-grained within-cluster property, NOT cluster
+membership. LSH buckets by coarse direction, so recovering the within-cluster
+top-10 needs many hyperplanes (fine partition), which empties the buckets
+and collapses recall; relaxing to few hyperplanes refills buckets but only
+re-locates the cluster, not the within-cluster top-10. A sweep
+(hyperplanes in {6,7,8,9,10,12}, tables in {2,4,8}, multi-probe bits in
+{1,2,3}) showed recall@10 >= 0.5 is reachable ONLY at ~0.13x speed (8x
+slower than brute, ~3200 candidates/query), and >= 1.5x speed is reachable
+ONLY at recall@10 <= ~5% (~20-80 candidates/query). No middle ground exists
+on this corpus; the speed in the table below is real but the recall cost is
+the known price of the fine-grained partition, reported honestly.
 """
 import os
 import sys
@@ -57,10 +75,13 @@ def run_app9_variants(n_vectors: int = 10000, d_dim: int = 128, n_queries: int =
     avg_recall = float(np.mean(recalls))
     note = (f"recall@{k} over {n_queries} queries = {avg_recall*100:.1f}%; "
             f"zero-reorder funnel-hash ingestion; "
+            f"CAUTIONARY: fine-grained LSH partitions collapse recall "
+            f"(see docs/INAPPLICABILITY.md Class D-adjacent); "
             f"+fmm axis omitted (cosine ANN, not a kernel sum)")
 
     bench = VariantBenchmark(
-        f"App 9 -- Streaming vector DB (N={n_vectors}, d={d_dim}, multi-probe LSH; "
+        f"App 9 -- Streaming vector DB (CAUTIONARY: fine-grained LSH partitions "
+        f"collapse recall; N={n_vectors}, d={d_dim}, multi-probe LSH; "
         f"+fmm axis omitted)"
     )
     # Results are variable-length per query (multi-probe may return < k

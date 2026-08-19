@@ -6,10 +6,12 @@ Variants:
   +elastichash  -- the app's compute path: funnel-hash bucketed 3D Morton
                    clusters, then direct O(K^2) screened-Coulomb between
                    cluster centroids, broadcast back to atoms
-
-The +fmm axis is OMITTED with reason: the interaction kernel is the 3D
-screened Yukawa (Debye-Huckel) potential, NOT the 2D logarithmic CGR88
-kernel in core/, so the core FMM engines do not apply.
+  +fmm (Yukawa3DFMM) -- single-level flat 3D Yukawa FMM (core/yukawa3d_fmm.py,
+                   depth=6, p=8) on the same kernel; the 3D analogue of the
+                   2D FastVectorizedFMM, indexed by CellIndex(dims=3) + funnel
+                   hash. This closes the round-3 INAPPLICABILITY.md Class C
+                   gap (the 3D Yukawa kernel is no longer "right kernel, 2D-
+                   only FMM").
 
 Accuracy vs `standard` on the per-atom potential (rel L2). The cluster-mean
 approximation error shows up in the table, not hidden in a note.
@@ -69,22 +71,33 @@ def _cluster_debye_huckel(coords, charges, grid_res=16, kappa=2.0):
 
 
 def run_app5_variants(n_atoms: int = 3000):
+    from core import Yukawa3DFMM
     coords, charges = _protein(n_atoms=n_atoms)
+    # The app's Debye-Huckel reference uses kappa=2.0; the +fmm row uses the
+    # same kappa so the comparison is apples-to-apples on the SAME kernel.
+    kappa = 2.0
+    fmm = Yukawa3DFMM(depth=6, p=8, kappa=kappa)
     bench = VariantBenchmark(
-        f"App 5 -- 3D protein electrostatics (N={n_atoms}, Debye-Huckel screened Coulomb; "
-        f"+fmm axis omitted -- 3D Yukawa, not 2D log kernel)"
+        f"App 5 -- 3D protein electrostatics (N={n_atoms}, Debye-Huckel screened Coulomb, kappa={kappa})"
     )
     bench.add(
         "standard (direct O(N^2))",
-        lambda: _direct_debye_huckel(coords, charges),
+        lambda: _direct_debye_huckel(coords, charges, kappa=kappa),
         note="exact per-atom screened Coulomb reference",
     )
     bench.add(
         "+elastichash (cluster O(K^2))",
-        lambda: _cluster_debye_huckel(coords, charges, grid_res=16),
+        lambda: _cluster_debye_huckel(coords, charges, grid_res=16, kappa=kappa),
         accuracy_vs="standard (direct O(N^2))",
         note="funnel-hash 3D Morton clusters, direct O(K^2) between centroids; "
              "lossy cluster-mean approximation",
+    )
+    bench.add(
+        "+fmm (Yukawa3DFMM)",
+        lambda: fmm.evaluate(coords, charges),
+        accuracy_vs="standard (direct O(N^2))",
+        note="single-level flat 3D Yukawa FMM, depth=6 p=8; closes "
+             "INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)",
     )
     return bench.run()
 

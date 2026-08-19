@@ -58,6 +58,11 @@ from .tree_free_fmm import (
 from .fast_vectorized_fmm import (
     FastVectorizedFMM,
 )
+from .yukawa3d_fmm import (
+    Yukawa3DFMM,
+    derivative_fd_guard as yukawa3d_derivative_fd_guard,
+    toy_2cell_check as yukawa3d_toy_2cell_check,
+)
 from .bitboard_morton_avx import (
     BitboardMorton3D,
     morton_encode_3d_64bit,
@@ -171,6 +176,9 @@ __all__ = [
     "morton_key_from_indices",
     "TreeFreeFMM",
     "FastVectorizedFMM",
+    "Yukawa3DFMM",
+    "yukawa3d_derivative_fd_guard",
+    "yukawa3d_toy_2cell_check",
     "BitboardMorton3D",
     "morton_encode_3d_64bit",
     "is_zig_available",

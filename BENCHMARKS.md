@@ -13,15 +13,42 @@ including "not faster at this scale" results.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (exact direct)     41.40                     -  O(N^2) reference
-+fmm (CGR88 adaptive)     845.33 (0.0x)      1.974e-07  funnel-hash adaptive CGR88, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)
-+fmm (flat vectorized)    478.87 (0.1x)      7.522e-07  single-level vectorized CGR88, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)
-+quantized (32-bit packed)     40.73 (1.0x)      3.891e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
+standard (exact direct)     57.14                     -  O(N^2) reference
++fmm (CGR88 adaptive)    1057.39 (0.1x)      1.974e-07  funnel-hash adaptive CGR88, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)
++fmm (flat vectorized)    710.61 (0.1x)      7.522e-07  single-level vectorized CGR88, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)
++quantized (32-bit packed)     68.51 (0.8x)      3.891e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
 ```
 
 Both FMM engines reach sub-1e-6 accuracy, but at N=2000 neither is faster than
 the direct O(N^2) sum — the Python tree traversal and K^2 M2L constants dominate
-at this scale; the FMM asymptotic win only appears at larger N.
+at this scale; the FMM asymptotic win only appears at larger N (see the
+scaling table below).
+
+## Core FMM scaling
+
+The same flat vectorized FMM (`FastVectorizedFMM(depth=5, order=8)`) and a
+chunked vectorized direct O(N^2) sum, run on the clustered multi-scale
+distribution at N in {2000, 8000, 32000}. The adaptive CGR88 engine is
+omitted at these N (its Python tree traversal is even slower than the flat
+scheme and would not change the crossover conclusion). Direct O(N^2) at
+N=32000 is ~1e9 pairs; the chunked direct keeps memory bounded (block=2048
+targets) and finished in ~36s, under the 120s budget so N=32000 was kept.
+
+```
+=== Core FMM scaling (clustered distribution; direct budget 120s) ===
+N=  2000  direct=    148.86 ms  fmm=    680.06 ms  speedup= 0.22x  rel_l2=7.522e-07
+N=  8000  direct=   6787.47 ms  fmm=   2182.33 ms  speedup= 3.11x  rel_l2=4.974e-07
+N= 32000  direct=  35570.47 ms  fmm=   8165.55 ms  speedup= 4.36x  rel_l2=5.303e-07
+```
+
+Crossover observed at N=8000: the flat FMM becomes faster than direct
+O(N^2) at N=8000 (3.11x, rel-L2 4.97e-7) and stays faster at N=32000
+(4.36x, rel-L2 5.30e-7), while at N=2000 it is 0.22x (slower). The
+asymptotic win is real and the accuracy stays sub-1e-6 throughout; the
+"NOT faster at N=2000" row in the table above is the small-N constant-
+factor regime (see [docs/GPU_NOTES.md](docs/GPU_NOTES.md) and
+[docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md) Class D), not an
+algorithmic fact.
 
 ## Physics — Tetrahedral contact broadphase
 
@@ -154,14 +181,21 @@ cohesion residual is the intentional extra term, reported honestly.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (direct O(N^2))    333.51                     -  exact per-atom screened Coulomb reference
-+elastichash (cluster O(K^2))     21.08 (15.8x)      5.682e-01  funnel-hash 3D Morton clusters, direct O(K^2) between centroids; lossy cluster-mean approximation
+standard (direct O(N^2))    445.60                     -  exact per-atom screened Coulomb reference
++elastichash (cluster O(K^2))     27.33 (16.3x)      5.682e-01  funnel-hash 3D Morton clusters, direct O(K^2) between centroids; lossy cluster-mean approximation
++fmm (Yukawa3DFMM)       3836.71 (0.1x)      8.527e-05  single-level flat 3D Yukawa FMM, depth=6 p=8; closes INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)
 ```
 
-The funnel-hash cluster path is 15.8x faster than exact per-atom Debye-
-Huckel at N=3000 but pays a 57% rel-L2 cluster-mean cost -- the speed/
-accuracy tradeoff is explicit in the table; +fmm is omitted (3D Yukawa, not
-2D log kernel).
+The funnel-hash cluster path is 16.3x faster than exact per-atom Debye-
+Huckel at N=3000 but pays a 57% rel-L2 cluster-mean cost. The new
+`+fmm (Yukawa3DFMM)` row reaches 8.5e-5 rel-L2 (three orders of magnitude
+better than the cluster-mean path) but is NOT faster than direct at N=3000
+(0.1x) -- the single-level flat 3D FMM's per-cell Python loop over the
+derivative tensors dominates at this scale (Class D in
+[docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md)); the asymptotic win
+needs larger N or a compiled kernel. This closes the round-3 Class C gap:
+the 3D Yukawa kernel is no longer "right kernel, 2D-only FMM" -- it now has
+a 3D FMM in `core/yukawa3d_fmm.py`.
 
 ### App 6 -- MuJoCo footpad proximity (3D nearest-point search)
 
@@ -205,20 +239,28 @@ N=2500 AND reaches 100% edge recall@12 on the Swiss roll (the manifold's
 low intrinsic dimension makes LSH buckets coincide with true neighborhoods)
 -- a genuine win, reported with the recall that earns it.
 
-### App 9 -- Streaming vector DB (multi-probe LSH ANN)
+### App 9 -- Streaming vector DB (CAUTIONARY: fine-grained LSH partitions collapse recall)
 
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (brute exact top-k)     66.66                     -  O(N*d) exact cosine top-10 per query
-+elastichash (LSH multi-probe)     23.38 (2.9x)              -  recall@10 over 200 queries = 0.6%; zero-reorder funnel-hash ingestion; +fmm axis omitted (cosine ANN, not a kernel sum)
+standard (brute exact top-k)     81.44                     -  O(N*d) exact cosine top-10 per query
++elastichash (LSH multi-probe)     24.09 (3.4x)              -  recall@10 over 200 queries = 0.6%; zero-reorder funnel-hash ingestion; CAUTIONARY: fine-grained LSH partitions collapse recall (see docs/INAPPLICABILITY.md Class D-adjacent); +fmm axis omitted (cosine ANN, not a kernel sum)
 ```
 
-Multi-probe LSH is 2.9x faster than brute exact top-10 at N=10000/d=128
-but recall@10 is only 0.6% -- 13-hyperplane LSH spreads 10k vectors across
-8192 buckets so most buckets hold 1-2 vectors and the 6-bit multi-probe
-cannot recover the true top-10. The speed is real; the recall cost is
-reported honestly and is the known price of the fine-grained partition.
+CAUTIONARY CASE STUDY. Multi-probe LSH is 3.4x faster than brute exact
+top-10 at N=10000/d=128 but recall@10 collapses to 0.6%. The cause is a
+data-geometry constant, not a Python constant (Class D-adjacent in
+[docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md)): the corpus is 20 tight
+Gaussian clusters, so the true top-10 of a query near a cluster center is
+determined by fine within-cluster noise alignment, which requires a fine
+LSH partition, which empties the buckets. A hyperplane/table/multi-probe
+sweep (hyperplanes in {6,7,8,9,10,12}, tables in {2,4,8}, probe bits in
+{1,2,3}) showed recall@10 >= 0.5 is reachable ONLY at ~0.13x speed (8x
+slower than brute, ~3200 candidates/query) and >= 1.5x speed is reachable
+ONLY at recall@10 <= ~5% (~20-80 candidates/query). No middle ground exists
+on this corpus; the speed in the table is real and the recall cost is the
+known price of the fine-grained partition, reported honestly.
 
 ### App 10 -- Continuous spatial GNN (2D Gaussian message pass)
 
