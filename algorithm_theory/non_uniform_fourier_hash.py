@@ -133,57 +133,54 @@ class NonUniformFourierHash:
         
         if self.dim == 1:
             M = self.fine_shape[0]
-            for j in range(n_points):
-                xc = scaled_coords[j, 0]
-                b0 = int(np.floor(xc))
-                d0 = (xc - (b0 + offsets)) / float(self.w_half)
-                m0 = d0 ** 2 <= 1.0
-                k0 = np.exp(-self.beta * (d0[m0]**2 - 1.0))
-                idx0 = (b0 + offsets[m0]) % M
-                fine_grid[idx0] += weights[j] * k0
+            xc = scaled_coords[:, 0]
+            b0 = np.floor(xc).astype(np.int64)
+            d0 = (xc[:, None] - (b0[:, None] + offsets[None, :])) / float(self.w_half)
+            k0 = np.where(d0 ** 2 <= 1.0, np.exp(-self.beta * (d0 ** 2 - 1.0)), 0.0)
+            idx0 = (b0[:, None] + offsets[None, :]) % M
+            contrib = (weights[:, None] * k0).ravel()
+            np.add.at(fine_grid, idx0.ravel(), contrib)
 
         elif self.dim == 2:
             M0, M1 = self.fine_shape
-            for j in range(n_points):
-                x0, x1 = scaled_coords[j, 0], scaled_coords[j, 1]
-                b0, b1 = int(np.floor(x0)), int(np.floor(x1))
-                
-                d0 = (x0 - (b0 + offsets)) / float(self.w_half)
-                m0 = d0 ** 2 <= 1.0
-                k0 = np.exp(-self.beta * (d0[m0]**2 - 1.0))
-                idx0 = (b0 + offsets[m0]) % M0
-                
-                d1 = (x1 - (b1 + offsets)) / float(self.w_half)
-                m1 = d1 ** 2 <= 1.0
-                k1 = np.exp(-self.beta * (d1[m1]**2 - 1.0))
-                idx1 = (b1 + offsets[m1]) % M1
-                
-                outer_kernel = np.outer(k0, k1) * weights[j]
-                fine_grid[np.ix_(idx0, idx1)] += outer_kernel
+            x0 = scaled_coords[:, 0]
+            x1 = scaled_coords[:, 1]
+            b0 = np.floor(x0).astype(np.int64)
+            b1 = np.floor(x1).astype(np.int64)
+            d0 = (x0[:, None] - (b0[:, None] + offsets[None, :])) / float(self.w_half)
+            d1 = (x1[:, None] - (b1[:, None] + offsets[None, :])) / float(self.w_half)
+            k0 = np.where(d0 ** 2 <= 1.0, np.exp(-self.beta * (d0 ** 2 - 1.0)), 0.0)
+            k1 = np.where(d1 ** 2 <= 1.0, np.exp(-self.beta * (d1 ** 2 - 1.0)), 0.0)
+            idx0 = (b0[:, None] + offsets[None, :]) % M0
+            idx1 = (b1[:, None] + offsets[None, :]) % M1
+            contrib = k0[:, :, None] * k1[:, None, :] * weights[:, None, None]
+            i0 = np.broadcast_to(idx0[:, :, None], contrib.shape).ravel()
+            i1 = np.broadcast_to(idx1[:, None, :], contrib.shape).ravel()
+            np.add.at(fine_grid, (i0, i1), contrib.ravel())
 
         elif self.dim == 3:
             M0, M1, M2 = self.fine_shape
-            for j in range(n_points):
-                x0, x1, x2 = scaled_coords[j, 0], scaled_coords[j, 1], scaled_coords[j, 2]
-                b0, b1, b2 = int(np.floor(x0)), int(np.floor(x1)), int(np.floor(x2))
-                
-                d0 = (x0 - (b0 + offsets)) / float(self.w_half)
-                m0 = d0 ** 2 <= 1.0
-                k0 = np.exp(-self.beta * (d0[m0]**2 - 1.0))
-                idx0 = (b0 + offsets[m0]) % M0
-                
-                d1 = (x1 - (b1 + offsets)) / float(self.w_half)
-                m1 = d1 ** 2 <= 1.0
-                k1 = np.exp(-self.beta * (d1[m1]**2 - 1.0))
-                idx1 = (b1 + offsets[m1]) % M1
-
-                d2 = (x2 - (b2 + offsets)) / float(self.w_half)
-                m2 = d2 ** 2 <= 1.0
-                k2 = np.exp(-self.beta * (d2[m2]**2 - 1.0))
-                idx2 = (b2 + offsets[m2]) % M2
-
-                outer_kernel = (k0[:, None, None] * k1[None, :, None] * k2[None, None, :]) * weights[j]
-                fine_grid[np.ix_(idx0, idx1, idx2)] += outer_kernel
+            x0 = scaled_coords[:, 0]
+            x1 = scaled_coords[:, 1]
+            x2 = scaled_coords[:, 2]
+            b0 = np.floor(x0).astype(np.int64)
+            b1 = np.floor(x1).astype(np.int64)
+            b2 = np.floor(x2).astype(np.int64)
+            d0 = (x0[:, None] - (b0[:, None] + offsets[None, :])) / float(self.w_half)
+            d1 = (x1[:, None] - (b1[:, None] + offsets[None, :])) / float(self.w_half)
+            d2 = (x2[:, None] - (b2[:, None] + offsets[None, :])) / float(self.w_half)
+            k0 = np.where(d0 ** 2 <= 1.0, np.exp(-self.beta * (d0 ** 2 - 1.0)), 0.0)
+            k1 = np.where(d1 ** 2 <= 1.0, np.exp(-self.beta * (d1 ** 2 - 1.0)), 0.0)
+            k2 = np.where(d2 ** 2 <= 1.0, np.exp(-self.beta * (d2 ** 2 - 1.0)), 0.0)
+            idx0 = (b0[:, None] + offsets[None, :]) % M0
+            idx1 = (b1[:, None] + offsets[None, :]) % M1
+            idx2 = (b2[:, None] + offsets[None, :]) % M2
+            contrib = (k0[:, :, None, None] * k1[:, None, :, None]
+                       * k2[:, None, None, :] * weights[:, None, None, None])
+            i0 = np.broadcast_to(idx0[:, :, None, None], contrib.shape).ravel()
+            i1 = np.broadcast_to(idx1[:, None, :, None], contrib.shape).ravel()
+            i2 = np.broadcast_to(idx2[:, None, None, :], contrib.shape).ravel()
+            np.add.at(fine_grid, (i0, i1, i2), contrib.ravel())
 
         fine_fft = np.fft.fftn(fine_grid)
         
@@ -242,33 +239,28 @@ class NonUniformFourierHash:
         
         if self.dim == 1:
             M = self.fine_shape[0]
-            for j in range(n_targets):
-                xc = scaled_coords[j, 0]
-                b0 = int(np.floor(xc))
-                d0 = (xc - (b0 + offsets)) / float(self.w_half)
-                m0 = d0 ** 2 <= 1.0
-                k0 = np.exp(-self.beta * (d0[m0]**2 - 1.0))
-                idx0 = (b0 + offsets[m0]) % M
-                values[j] = np.sum(fine_spatial[idx0] * k0)
+            xc = scaled_coords[:, 0]
+            b0 = np.floor(xc).astype(np.int64)
+            d0 = (xc[:, None] - (b0[:, None] + offsets[None, :])) / float(self.w_half)
+            k0 = np.where(d0 ** 2 <= 1.0, np.exp(-self.beta * (d0 ** 2 - 1.0)), 0.0)
+            idx0 = (b0[:, None] + offsets[None, :]) % M
+            values = np.sum(fine_spatial[idx0] * k0, axis=1)
 
         elif self.dim == 2:
             M0, M1 = self.fine_shape
-            for j in range(n_targets):
-                x0, x1 = scaled_coords[j, 0], scaled_coords[j, 1]
-                b0, b1 = int(np.floor(x0)), int(np.floor(x1))
-                
-                d0 = (x0 - (b0 + offsets)) / float(self.w_half)
-                m0 = d0 ** 2 <= 1.0
-                k0 = np.exp(-self.beta * (d0[m0]**2 - 1.0))
-                idx0 = (b0 + offsets[m0]) % M0
-                
-                d1 = (x1 - (b1 + offsets)) / float(self.w_half)
-                m1 = d1 ** 2 <= 1.0
-                k1 = np.exp(-self.beta * (d1[m1]**2 - 1.0))
-                idx1 = (b1 + offsets[m1]) % M1
-                
-                sub_patch = fine_spatial[np.ix_(idx0, idx1)]
-                values[j] = np.sum(sub_patch * np.outer(k0, k1))
+            x0 = scaled_coords[:, 0]
+            x1 = scaled_coords[:, 1]
+            b0 = np.floor(x0).astype(np.int64)
+            b1 = np.floor(x1).astype(np.int64)
+            d0 = (x0[:, None] - (b0[:, None] + offsets[None, :])) / float(self.w_half)
+            d1 = (x1[:, None] - (b1[:, None] + offsets[None, :])) / float(self.w_half)
+            k0 = np.where(d0 ** 2 <= 1.0, np.exp(-self.beta * (d0 ** 2 - 1.0)), 0.0)
+            k1 = np.where(d1 ** 2 <= 1.0, np.exp(-self.beta * (d1 ** 2 - 1.0)), 0.0)
+            idx0 = (b0[:, None] + offsets[None, :]) % M0
+            idx1 = (b1[:, None] + offsets[None, :]) % M1
+            sub_patch = fine_spatial[idx0[:, :, None], idx1[:, None, :]]
+            kernel2d = k0[:, :, None] * k1[:, None, :]
+            values = np.sum(sub_patch * kernel2d, axis=(1, 2))
 
         return values
 
