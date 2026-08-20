@@ -1,9 +1,12 @@
 """
 Fast Co-Optimal Transport (CO-OT) & Fused Gromov-Wasserstein Engine (`co_optimal_transport.py`)
 ==============================================================================================
-Linear-Time O(N + M) Entropic Gromov-Wasserstein & Co-Optimal Transport.
-Aligns heterogeneous multi-modal spaces of differing dimensions and metric geometries without
-allocating dense 4-way N x N x M x M interaction tensors.
+Dense O(N^2 + M^2) reference Entropic Gromov-Wasserstein & Co-Optimal Transport.
+The "linear-time O(N + M)" claim is aspirational: compute_pairwise_distances builds a dense
+N x N (and M x M) distance matrix, and each GW iteration performs dense N x N matmuls, so the
+implemented cost is O(N^2 + M^2) per iteration. Aligns heterogeneous multi-modal spaces of
+differing dimensions and metric geometries without allocating dense 4-way N x N x M x M
+interaction tensors.
 
 Key Applications:
 - Multi-Omics Cross-Modal Alignment (e.g., 20,000-gene scRNA-seq to 3D Spatial Transcriptomics).

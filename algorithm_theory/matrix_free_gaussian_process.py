@@ -18,9 +18,10 @@ which requires O(N^3) time and O(N^2) memory via dense Cholesky factorization, f
 By recognizing that matrix-vector multiplication K_XX * v is a continuous Gaussian potential summation:
     (K_XX * v)_i = sigma_f^2 * sum_{j=1}^N exp(-||x_i - x_j||^2 / (2 * ell^2)) * v_j
 
-Using Tree-Free Elastic Spatial Hashing with cutoff radius R_cut = 3.5 * ell, the matrix-vector product
-is evaluated in strictly O(N) operations. Solving (K + sigma_n^2 * I) * alpha = y via Preconditioned
-Conjugate Gradients (PCG) enables exact million-point Gaussian Processes in linear time and linear memory.
+Using Tree-Free Elastic Spatial Hashing with cutoff radius R_cut = 3.5 * ell, the sparse-truncated
+matrix-vector product is evaluated in O(N * nnz_per_point) operations (exact for the cutoff-truncated
+RBF kernel at ~1e-7). Solving (K + sigma_n^2 * I) * alpha = y via Preconditioned Conjugate Gradients
+(PCG) enables sparse-truncated exact Gaussian Processes in O(N * iters * nnz) time and linear memory.
 """
 
 import time
@@ -31,8 +32,13 @@ import numpy as np
 class MatrixFreeGaussianProcess:
     """
     Tree-Free Matrix-Free Gaussian Process Regression Solver.
-    
-    Fits GPs and computes predictive mean and variance in O(N) time without dense matrices.
+
+    Fits GPs via sparse-truncated matrix-free PCG (O(N * iters * nnz) training).
+    Predictive mean is O(N_test * nnz_per_point). Predictive variance with
+    compute_variance=True loops over each test point running a separate PCG solve
+    against the full training set, so it costs O(N_test * N_train * iters * nnz) --
+    not O(N). Batching the variance solve (plan task X-A10) is what would restore
+    near-linear predict-time cost.
     """
     def __init__(
         self,

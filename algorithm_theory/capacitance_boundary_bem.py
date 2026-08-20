@@ -18,7 +18,10 @@ charges sigma(x) dynamically rearrange, governed by the first-kind boundary inte
 Classical BEM discretizes the surface into N_surf boundary patches, assembling a dense
 N_surf x N_surf capacitance matrix requiring O(N_surf^3) direct LU inversion or O(N_surf^2) GMRES iterations.
 Here, we build a Matrix-Free Tree-Free BEM Solver where each GMRES matrix-vector product
-A * v is evaluated in O(N_surf) via tree-free multipole translation.
+A * v is evaluated via a per-cell monopole far-field approximation plus direct near-field
+patch-to-patch summation. The current implementation iterates over all cell pairs in a Python
+double loop (O(K^2) in the number of occupied cells, K), so the matvec is not yet O(N_surf);
+the O(N_surf) target requires the true Coulomb FMM matvec (see plan task X-A7).
 """
 
 import time
@@ -64,8 +67,12 @@ class CapacitanceBoundaryBEM:
 
     def evaluate_boundary_potential(self, sigma_charges: np.ndarray) -> np.ndarray:
         """
-        Matrix-vector multiplication A * sigma in O(N_surf) time.
+        Matrix-vector multiplication A * sigma.
         Evaluates potential on boundary points produced by current surface charges.
+
+        Complexity: O(K^2 * n_avg^2) where K is the number of occupied cells and n_avg the
+        average panels per cell -- the outer loop visits all cell pairs. Not yet O(N_surf);
+        the linear-time target requires the true Coulomb FMM matvec (plan task X-A7).
         """
         sigma_charges = np.asarray(sigma_charges, dtype=np.float64)
         discrete_charges = sigma_charges * self.areas

@@ -22,8 +22,10 @@ By using Elastic Spatial Hashing, non-uniform points are mapped to local grid bu
 Compact exponential/Gaussian window spreading:
     psi(x) = exp(-beta * ((2*x / w)^2 - 1))
 is evaluated within local stencil windows (width w << M), followed by standard uniform FFT
-and diagonal reciprocal deconvolution. This drops asymptotic complexity from O(N * M) to
-O(N * w^D + M log M).
+and diagonal reciprocal deconvolution. The target asymptotic complexity is O(N * w^D + M log M);
+however the current implementation performs the spreading/interpolation in per-point Python
+loops, so the wall-clock cost is not yet at that asymptote. Vectorizing those loops (plan task
+X-A11) is what makes the O(N * w^D + M log M) claim hold in practice.
 """
 
 import time

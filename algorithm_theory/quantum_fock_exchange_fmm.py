@@ -41,10 +41,14 @@ def fast_erf(x: np.ndarray) -> np.ndarray:
 class ContinuousFockExchangeFMM:
     """
     Continuous Fast Multipole Method (CFMM) for 2-Electron Coulomb (J) and Exchange (K) Matrices.
-    
+
     Evaluates:
         J_{mu nu} = sum_{lambda, sigma} P_{lambda sigma} (mu nu | lambda sigma)
-    in O(N_basis) operations.
+    The far-field evaluation over spatially separated pairs targets O(N_basis); however the
+    pair-generation step (_build_overlap_distributions) is currently an O(N_basis^2) Python
+    double loop over all (mu, nu) basis pairs. Vectorizing pair generation (plan task X-A8)
+    is what removes that quadratic bottleneck; the O(N_basis) claim applies to the far-field
+    evaluation only, not to pair construction.
     """
     def __init__(
         self,

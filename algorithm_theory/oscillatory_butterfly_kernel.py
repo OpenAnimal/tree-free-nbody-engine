@@ -23,6 +23,10 @@ strictly bounded by a small constant r = O(1).
 Factoring K into L = O(log N) sparse butterfly layers:
     K \approx B_L * B_{L-1} * ... * B_1
 drops high-frequency matrix-vector multiplication from O(N^2) to O(N * log N).
+
+NOTE: this module implements only a single-level directional rank-2 parabolic expansion
+(O(N) per application), not the full L = O(log N) butterfly hierarchy, so the O(N log N)
+claim above describes the target algorithm, not the code shipped here.
 """
 
 import time
@@ -33,10 +37,11 @@ import numpy as np
 class OscillatoryButterflyKernel:
     """
     Directional Butterfly Factorization Operator for High-Frequency Helmholtz Kernels.
-    
+
     Computes:
         u(x_i) = sum_{j=1}^N q_j * exp(i * k * ||x_i - y_j||) / (4 * pi * ||x_i - y_j||)
-    in O(N * log N) operations at high wavenumbers k.
+    via a single-level directional rank-2 parabolic factorization (O(N) per application),
+    not the full O(N log N) L-layer butterfly hierarchy.
     """
     def __init__(
         self,
