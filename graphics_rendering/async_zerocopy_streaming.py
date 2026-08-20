@@ -1,11 +1,12 @@
 """
 Asynchronous Multi-GPU Zero-Copy Streaming Graphics Pipeline (`async_zerocopy_streaming.py`)
 =============================================================================================
-Non-Blocking, Lock-Free Multi-Queue Streaming Engine for Real-Time Global Illumination,
+Non-Blocking, Double-Buffered Multi-Queue Streaming Engine for Real-Time Global Illumination,
 Dynamic Surfel Radiosity, and Multi-Million Point Cloud CAD/Vulkan/DirectX Rendering.
 
 Key Features:
-- Lock-Free Double-Buffered Ring Queues for Zero-Copy Host-Device Shared Memory Transfers.
+- Double-Buffered Ring Queues for Zero-Copy Host-Device Shared Memory Transfers (double-buffered,
+  not lock-free: producer/consumer swap buffers under a small critical section).
 - Morton Spatial Tile Clustering with Incremental Dirty-Tile Cache Updates.
 - Asynchronous Overlap: Concurrently gathers far-field irradiance while streaming near geometry.
 - 60+ FPS Real-Time Target on 250,000+ Dynamic Surface Elements.

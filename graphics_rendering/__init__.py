@@ -2,7 +2,9 @@
 Graphics & Real-Time Rendering Suite (`graphics_rendering`)
 Point-Based Global Illumination, Surfel Radiosity, Volumetric AO, Continuous Raymarching,
 Gridless Irradiance Caching, and Asynchronous Zero-Copy Multi-GPU Streaming Pipelines.
-Powered by Tree-Free Fast Multipole Method (FMM) and Elastic Spatial Hashing.
+Spatial hashing and clustering primitives; see each module's docstring for the
+method it actually implements (most modules are Barnes-Hut-style tree codes or
+voxel/SH interpolants, not translation-based FMMs).
 """
 
 from .surfel_radiosity_gi import SurfelRadiosityGI, Surfel

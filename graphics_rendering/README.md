@@ -35,12 +35,12 @@ graphics_rendering/
 
 | Module | Purpose / Real-World Application | Measured Throughput / Latency | Algorithmic Benefit |
 | :--- | :--- | :--- | :--- |
-| **`surfel_radiosity_gi.py`** | Multi-bounce indirect diffuse lighting (Cornell box / game rooms). | **12.9 ms** (1,000 surfels) / **47.9 ms** (5,000 surfels) | Replaces $O(N^2)$ all-pairs raycasting with $O(N)$ dipole multipole clustering. |
+| **`surfel_radiosity_gi.py`** | Multi-bounce indirect diffuse lighting (Cornell box / game rooms). | **12.9 ms** (1,000 surfels) / **47.9 ms** (5,000 surfels) | Cluster build is $O(N)$; per-surfel evaluation is $O(N \cdot K)$ over $K$ clusters (Barnes-Hut-style dipole, not a translation-based FMM). |
 | **`volumetric_fmm_ao.py` [Voxel]** | Fast near-field volumetric raymarching (fog, smoke, local canopy). | **150,000+ Rays/sec** (1.3 ms for 5k rays) | Hardware trilinear interpolation with 3D voxel texture memory layouts. |
 | **`volumetric_fmm_ao.py` [Hybrid]** | Unbounded deep shadowing + local high-res raymarching. | **20,000+ Queries/sec** | Zero light-leaking through thin walls + unbounded long-range shadow attenuation. |
 | **`dynamic_irradiance_cache.py`** | Indirect lighting on dynamic moving characters and props. | **5.65 ms** (177+ FPS probe query) | Gridless Spherical Harmonic interpolation with zero light-leaking through thin walls. |
 | **`gpu_hardware_interop.py`** | Direct zero-copy GPU staging for Texture3D, clusters & SH probes. | **0.11 ms** (227M+ vertices/s zero-copy stage) | 16-byte float4 and 64-byte cache-aligned layouts for HLSL/GLSL StructuredBuffer & Texture3D interop. |
-| **`async_zerocopy_streaming.py`** | Lock-free double-buffered geometry and radiance streaming. | **400+ FPS** (real-time 60+ FPS verified on 30k+ surfels) | Morton spatial tile binning with incremental dirty-tile caching. |
+| **`async_zerocopy_streaming.py`** | Double-buffered (not lock-free) geometry and radiance streaming. | **400+ FPS** (real-time 60+ FPS verified on 30k+ surfels) | Morton spatial tile binning with incremental dirty-tile caching. |
 
 ---
 
