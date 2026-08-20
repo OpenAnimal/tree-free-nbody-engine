@@ -71,39 +71,32 @@ class ContinuousFockExchangeFMM:
         """
         Applies Gaussian Product Theorem to compute charge centers P, total charges Q,
         and composite exponents gamma for all non-negligible basis pairs (mu, nu).
+
+        Vectorized with np.triu_indices: the O(N_basis^2) upper-triangle index arrays
+        are built once, then all Gaussian-product quantities (P, Q, gamma, overlap
+        screen) are computed as single vectorized numpy ops and filtered by a boolean
+        mask. Pair ordering is identical to the previous mu/nu double loop.
         """
-        P_list = []
-        Q_list = []
-        gamma_list = []
-        pair_indices = []
+        mu_arr, nu_arr = np.triu_indices(self.n_basis, k=0)
+        a_mu = self.exponents[mu_arr]
+        a_nu = self.exponents[nu_arr]
+        r_mu = self.coords[mu_arr]
+        r_nu = self.coords[nu_arr]
 
-        for mu in range(self.n_basis):
-            r_mu = self.coords[mu]
-            a_mu = self.exponents[mu]
-            
-            for nu in range(mu, self.n_basis):
-                r_nu = self.coords[nu]
-                a_nu = self.exponents[nu]
-                
-                gamma = a_mu + a_nu
-                P_center = (a_mu * r_mu + a_nu * r_nu) / gamma
-                disp_sq = np.sum((r_mu - r_nu) ** 2)
-                
-                overlap_k = np.exp(-(a_mu * a_nu / gamma) * disp_sq) * ((np.pi / gamma) ** 1.5)
-                
-                if overlap_k > self.threshold:
-                    P_list.append(P_center)
-                    mult = 2.0 if mu != nu else 1.0
-                    Q_list.append(overlap_k * mult)
-                    gamma_list.append(gamma)
-                    pair_indices.append((mu, nu))
+        gamma = a_mu + a_nu
+        P_center = (a_mu[:, None] * r_mu + a_nu[:, None] * r_nu) / gamma[:, None]
+        disp_sq = np.sum((r_mu - r_nu) ** 2, axis=-1)
+        overlap_k = np.exp(-(a_mu * a_nu / gamma) * disp_sq) * ((np.pi / gamma) ** 1.5)
 
-        self.P_centers = np.array(P_list, dtype=np.float64)
-        self.Q_charges = np.array(Q_list, dtype=np.float64)
-        self.gammas = np.array(gamma_list, dtype=np.float64)
-        self.pair_indices = pair_indices
-        self.pair_mu = np.array([p[0] for p in pair_indices], dtype=np.int64) if len(pair_indices) > 0 else np.array([], dtype=np.int64)
-        self.pair_nu = np.array([p[1] for p in pair_indices], dtype=np.int64) if len(pair_indices) > 0 else np.array([], dtype=np.int64)
+        mask = overlap_k > self.threshold
+        self.pair_mu = mu_arr[mask].astype(np.int64)
+        self.pair_nu = nu_arr[mask].astype(np.int64)
+        self.P_centers = np.ascontiguousarray(P_center[mask], dtype=np.float64)
+        overlap_keep = overlap_k[mask]
+        mult = np.where(self.pair_mu != self.pair_nu, 2.0, 1.0)
+        self.Q_charges = overlap_keep * mult
+        self.gammas = gamma[mask]
+        self.pair_indices = list(zip(self.pair_mu.tolist(), self.pair_nu.tolist()))
         self.n_pairs = len(self.P_centers)
 
         # Spatial Hash Partitioning
