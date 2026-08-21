@@ -26,8 +26,13 @@ enabling real-time decentralized logistics and continuous density matching on ma
 """
 
 import time
+import os
+import sys
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class FastEntropicOptimalTransport:
@@ -57,56 +62,36 @@ class FastEntropicOptimalTransport:
         """
         Precomputes sparse block interaction stencils between targets and sources.
         Returns list of (target_indices, source_indices, kernel_matrix_block).
+
+        X-A12: uses CellIndex (world mode, cell_size = r_cut) instead of
+        hand-rolled dict hashing with tuple keys.  Same cell size and 3^D
+        ring-1 neighborhood, so the neighbor sets are identical.
         """
         cell_size = self.r_cut
         dim = targets.shape[1]
         inv_2gamma2 = 1.0 / (2.0 * (self.gamma ** 2))
         r_cut_sq = self.r_cut ** 2
 
-        # Source hash
-        src_grid = np.floor(sources / cell_size).astype(np.int64)
-        src_keys = [tuple(c) for c in src_grid]
-        src_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, k in enumerate(src_keys):
-            if k not in src_buckets:
-                src_buckets[k] = []
-            src_buckets[k].append(idx)
-        src_arrays = {k: np.array(v, dtype=np.int64) for k, v in src_buckets.items()}
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grids.
+        src_index = CellIndex(dims=dim, cell_size=cell_size)
+        src_index.build(sources)
 
-        # Target hash
-        tgt_grid = np.floor(targets / cell_size).astype(np.int64)
-        tgt_keys = [tuple(c) for c in tgt_grid]
-        tgt_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, k in enumerate(tgt_keys):
-            if k not in tgt_buckets:
-                tgt_buckets[k] = []
-            tgt_buckets[k].append(idx)
-        tgt_arrays = {k: np.array(v, dtype=np.int64) for k, v in tgt_buckets.items()}
-
-        dxs = (-1, 0, 1)
-        dys = (-1, 0, 1)
-        dzs = (-1, 0, 1) if dim >= 3 else (0,)
+        tgt_index = CellIndex(dims=dim, cell_size=cell_size)
+        tgt_index.build(targets)
 
         blocks = []
-        for t_k, t_idx in tgt_arrays.items():
-            cand_src = []
-            for dx in dxs:
-                for dy in dys:
-                    for dz in dzs:
-                        s_k = (t_k[0] + dx, t_k[1] + dy, t_k[2] + dz) if dim >= 3 else (t_k[0] + dx, t_k[1] + dy)
-                        if s_k in src_arrays:
-                            cand_src.append(src_arrays[s_k])
-
-            if len(cand_src) == 0:
+        for tkey, t_idx in tgt_index.items():
+            t_idx = np.asarray(t_idx, dtype=np.int64)
+            s_idx_all = src_index.neighborhood_indices(tkey, ring=1)
+            if len(s_idx_all) == 0:
                 continue
 
-            s_idx_all = np.concatenate(cand_src)
             pts_t = targets[t_idx]
             pts_s = sources[s_idx_all]
 
             diff = pts_t[:, None, :] - pts_s[None, :, :]
             r_sq = np.sum(diff ** 2, axis=-1)
-            
+
             mask = r_sq <= r_cut_sq
             k_mat = np.where(mask, np.exp(-r_sq * inv_2gamma2), 0.0)
             blocks.append((t_idx, s_idx_all, k_mat))
