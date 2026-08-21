@@ -15,6 +15,11 @@ Key Capabilities:
 from typing import Tuple, Optional, List, Dict, Union, Any, Set
 import numpy as np
 import time
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class SpatialDisjointSetFMM:
@@ -93,61 +98,53 @@ class SpatialDisjointSetFMM:
         return True
 
     def _build_spatial_hash_and_unify(self):
-        """Constructs spatial grid and merges adjacent points within radius epsilon."""
-        # Quantize coordinates to cell coordinates of size eps
-        cell_coords = np.floor(self.points / self.eps).astype(np.int64)
-        
-        # Map tuple(cell_coords) -> list of point indices
-        cell_map: Dict[Tuple[int, ...], List[int]] = {}
-        for idx in range(self.N):
-            cell_key = tuple(cell_coords[idx].tolist())
-            if cell_key not in cell_map:
-                cell_map[cell_key] = []
-            cell_map[cell_key].append(idx)
-            
-        # Generate directional neighbor offsets in D dimensions: (-1, 0, 1)^D
-        dim_ranges = [(-1, 0, 1) for _ in range(self.D)]
-        offsets = np.array(np.meshgrid(*dim_ranges)).T.reshape(-1, self.D)
-        
-        visited_cells: Set[Tuple[int, ...]] = set()
-        
-        for cell_key, p_indices in cell_map.items():
-            cell_arr = np.array(cell_key, dtype=np.int64)
-            
+        """Constructs spatial grid and merges adjacent points within radius epsilon.
+
+        X-A12: uses CellIndex (world mode, cell_size = eps) instead of the
+        hand-rolled dict grid with tuple keys.  Same cell size and 3^D ring-1
+        neighborhood, so the neighbor sets are identical.  The visited-cell
+        guard (Morton keys) ensures each inter-cell pair is processed once,
+        matching the original semantics.
+        """
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
+        idx = CellIndex(dims=self.D, cell_size=self.eps)
+        idx.build(self.points)
+
+        visited_cells: Set[int] = set()
+
+        for cell_key, p_indices in idx.items():
+            p_indices = np.asarray(p_indices, dtype=np.int64)
+
             # 1. Intra-cell connectivity
             if len(p_indices) > 1:
                 pts_in_cell = self.points[p_indices]
                 for i_local in range(len(p_indices)):
-                    idx_i = p_indices[i_local]
+                    idx_i = int(p_indices[i_local])
                     p_i = pts_in_cell[i_local]
                     diffs = pts_in_cell[i_local + 1:] - p_i[None, :]
                     dists_sq = np.sum(diffs**2, axis=1)
                     matches = np.where(dists_sq <= self.eps_sq)[0]
                     for m in matches:
-                        idx_j = p_indices[i_local + 1 + m]
+                        idx_j = int(p_indices[i_local + 1 + m])
                         self.union(idx_i, idx_j)
-                        
+
             # 2. Inter-cell neighborhood connectivity
-            for off in offsets:
-                # Check only non-zero positive directional offsets or unvisited neighbors
-                if np.all(off == 0):
+            for nbr_key in idx.neighbor_keys(cell_key, ring=1):
+                if nbr_key == cell_key or nbr_key in visited_cells:
                     continue
-                neighbor_key = tuple((cell_arr + off).tolist())
-                if neighbor_key in visited_cells or neighbor_key not in cell_map:
-                    continue
-                    
-                neigh_indices = cell_map[neighbor_key]
+
+                neigh_indices = np.asarray(idx.bucket(nbr_key), dtype=np.int64)
                 pts_neigh = self.points[neigh_indices]
                 pts_curr = self.points[p_indices]
-                
+
                 # Pairwise distance broadcast between cells
                 diffs = pts_curr[:, None, :] - pts_neigh[None, :, :]
                 dists_sq = np.sum(diffs**2, axis=-1)
                 match_rows, match_cols = np.where(dists_sq <= self.eps_sq)
-                
+
                 for r, c in zip(match_rows, match_cols):
-                    self.union(p_indices[r], neigh_indices[c])
-                    
+                    self.union(int(p_indices[r]), int(neigh_indices[c]))
+
             visited_cells.add(cell_key)
 
     def get_components_summary(self) -> Dict[str, Any]:
@@ -179,50 +176,44 @@ class SpatialDisjointSetFMM:
         """
         Computes edges of the approximate Euclidean Minimum Spanning Forest (EMSF)
         connecting points within radius epsilon.
+
+        X-A12: uses CellIndex (world mode, cell_size = eps) instead of the
+        hand-rolled dict grid with tuple keys.  Same cell size and 3^D ring-1
+        neighborhood, so the neighbor sets are identical.  The visited-cell
+        guard (Morton keys) ensures each inter-cell pair is processed once.
         """
-        # Re-run Kruskal-style edge collection across spatial neighborhood
-        cell_coords = np.floor(self.points / self.eps).astype(np.int64)
-        cell_map: Dict[Tuple[int, ...], List[int]] = {}
-        for idx in range(self.N):
-            cell_key = tuple(cell_coords[idx].tolist())
-            if cell_key not in cell_map:
-                cell_map[cell_key] = []
-            cell_map[cell_key].append(idx)
-            
-        dim_ranges = [(-1, 0, 1) for _ in range(self.D)]
-        offsets = np.array(np.meshgrid(*dim_ranges)).T.reshape(-1, self.D)
-        
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
+        idx = CellIndex(dims=self.D, cell_size=self.eps)
+        idx.build(self.points)
+
         edges: List[Tuple[float, int, int]] = []
-        visited_cells: Set[Tuple[int, ...]] = set()
-        
-        for cell_key, p_indices in cell_map.items():
-            cell_arr = np.array(cell_key, dtype=np.int64)
+        visited_cells: Set[int] = set()
+
+        for cell_key, p_indices in idx.items():
+            p_indices = np.asarray(p_indices, dtype=np.int64)
             pts_in_cell = self.points[p_indices]
-            
+
             for i_local in range(len(p_indices)):
-                idx_i = p_indices[i_local]
+                idx_i = int(p_indices[i_local])
                 p_i = pts_in_cell[i_local]
                 diffs = pts_in_cell[i_local + 1:] - p_i[None, :]
                 dists = np.sqrt(np.sum(diffs**2, axis=1))
                 matches = np.where(dists <= self.eps)[0]
                 for m in matches:
-                    edges.append((float(dists[m]), idx_i, p_indices[i_local + 1 + m]))
-                    
-            for off in offsets:
-                if np.all(off == 0):
+                    edges.append((float(dists[m]), idx_i, int(p_indices[i_local + 1 + m])))
+
+            for nbr_key in idx.neighbor_keys(cell_key, ring=1):
+                if nbr_key == cell_key or nbr_key in visited_cells:
                     continue
-                neighbor_key = tuple((cell_arr + off).tolist())
-                if neighbor_key in visited_cells or neighbor_key not in cell_map:
-                    continue
-                neigh_indices = cell_map[neighbor_key]
+                neigh_indices = np.asarray(idx.bucket(nbr_key), dtype=np.int64)
                 pts_neigh = self.points[neigh_indices]
-                
+
                 diffs = pts_in_cell[:, None, :] - pts_neigh[None, :, :]
                 dists = np.sqrt(np.sum(diffs**2, axis=-1))
                 m_r, m_c = np.where(dists <= self.eps)
                 for r, c in zip(m_r, m_c):
-                    edges.append((float(dists[r, c]), p_indices[r], neigh_indices[c]))
-                    
+                    edges.append((float(dists[r, c]), int(p_indices[r]), int(neigh_indices[c])))
+
             visited_cells.add(cell_key)
             
         # Kruskal greedy sort & merge
