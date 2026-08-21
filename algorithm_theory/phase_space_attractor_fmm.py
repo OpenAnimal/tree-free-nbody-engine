@@ -25,8 +25,13 @@ Using Tree-Free Elastic Spatial Hashing on the d-dimensional attractor manifold:
 """
 
 import time
+import os
+import sys
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class PhaseSpaceAttractorFMM:
@@ -71,43 +76,33 @@ class PhaseSpaceAttractorFMM:
         """
         Computes local attractor point density rho(v_i) = count(||v_i - v_j|| <= r)
         in O(N) time using spatial hashing.
+
+        X-A12: uses CellIndex (world mode, cell_size = r) instead of the
+        hand-rolled dict grid with tuple keys.  Same cell size and 3^D ring-1
+        neighborhood, so the neighbor sets are identical.
         """
         points = np.asarray(embedded_vectors, dtype=np.float64)
         N = len(points)
 
-        # Spatial Hash Partitioning
-        grid_coords = np.floor(points / self.cell_size).astype(np.int64)
-        buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, coord in enumerate(grid_coords):
-            k = tuple(coord)
-            if k not in buckets:
-                buckets[k] = []
-            buckets[k].append(idx)
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
+        idx = CellIndex(dims=self.dim, cell_size=self.cell_size)
+        idx.build(points)
 
-        cell_arrays = {k: np.array(v, dtype=np.int64) for k, v in buckets.items()}
         recurrence_counts = np.zeros(N, dtype=np.float64)
 
-        from itertools import product
-        neighbor_offsets = tuple(product((-1, 0, 1), repeat=self.dim))
-
-        for target_k, target_indices in cell_arrays.items():
+        for cell_key, target_indices in idx.items():
+            target_indices = np.asarray(target_indices, dtype=np.int64)
             t_pos = points[target_indices]
-            
-            cand_src_list = []
-            for offset in neighbor_offsets:
-                src_k = tuple(coord + delta for coord, delta in zip(target_k, offset))
-                if src_k in cell_arrays:
-                    cand_src_list.append(cell_arrays[src_k])
 
-            if len(cand_src_list) == 0:
+            src_indices = idx.neighborhood_indices(cell_key, ring=1)
+            if len(src_indices) == 0:
                 continue
 
-            src_indices = np.concatenate(cand_src_list)
             s_pos = points[src_indices]
 
             diff = t_pos[:, None, :] - s_pos[None, :, :]
             dist_sq = np.sum(diff ** 2, axis=-1)
-            
+
             mask = dist_sq <= (self.r ** 2)
             recurrence_counts[target_indices] = np.sum(mask, axis=1)
 
