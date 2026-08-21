@@ -1,15 +1,28 @@
 """
-Volumetric Tetrahedral Broadphase Scaffold for Soft-Robotics / Surgical Meshes.
+Volumetric tetrahedral broadphase scaffold for soft-robotics / surgical meshes.
 
-STATUS: SCAFFOLD, NOT A SOLVER. This module currently performs only the 3D
-spatial broadphase pass (quantize vertices to Morton cell keys, index the
-occupied cells in the non-reordering elastic hash, and query the 27-cell
-neighborhood to count adjacent-vertex pairs). It contains NO elasticity
-model, NO IPC barrier solve, and NO time integration — despite the folder's
-historical name there is no FMM here either. The real matrix-free IPC
-solver lives in matrix_free_ipc.py (cloth shells, verified barrier forces
-and matrix-free CG). Remove or extend this scaffold before citing any
-contact or physics guarantee from it.
+WHAT RUNS: a single uniform-grid spatial broadphase pass.
+`solve_deformable_step` quantizes the (N,3) vertices to 3D Morton cell keys
+(10-bit/axis, grid_res=32, unit mode floor(p*32)), inserts the occupied keys
+into the non-reordering elastic hash (core.spatial_index.CellIndex), and for
+each occupied cell probes the 27-cell Chebyshev-1 neighborhood through the
+hash. The returned `broadphase_neighbor_cell_pairs` is the sum of
+occupied-neighbor-cell counts over all occupied cells -- a cell-adjacency
+tally, NOT a vertex-pair count and NOT a candidate-contact list (the
+per-vertex bucket contents are never read).
+
+WHAT IS STUB: everything past broadphase. There is no FEM elasticity, no IPC
+barrier term, no Newton/CG solve, no time integration, and no use of the
+`tets` connectivity argument. `solver_active` is hard-coded False and
+`csr_memory_allocated_mb` is hard-coded 0.0. The constructor parameters
+(dhat, stiffness_contact, k_young) are stored but never consumed.
+
+FMM / SPATIAL INDEXING: despite the folder name there is no FMM in this
+module -- no multipole expansion, no far-field/near-field split, no kernel
+evaluation. CellIndex is used purely as a uniform-grid occupancy hash for
+neighbor bucketing; its `far_keys`/`moments` (the FMM-relevant pieces) are
+not called here. The verified matrix-free IPC barrier solver lives in
+matrix_free_ipc.py (cloth shells, verified barrier forces, matrix-free CG).
 """
 
 import numpy as np
