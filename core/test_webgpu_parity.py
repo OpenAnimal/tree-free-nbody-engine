@@ -69,8 +69,9 @@ def main():
     from core import FastVectorizedFMM
 
     fmm_ref = FastVectorizedFMM(depth=5, order=8, softening=softening)
-    _, forces_ref, _ = fmm_ref.evaluate(pts, q, compute_forces=True)
-    forces_ref = np.asarray(forces_ref, dtype=np.float64)
+    _, fx_ref, fy_ref = fmm_ref.evaluate(pts, q, compute_forces=True)
+    forces_ref = np.stack([np.asarray(fx_ref, dtype=np.float64),
+                           np.asarray(fy_ref, dtype=np.float64)], axis=1)
 
     # 4. WGSL pipeline: run the fixed-grid WGSL FMM via the runner.
     #    The runner loads tree_free_fmm.wgsl and dispatches the compute

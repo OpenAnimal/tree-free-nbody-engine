@@ -37,8 +37,32 @@ ITEMS = [
      ["-m", "core.test_gaussian2d_fgt"], False),
     ("core.test_screened_yukawa2d_fmm",
      ["-m", "core.test_screened_yukawa2d_fmm"], False),
+    ("core.test_uniform_multilevel_fmm",
+     ["-m", "core.test_uniform_multilevel_fmm"], False),
     ("core.test_webgpu_parity",
      ["-m", "core.test_webgpu_parity"], True),
+    # T-E1 file-kernel gate: adaptive_cgr88.wgsl compile (16-binding
+    # consolidated layout) + counting-sort CSR validation via wgpu-py.
+    # Skippable-with-reason like test_webgpu_parity when wgpu is absent.
+    ("core.test_adaptive_wgsl_csr",
+     ["-m", "core.test_adaptive_wgsl_csr"], True),
+    ("core.test_jax_pipeline",
+     ["-m", "core.test_jax_pipeline"], True),
+    # Round-7 T-F1: neural_ops + bioinformatics + algorithm_theory coverage
+    ("neural_ops.test_fmm_neural_ops",
+     ["neural_ops/test_fmm_neural_ops.py"], False),
+    ("neural_ops.test_neural_ops_advanced",
+     ["neural_ops/test_neural_ops_advanced.py"], False),
+    ("neural_ops.test_farfield_error",
+     ["neural_ops/test_farfield_error.py"], False),
+    ("neural_ops.test_kv_cache_recall",
+     ["neural_ops/test_kv_cache_recall.py"], False),
+    ("bioinformatics.test_sota_modules",
+     ["bioinformatics/test_sota_modules.py"], False),
+    ("algorithm_theory.test_basic_datatypes_fmm",
+     ["algorithm_theory/test_basic_datatypes_fmm.py"], False),
+    ("environmental_modeling.test_environmental_suite",
+     ["-m", "environmental_modeling.test_environmental_suite"], False),
     ("graphics_rendering/test_graphics_rendering.py",
      ["graphics_rendering/test_graphics_rendering.py"], False),
     ("video_streaming_codecs/test_video_streaming.py",
@@ -48,14 +72,22 @@ ITEMS = [
     ("tools/check_wgsl_sync.py",
      ["tools/check_wgsl_sync.py"], False),
     # The five benchmark_variants.py files (core + 4 domain folders).
+    # core/benchmark_variants.py is skippable: it runs the full scaling
+    # sweep (direct O(N^2) at N=32000, ~36s) plus the adaptive CGR88 engine
+    # (Python tree traversal, ~1s) on every invocation.  In CI / quick-check
+    # contexts that only need the lint+sync+unit-test matrix, the SKIP note
+    # below documents why it was omitted.  The full BENCHMARKS.md tables are
+    # regenerated on demand by running the file directly.
     ("core/benchmark_variants.py",
-     ["core/benchmark_variants.py"], False),
+     ["core/benchmark_variants.py"], True),
     ("game_mechanics_spatial/benchmark_variants.py",
      ["game_mechanics_spatial/benchmark_variants.py"], False),
     ("graphics_rendering/benchmark_variants.py",
      ["graphics_rendering/benchmark_variants.py"], False),
     ("physics_simulation/ppf_contact_solver_fmm/benchmark_variants.py",
      ["physics_simulation/ppf_contact_solver_fmm/benchmark_variants.py"], False),
+    ("physics_simulation.test_matrix_free_ipc",
+     ["physics_simulation/test_matrix_free_ipc.py"], False),
     ("video_streaming_codecs/benchmark_variants.py",
      ["video_streaming_codecs/benchmark_variants.py"], False),
 ]
@@ -66,9 +98,21 @@ SKIP_MARKERS = ("SKIP:", "SKIP ")
 
 
 def _classify(label: str, exit_code: int, tail: str, skippable: bool):
-    """Return (status, reason). status in {PASS, FAIL, SKIP}."""
+    """Return (status, reason). status in {PASS, FAIL, SKIP}.
+
+    SKIP-vs-PASS classification is independent of the skippable flag: a
+    SKIP marker in the output means SKIP regardless of whether the item is
+    skippable.  The skippable flag only controls whether a legitimate SKIP
+    is acceptable (non-skippable SKIPs are still reported as SKIP, but they
+    set any_fail in main because a non-skippable item should not be
+    skipping).  Any non-SKIP failure (nonzero exit, no SKIP marker) sets
+    any_fail regardless of the skippable flag.
+    """
     tail_stripped = (tail or "").strip()
-    if skippable and exit_code == 0 and any(m in tail_stripped for m in SKIP_MARKERS):
+    has_skip_marker = any(m in tail_stripped for m in SKIP_MARKERS)
+    # SKIP classification is independent of skippable: if the output says
+    # SKIP and the process exited 0, classify as SKIP.
+    if has_skip_marker and exit_code == 0:
         return "SKIP", tail_stripped
     if exit_code == 0:
         if any(m in tail_stripped for m in PASS_MARKERS):
@@ -84,7 +128,7 @@ def _classify(label: str, exit_code: int, tail: str, skippable: bool):
 
 def main():
     print("=" * 78)
-    print("tools/run_all.py -- round-4 verification matrix")
+    print("tools/run_all.py -- round-7 verification matrix (26 items)")
     print("=" * 78)
     py = sys.executable
     results = []
@@ -110,7 +154,14 @@ def main():
             tail = f"runner error: {e}"
         elapsed = time.perf_counter() - t0
         status, reason = _classify(label, exit_code, tail, skippable)
-        if status == "FAIL" and not skippable:
+        # Any FAIL sets any_fail regardless of skippable (a genuinely failing
+        # skippable item with nonzero exit and no SKIP marker is still a
+        # failure).  A non-skippable item that prints SKIP and exits 0 is
+        # classified SKIP but also sets any_fail (non-skippable items should
+        # not be skipping).
+        if status == "FAIL":
+            any_fail = True
+        elif status == "SKIP" and not skippable:
             any_fail = True
         results.append((label, status, elapsed, reason))
         reason_str = f"  -- {reason}" if reason else ""
@@ -123,6 +174,17 @@ def main():
     n_fail = sum(1 for _, s, _, _ in results if s == "FAIL")
     print(f"Summary: {n_pass} PASS, {n_skip} SKIP, {n_fail} FAIL "
           f"of {len(results)} items.")
+    # Document any SKIPs so the report explains why an item was omitted
+    # rather than leaving the reader to guess.  Skippable items that printed
+    # a SKIP marker and exited 0 are expected; non-skippable SKIPs would
+    # have set any_fail above.
+    skipped = [(label, reason) for label, status, _, reason in results
+               if status == "SKIP"]
+    if skipped:
+        print("Skipped items (expected — see notes):")
+        for label, reason in skipped:
+            r = f" -- {reason}" if reason else ""
+            print(f"  SKIP  {label}{r}")
     if any_fail:
         sys.exit(1)
     sys.exit(0)
