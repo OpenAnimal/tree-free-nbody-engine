@@ -31,8 +31,13 @@ linear memory.
 """
 
 import time
+import os
+import sys
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class MatrixFreeGaussianProcess:
@@ -79,53 +84,44 @@ class MatrixFreeGaussianProcess:
         targets: np.ndarray,
         sources: np.ndarray
     ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Precomputes sparse spatial block kernel matrices."""
-        n_t = len(targets)
+        """Precomputes sparse spatial block kernel matrices.
+
+        X-A12: uses CellIndex (world mode, cell_size = r_cut) instead of
+        hand-rolled dict hashing with tuple keys. The CellIndex uses
+        Morton-interleaved integer keys and vectorized np.unique binning,
+        replacing the per-element Python loop + tuple(coord) dict lookups.
+        The spatial structure is identical: floor(p / cell_size) quantization
+        with a 3^dim neighborhood (ring=1).
+        """
         dim = targets.shape[1]
         inv_2ell2 = 1.0 / (2.0 * (self.ell ** 2))
         r_cut_sq = self.r_cut ** 2
 
-        # Hash source points
-        src_grid = np.floor(sources / self.cell_size).astype(np.int64)
-        src_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, coord in enumerate(src_grid):
-            k = tuple(coord)
-            if k not in src_buckets:
-                src_buckets[k] = []
-            src_buckets[k].append(idx)
-        src_arrays = {k: np.array(v, dtype=np.int64) for k, v in src_buckets.items()}
+        # Build CellIndex for sources (world mode)
+        src_index = CellIndex(dims=dim, cell_size=self.cell_size)
+        src_index.build(sources)
 
-        # Hash target points
-        tgt_grid = np.floor(targets / self.cell_size).astype(np.int64)
-        tgt_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, coord in enumerate(tgt_grid):
-            k = tuple(coord)
-            if k not in tgt_buckets:
-                tgt_buckets[k] = []
-            tgt_buckets[k].append(idx)
-        tgt_arrays = {k: np.array(v, dtype=np.int64) for k, v in tgt_buckets.items()}
+        # Build CellIndex for targets (world mode)
+        tgt_index = CellIndex(dims=dim, cell_size=self.cell_size)
+        tgt_index.build(targets)
 
-        from itertools import product
-        neighbor_offsets = tuple(product((-1, 0, 1), repeat=dim))
         blocks = []
-
-        for t_k, t_idx in tgt_arrays.items():
-            cand_src = []
-            for offset in neighbor_offsets:
-                s_k = tuple(c + delta for c, delta in zip(t_k, offset))
-                if s_k in src_arrays:
-                    cand_src.append(src_arrays[s_k])
-
-            if len(cand_src) == 0:
+        for tkey, t_idx in tgt_index.items():
+            t_idx = np.asarray(t_idx, dtype=np.int64)
+            # Find source indices in the ring-1 neighborhood of this target
+            # cell key. The key is in the same coordinate system (same
+            # cell_size, same world-mode offset), so cross-index lookup
+            # works: neighborhood_indices checks the SOURCE index's buckets.
+            s_idx_all = src_index.neighborhood_indices(tkey, ring=1)
+            if len(s_idx_all) == 0:
                 continue
 
-            s_idx_all = np.concatenate(cand_src)
             pts_t = targets[t_idx]
             pts_s = sources[s_idx_all]
 
             diff = pts_t[:, None, :] - pts_s[None, :, :]
             r_sq = np.sum(diff ** 2, axis=-1)
-            
+
             mask = r_sq <= r_cut_sq
             k_vals = np.where(mask, self.sigma_f2 * np.exp(-r_sq * inv_2ell2), 0.0)
             blocks.append((t_idx, s_idx_all, k_vals))
