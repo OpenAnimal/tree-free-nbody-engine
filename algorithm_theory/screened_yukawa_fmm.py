@@ -38,18 +38,34 @@ retained as the honest order-0 comparison row; the new engine is the
 recommended path for the 2D K0 kernel.
 """
 
+import os
+import sys
 import time
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from core.yukawa3d_fmm import Yukawa3DFMM
 
 
 class ScreenedYukawaFMM:
     """
     Tree-Free Screened Yukawa / Debye-Hückel Fast Multipole Method (FMM).
-    
+
     Evaluates:
         phi(x_i) = sum_{j != i} q_j * exp(-kappa * ||x_i - x_j||) / ||x_i - x_j||
     in O(N) time.
+
+    Two evaluation paths:
+      * default tree-code (Barnes-Hut order-1 dipole + hard screening cutoff) --
+        the historical ~1% rel-L2 path, retained as the honest order-0
+        comparison row;
+      * Taylor FMM delegation (``use_taylor_fmm=True``) -- the far field is
+        evaluated by the verified core 3D Yukawa Taylor FMM
+        (``core/yukawa3d_fmm.py:Yukawa3DFMM``, a full order-p M2L operator
+        hierarchy with exact ring-2 near field), reaching ~1e-8 rel-L2 at p=8
+        (X-A9). This is the recommended high-accuracy path; the tree-code is
+        kept for comparison and backward compatibility.
     """
     def __init__(
         self,
@@ -101,14 +117,104 @@ class ScreenedYukawaFMM:
     def compute_screened_potential_field(
         self,
         positions: np.ndarray,
-        charges: np.ndarray
+        charges: np.ndarray,
+        use_taylor_fmm: bool = False,
+        taylor_depth: Optional[int] = None,
+        taylor_p: Optional[int] = None
     ) -> np.ndarray:
         """
         Fast O(N) Tree-Free Screened Coulomb Potential Calculation.
+
+        If ``use_taylor_fmm`` is False (default), runs the historical
+        order-1 tree-code (Barnes-Hut dipole + screening cutoff) -- backward
+        compatible, ~1% rel-L2.
+
+        If ``use_taylor_fmm`` is True, delegates the full near+far evaluation
+        to the verified core 3D Yukawa Taylor FMM
+        (``core/yukawa3d_fmm.py:Yukawa3DFMM``): positions are affine-normalized
+        into the unit cube [0,1)^3 the engine operates on, the potential is
+        evaluated with an order-p M2L far field + exact ring-2 near field, and
+        the result is returned (the Yukawa kernel is scale-invariant under
+        affine normalization only up to the kappa*r rescaling, so the
+        delegation normalizes positions AND rescales kappa by the domain span
+        to keep the screening length in cell units identical). This reaches
+        ~1e-8 rel-L2 at p=8 (X-A9 acceptance: rel-L2 vs direct <= 1e-6 on a
+        2k-particle cloud).
+
+        ``taylor_depth`` (cells per side, LINEAR per T-C8) defaults to a
+        density-aware pick (~2 particles/cell); ``taylor_p`` defaults to 8.
         """
         positions = np.asarray(positions, dtype=np.float64)
         charges = np.asarray(charges, dtype=np.float64)
         n_particles = len(positions)
+
+        if use_taylor_fmm:
+            return self._evaluate_taylor_fmm(
+                positions, charges, taylor_depth, taylor_p)
+
+        return self._evaluate_treecode(positions, charges, n_particles)
+
+    def _evaluate_taylor_fmm(
+        self,
+        positions: np.ndarray,
+        charges: np.ndarray,
+        depth: Optional[int],
+        p: Optional[int],
+    ) -> np.ndarray:
+        """Delegate to core.yukawa3d_fmm.Yukawa3DFMM (X-A9 far-field routing).
+
+        The Taylor FMM operates on positions in the unit cube [0,1)^3 with
+        CellIndex(dims=3, grid_res=depth) (unit mode). We affine-map the
+        caller's positions into that cube. The Yukawa kernel
+        exp(-kappa*r)/r is NOT scale-invariant, so to preserve the physical
+        screening length in cell units we rescale the engine kappa by the
+        domain span: if x' = (x - lo)/span then r' = r/span and
+        exp(-kappa*r) = exp(-(kappa*span)*r'), so the engine must run with
+        kappa_engine = kappa * span. The returned potential is then scaled
+        back by 1/span (since 1/r = (1/span) * 1/r').
+        """
+        n = len(positions)
+        if n == 0:
+            return np.empty(0, dtype=np.float64)
+        lo = positions.min(axis=0)
+        hi = positions.max(axis=0)
+        span = float(np.max(hi - lo))
+        if span < 1e-12:
+            # Degenerate (all points coincident): the kernel is singular
+            # anyway; fall back to the tree-code which handles it.
+            return self._evaluate_treecode(positions, charges, n)
+        pos_unit = (positions - lo) / span
+        # Clamp the top edge into [0,1) so floor(p*grid_res) does not alias
+        # the last cell row to an out-of-range index.
+        pos_unit = np.clip(pos_unit, 0.0, 1.0 - 1e-12)
+
+        if depth is None:
+            # Target ~9 particles per occupied cell (matches the depth=6,
+            # N=2000 configuration cross-validated in core/test_yukawa3d_fmm.py
+            # at 2.7e-8 rel-L2). cells_per_side ~ (N/9)^(1/3), capped to the
+            # CellIndex 3D unit-mode limit of 1024 and to a practical build
+            # budget (the M2L D_gamma tensors are O(n_gamma * K^2) in K<=
+            # depth^3, so very fine grids are expensive to build).
+            depth = max(4, min(64, int(round((n / 9.0) ** (1.0 / 3.0)))))
+        if p is None:
+            p = 8
+
+        kappa_engine = self.kappa * span
+        fmm = Yukawa3DFMM(depth=depth, p=int(p), kappa=kappa_engine)
+        pot_unit = fmm.evaluate(pos_unit, charges)
+        # Scale back: 1/r = (1/span) * 1/r', and the exp(-kappa*r) factor is
+        # already correct via kappa_engine. So phi = (1/span) * phi_unit.
+        return pot_unit / span
+
+    def _evaluate_treecode(
+        self,
+        positions: np.ndarray,
+        charges: np.ndarray,
+        n_particles: int,
+    ) -> np.ndarray:
+        """Historical order-1 Barnes-Hut tree-code (screening-cutoff far field)."""
+        positions = np.asarray(positions, dtype=np.float64)
+        charges = np.asarray(charges, dtype=np.float64)
 
         # 1. Spatial Hash Indexing
         grid_coords = np.floor(positions / self.cell_size).astype(np.int64)
@@ -241,4 +347,33 @@ if __name__ == "__main__":
     print(f"Projected Direct O(N^2) Time : {t_ref_proj:.2f} ms")
     print(f"Measured Speedup Ratio       : {t_ref_proj / max(t_fast, 1e-6):.1f}x")
     print(f"Relative L2 Precision Error  : {rel_error:.2e}")
+    print("=" * 70)
+
+    # 3. X-A9 acceptance: Taylor FMM delegation vs direct (rel-L2 <= 1e-6 at p=8
+    #    on a 2k-particle cloud). The tree-code above sits at ~1% rel-L2; the
+    #    Taylor FMM far field reaches ~1e-8.
+    print()
+    print("[X-A9] Taylor FMM delegation acceptance test")
+    rng = np.random.default_rng(7)
+    n_acc = 2000
+    pos_acc = rng.random((n_acc, 3)) * 6.0
+    q_acc = rng.standard_normal(n_acc) + 1.0
+    kappa_acc = 2.0
+    eng_acc = ScreenedYukawaFMM(kappa=kappa_acc, eps_tol=1e-5)
+
+    pot_direct = eng_acc.direct_evaluate(pos_acc, pos_acc, q_acc)
+    pot_taylor = eng_acc.compute_screened_potential_field(
+        pos_acc, q_acc, use_taylor_fmm=True, taylor_p=8)
+    rel_l2_taylor = (np.linalg.norm(pot_taylor - pot_direct)
+                     / max(1e-12, np.linalg.norm(pot_direct)))
+
+    pot_tree = eng_acc.compute_screened_potential_field(pos_acc, q_acc)
+    rel_l2_tree = (np.linalg.norm(pot_tree - pot_direct)
+                   / max(1e-12, np.linalg.norm(pot_direct)))
+
+    print(f"[X-A9] tree-code  rel-L2 vs direct : {rel_l2_tree:.3e} (~1% expected)")
+    print(f"[X-A9] Taylor FMM rel-L2 vs direct : {rel_l2_taylor:.3e}  (limit 1e-6)")
+    assert rel_l2_taylor <= 1e-6, (
+        f"Taylor FMM rel-L2 {rel_l2_taylor:.3e} exceeds 1e-6")
+    print("[X-A9] acceptance PASSED (Taylor FMM far field <= 1e-6 rel-L2).")
     print("=" * 70)
