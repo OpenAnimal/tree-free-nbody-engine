@@ -10,6 +10,16 @@ Key Features:
 - Morton Spatial Tile Clustering with Incremental Dirty-Tile Cache Updates.
 - Asynchronous Overlap: Concurrently gathers far-field irradiance while streaming near geometry.
 - 60+ FPS Real-Time Target on 250,000+ Dynamic Surface Elements.
+
+Honesty note: despite the "Async / Multi-GPU / Zero-Copy" naming, this module
+is a single-threaded numpy reference implementation.  There are no real
+async queues, no GPU buffers, no host-device transfers — the "double buffer"
+is two numpy arrays swapped by an integer index, and "async overlap" is
+simulated by sequential function calls.  The Morton tiling and far-field
+irradiance gathering are real and work, but the multi-GPU / zero-copy /
+async framing describes a target architecture, not what this Python code
+does.  The 60+ FPS / 250k-surfel target is a layout/throughput estimate on
+the numpy path, not a measured GPU figure.
 """
 
 from __future__ import annotations
@@ -17,6 +27,11 @@ import numpy as np
 import time
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional, Any
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 @dataclass
@@ -68,6 +83,13 @@ class AsyncZeroCopyGraphicsPipeline:
             raise ValueError("irradiance_bandwidth must be finite and positive")
         self.grid_res = 1 << self.tile_depth
         self.inv_2_bw_sq = 1.0 / (2.0 * (self.bandwidth ** 2))
+
+        # X-G3: CellIndex replaces the hand-rolled Morton encode + per-element
+        # Python binning loop. The grid resolution matches the legacy
+        # tile_depth semantics (grid_res = 2^tile_depth cells per axis in
+        # [0,1)^3 unit mode). The ring-1 gather in render_frame_radiance uses
+        # this same index.
+        self.index = CellIndex(dims=3, grid_res=min(self.grid_res, 1024))
 
         # Double-Buffered Zero-Copy Host-Device Buffers
         self.buffer_a_positions = np.zeros((max_elements, 3), dtype=np.float32)
@@ -144,38 +166,37 @@ class AsyncZeroCopyGraphicsPipeline:
         # disappeared from the scene would make stale geometry contribute light.
         self.tile_cache.clear()
 
-        # Bin into spatial tiles
-        tile_map: Dict[int, List[int]] = {}
-        for i in range(N):
-            mk = self._morton_encode_3d(pos_clipped[i, 0], pos_clipped[i, 1], pos_clipped[i, 2])
-            if mk not in tile_map:
-                tile_map[mk] = []
-            tile_map[mk].append(i)
+        # X-G3: CellIndex.build() replaces the hand-rolled Morton encode +
+        # per-element Python binning loop. The CellIndex key is a Morton-
+        # interleaved integer in the same spirit as _morton_encode_3d but
+        # computed vectorized via np.unique on the interleaved axis bits.
+        self.index.build(pos_clipped)
+        tile_map: Dict[int, np.ndarray] = {}
+        for k, bucket in self.index.items():
+            tile_map[int(k)] = bucket
 
-        # Update dirty tile cache
+        # Update dirty tile cache.  NOTE: the previous code had a dead
+        # `else` branch here — ``self.tile_cache.clear()`` is called above,
+        # so ``mk not in self.tile_cache`` is always True and the else
+        # (update-in-place) branch was unreachable.  The incremental
+        # dirty-tile update would only be reachable if the clear() were
+        # removed; for now every tile is newly inserted and marked dirty.
         dirty_count = 0
         for mk, ids in tile_map.items():
-            pts = pos_clipped[ids]
+            ids_arr = np.asarray(ids, dtype=np.int64)
+            pts = pos_clipped[ids_arr]
             c = np.mean(pts, axis=0)
-            rad = float(np.max(np.linalg.norm(pts - c[None, :], axis=-1))) if len(ids) > 1 else 0.05
+            rad = float(np.max(np.linalg.norm(pts - c[None, :], axis=-1))) if len(ids_arr) > 1 else 0.05
 
-            if mk not in self.tile_cache:
-                self.tile_cache[mk] = StreamingTile(
-                    tile_id=len(self.tile_cache),
-                    morton_key=mk,
-                    center=c,
-                    radius=rad,
-                    num_elements=len(ids),
-                    is_dirty=True
-                )
-                dirty_count += 1
-            else:
-                tile = self.tile_cache[mk]
-                tile.center = c
-                tile.radius = rad
-                tile.num_elements = len(ids)
-                tile.is_dirty = True
-                dirty_count += 1
+            self.tile_cache[mk] = StreamingTile(
+                tile_id=len(self.tile_cache),
+                morton_key=mk,
+                center=c,
+                radius=rad,
+                num_elements=len(ids_arr),
+                is_dirty=True
+            )
+            dirty_count += 1
 
         # Swap buffers atomically (Host-GPU Zero-Copy swap)
         self.active_buffer_idx = 1 - self.active_buffer_idx
@@ -185,9 +206,26 @@ class AsyncZeroCopyGraphicsPipeline:
         self,
         num_elements: int,
         light_dir: Optional[np.ndarray] = None,
+        gather_ring: int = 1,
     ) -> Tuple[np.ndarray, FrameRenderStats]:
         """
         Evaluates one frame of surfel radiance with multi-tile multipole global illumination.
+
+        X-G3: the irradiance gather is restricted to the ``gather_ring``-cell
+        neighborhood of each surfel's occupied cell (default ring=1, the
+        27-cell 3x3x3 block). All surfels in a cell share the same near-tile
+        set, so the gather is vectorized per occupied cell as one
+        ``(n_surfels_in_cell, n_near_tiles, 3)`` tensor op. This replaces the
+        legacy all-tiles gather ``(n_surfels, n_all_tiles, 3)`` which scaled
+        as O(N * K) in tensor size regardless of locality.
+
+        The Gaussian weight ``exp(-d^2 / (2*bw^2))`` with the default
+        bandwidth=0.2 decays rapidly: at the ring-1 boundary (d ~ 0.375 for
+        tile_depth=3, grid_res=8) the weight is ~0.17, and beyond ring-1 it
+        drops to <5% of peak. Ring-1 captures the dominant energy; the
+        truncation error vs the all-tiles gather is reported in __main__.
+        Set ``gather_ring=0`` to fall back to the legacy all-tiles gather
+        (for accuracy comparison).
         """
         t0 = time.perf_counter()
         self.frame_counter += 1
@@ -226,30 +264,61 @@ class AsyncZeroCopyGraphicsPipeline:
         n_dot_l = np.maximum(0.0, np.sum(norm * l_dir[None, :], axis=-1, keepdims=True))
         direct_light = alb * n_dot_l * 1.5
 
-        # 2. Far-Field Multipole Irradiance Gathering across Spatial Tiles (Chunked for SIMD/Cache efficiency)
-        tiles = list(self.tile_cache.values())
-        n_tiles = len(tiles)
-        tile_centers = np.stack([t.center for t in tiles], axis=0) # (n_tiles, 3)
-        tile_flux = np.array([t.num_elements for t in tiles], dtype=np.float32) # (n_tiles,)
-
-        chunk_size = 16384
+        # 2. Irradiance Gathering across Spatial Tiles
+        n_tiles = len(self.tile_cache)
         ambient_gi = np.zeros_like(alb)
 
-        for c_start in range(0, num_elements, chunk_size):
-            c_end = min(num_elements, c_start + chunk_size)
-            pos_chunk = pos[c_start:c_end]
-            norm_chunk = norm[c_start:c_end]
-            alb_chunk = alb[c_start:c_end]
+        if gather_ring == 0:
+            # Legacy all-tiles gather (chunked for SIMD/cache efficiency).
+            tiles = list(self.tile_cache.values())
+            tile_centers = np.stack([t.center for t in tiles], axis=0)
+            tile_flux = np.array([t.num_elements for t in tiles], dtype=np.float32)
 
-            diff = pos_chunk[:, None, :] - tile_centers[None, :, :] # (C, n_tiles, 3)
-            dist_sq = np.sum(diff ** 2, axis=-1)
-            w_tiles = np.exp(-dist_sq * self.inv_2_bw_sq) # (C, n_tiles)
+            chunk_size = 16384
+            for c_start in range(0, num_elements, chunk_size):
+                c_end = min(num_elements, c_start + chunk_size)
+                pos_chunk = pos[c_start:c_end]
+                norm_chunk = norm[c_start:c_end]
+                alb_chunk = alb[c_start:c_end]
 
-            diff_unit = diff / (np.sqrt(dist_sq[:, :, None]) + 1e-12)
-            cos_theta = np.maximum(0.0, -np.sum(norm_chunk[:, None, :] * diff_unit, axis=-1))
-            flux = np.sum(w_tiles * cos_theta * tile_flux[None, :], axis=-1, keepdims=True)
-            denom = np.sum(w_tiles, axis=-1, keepdims=True) + 1e-12
-            ambient_gi[c_start:c_end] = alb_chunk * (flux / denom) * 0.4
+                diff = pos_chunk[:, None, :] - tile_centers[None, :, :]
+                dist_sq = np.sum(diff ** 2, axis=-1)
+                w_tiles = np.exp(-dist_sq * self.inv_2_bw_sq)
+
+                diff_unit = diff / (np.sqrt(dist_sq[:, :, None]) + 1e-12)
+                cos_theta = np.maximum(0.0, -np.sum(norm_chunk[:, None, :] * diff_unit, axis=-1))
+                flux = np.sum(w_tiles * cos_theta * tile_flux[None, :], axis=-1, keepdims=True)
+                denom = np.sum(w_tiles, axis=-1, keepdims=True) + 1e-12
+                ambient_gi[c_start:c_end] = alb_chunk * (flux / denom) * 0.4
+        else:
+            # X-G3: ring-restricted gather, vectorized per occupied cell.
+            # All surfels in a cell share the same near-tile set, so the
+            # inner work is one (n_t, n_near, 3) tensor op per cell.
+            for tkey, tile in self.tile_cache.items():
+                t_ids = self.index.bucket(tkey)
+                if t_ids is None or len(t_ids) == 0:
+                    continue
+                t_ids = np.asarray(t_ids, dtype=np.int64)
+                t_pos = pos[t_ids]       # (n_t, 3)
+                t_norm = norm[t_ids]     # (n_t, 3)
+                t_alb = alb[t_ids]       # (n_t, 3)
+
+                near_keys = self.index.neighbor_keys(tkey, ring=gather_ring)
+                if len(near_keys) == 0:
+                    continue
+                near_tiles = [self.tile_cache[nk] for nk in near_keys]
+                near_centers = np.stack([t.center for t in near_tiles], axis=0)  # (n_near, 3)
+                near_flux = np.array([t.num_elements for t in near_tiles], dtype=np.float32)
+
+                diff = t_pos[:, None, :] - near_centers[None, :, :]  # (n_t, n_near, 3)
+                dist_sq = np.sum(diff ** 2, axis=-1)
+                w_tiles = np.exp(-dist_sq * self.inv_2_bw_sq)
+
+                diff_unit = diff / (np.sqrt(dist_sq[:, :, None]) + 1e-12)
+                cos_theta = np.maximum(0.0, -np.sum(t_norm[:, None, :] * diff_unit, axis=-1))
+                flux = np.sum(w_tiles * cos_theta * near_flux[None, :], axis=-1, keepdims=True)
+                denom = np.sum(w_tiles, axis=-1, keepdims=True) + 1e-12
+                ambient_gi[t_ids] = t_alb * (flux / denom) * 0.4
 
         total_radiance = direct_light + ambient_gi
         out_rad[:] = np.clip(total_radiance, 0.0, 1.0)
@@ -299,11 +368,25 @@ if __name__ == "__main__":
     dirty_tiles = pipeline.update_dynamic_geometry_async(pos, normals, albedo)
     print(f"Async Zero-Copy Ingest: {dirty_tiles} spatial tiles updated in background.")
 
-    # Render consecutive real-time frames
-    print("\nSimulating Real-Time Frame Loop:")
+    # Render consecutive real-time frames (X-G3 ring-1 gather, default)
+    print("\nSimulating Real-Time Frame Loop (X-G3 ring-1 gather):")
     for frame in range(5):
         radiance, stats = pipeline.render_frame_radiance(n_surfels)
         print(f"  Frame {stats.frame_index}: Latency={stats.render_latency_ms:.2f} ms | {stats.fps_estimate:.1f} FPS | Streaming Bandwidth: {stats.streaming_bandwidth_mb_s:.1f} MB/s")
 
     print(f"\nZero-Copy Pipeline Performance: Real-time 60+ FPS verified on {n_surfels:,} dynamic surfels.")
+
+    # X-G3 acceptance: ring-1 vs all-tiles (legacy) accuracy + timing.
+    print("\n--- X-G3 Acceptance: ring-1 vs all-tiles gather ---")
+    rad_ring1, stats_r1 = pipeline.render_frame_radiance(n_surfels, gather_ring=1)
+    rad_all, stats_all = pipeline.render_frame_radiance(n_surfels, gather_ring=0)
+    rel_l2 = float(np.linalg.norm(rad_ring1 - rad_all) / max(1e-12, np.linalg.norm(rad_all)))
+    print(f"[X-G3] ring-1 vs all-tiles rel-L2: {rel_l2:.3e}  (limit 1e-1)")
+    assert rel_l2 <= 1e-1, f"X-G3 rel-L2 {rel_l2:.3e} exceeds 1e-1"
+    print(f"[X-G3] ring-1 latency: {stats_r1.render_latency_ms:.2f} ms, "
+          f"all-tiles latency: {stats_all.render_latency_ms:.2f} ms "
+          f"(tiles={len(pipeline.tile_cache)})")
+    speedup = stats_all.render_latency_ms / max(1e-3, stats_r1.render_latency_ms)
+    print(f"[X-G3] ring-1 speedup vs all-tiles: {speedup:.2f}x")
+    print("[X-G3] acceptance PASSED.")
     print("=" * 70)
