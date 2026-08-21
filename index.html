@@ -175,6 +175,19 @@
             gap: 5px;
             font-size: 0.74rem;
             font-family: monospace;
+            /* No max-height/overflow here: the whole #sidebar scrolls as one
+               column so the full telemetry card is visible without a nested
+               scrollbar. */
+        }
+        .metrics-card .fmm-subheader {
+            border-top: 1px solid var(--bg-border);
+            margin-top: 4px;
+            padding-top: 4px;
+            color: var(--accent-cyan);
+            font-weight: bold;
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
 
         .metric-row {
@@ -187,10 +200,86 @@
             color: var(--accent-green);
             font-weight: bold;
             text-align: right;
-            max-width: 200px;
+            max-width: 260px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .metric-val.detail {
+            max-width: none;
+            white-space: normal;
+            word-break: break-word;
+            font-size: 0.68rem;
+            line-height: 1.3;
+            color: var(--text-dim);
+            font-weight: normal;
+        }
+
+        /* GPU buffer breakdown panel (replaces the old single-line
+           "└ Breakdown:" row whose dot-separated list overflowed the cell).
+           Grouped rows: name | bytes | share-of-total bar, each row with a
+           tooltip explaining what the buffer holds. */
+        .buffer-breakdown {
+            border: 1px solid var(--bg-border);
+            border-radius: 5px;
+            padding: 6px 7px;
+            margin-top: 2px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .buffer-breakdown .bb-total {
+            display: flex;
+            justify-content: space-between;
+            color: var(--accent-cyan);
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        .buffer-breakdown .bb-group {
+            display: flex;
+            justify-content: space-between;
+            color: var(--accent-amber);
+            font-size: 0.64rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            border-top: 1px dashed var(--bg-border);
+            padding-top: 3px;
+            margin-top: 2px;
+        }
+        .buffer-breakdown .bb-group.bb-first {
+            border-top: none;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .buffer-breakdown .bb-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto 38px;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-dim);
+            cursor: help;
+        }
+        .buffer-breakdown .bb-row .bb-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .buffer-breakdown .bb-row .bb-bytes {
+            color: var(--accent-green);
+            text-align: right;
+            white-space: nowrap;
+        }
+        .buffer-breakdown .bb-bar {
+            height: 4px;
+            background: var(--bg-border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .buffer-breakdown .bb-bar i {
+            display: block;
+            height: 100%;
+            background: var(--accent-cyan);
         }
 
         #stage-container {
@@ -411,7 +500,7 @@
         </div>
 
         <div class="control-group">
-            <div class="control-label">Interaction Radius (P2P): <span id="valRadius">0.035</span></div>
+            <div class="control-label">Neighbor Interaction Radius: <span id="valRadius">0.035</span></div>
             <input type="range" id="sliderRadius" min="0.01" max="0.08" step="0.005" value="0.035">
         </div>
 
@@ -426,11 +515,35 @@
         </div>
 
         <div class="control-group">
-            <div class="control-label">FMM Mode: <span id="valFmmMode">Fixed-Grid (2-Level)</span></div>
+            <div class="control-label">FMM Mode: <span id="valFmmMode">Uniform-Lattice FMM (2-Level)</span></div>
             <select id="selectFmmMode">
-                <option value="fixed" selected>Fixed-Grid (2-Level Hash)</option>
+                <option value="off">None (Analytic Dual-Core, direct)</option>
+                <option value="fixed" selected>Uniform-Lattice FMM (2-Level)</option>
                 <option value="adaptive">Adaptive CGR88 (Multi-Level)</option>
             </select>
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">Near-Field Hash Mode: <span id="valHashMode">Counting-Sort</span></div>
+            <select id="selectHashMode" title="How the near-field kernel finds each particle's cell list. Counting-Sort (default): dense CSR cell lists, no probing. Open-Addressing: linear-probe hash over occupied cells. Funnel (FCK = Farach-Colton/Krapivin/Kuszmaul, 2025): funnel-hashing schedule — alpha slabs of beta-slot sub-arrays plus two-choice overflow buckets, probe-bounded lookups.">
+                <option value="none" selected>None (Counting-Sort Cell Lists)</option>
+                <option value="openaddr">Open-Addressing (Linear Probe)</option>
+                <option value="funnel">Funnel Hash (FCK Schedule)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="chkSortedPayload" checked>
+                <span>Sorted payload (coalesced P2P)</span>
+            </label>
+        </div>
+
+        <div class="control-group">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="chkAdaptiveNodeHash" checked>
+                <span>Adaptive node hash (funnel)</span>
+            </label>
         </div>
 
         <div class="section-title">Controls & Filtering</div>
@@ -451,11 +564,16 @@
             <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">12.0M parts/sec</span></div>
             <div class="metric-row"><span>GPU Buffers:</span> <span id="valGpuMemory" class="metric-val">Calculating...</span></div>
             <div class="metric-row"><span>GPU Buffer Limit:</span> <span id="valGpuLimit" class="metric-val">Querying...</span></div>
+            <div class="metric-row" id="rowGpuBufferDetail" style="display:none;cursor:pointer" title="Click to collapse/expand the per-buffer allocation breakdown"><span style="color:var(--accent-cyan)">Buffer Breakdown:</span> <span id="valGpuBufferDetailSummary" class="metric-val" style="color:var(--text-dim)">▾</span></div>
+            <div id="gpuBufferDetailPanel" class="buffer-breakdown" style="display:none"></div>
             <div class="metric-row"><span>Cell Occupancy:</span> <span id="valFmmHash" class="metric-val">Inactive</span></div>
             <div class="metric-row"><span>P2P Near Field:</span> <span id="valP2pBudget" class="metric-val">Adaptive</span></div>
+            <div class="metric-row"><span>Gravity Gp:</span> <span id="valGravityGp" class="metric-val">—</span></div>
+            <div class="metric-row fmm-subheader"><span>FMM pipeline</span><span></span></div>
             <div class="metric-row"><span>FMM Build:</span> <span id="valFmmBuild" class="metric-val">—</span></div>
             <div class="metric-row"><span>FMM M2L:</span> <span id="valFmmM2l" class="metric-val">—</span></div>
             <div class="metric-row"><span>FMM L2P:</span> <span id="valFmmL2p" class="metric-val">—</span></div>
+            <div class="metric-row"><span>FMM Axis:</span> <span id="valFmmAxis" class="metric-val">—</span></div>
             <div class="metric-row"><span>Main Compute:</span> <span id="valMainCompute" class="metric-val">—</span></div>
             <div class="metric-row"><span>Render Pass:</span> <span id="valRenderPass" class="metric-val">—</span></div>
             <div class="metric-row"><span>Total GPU:</span> <span id="valTotalGpu" class="metric-val">—</span></div>
@@ -470,6 +588,7 @@
 
     <div id="stage-container">
         <canvas id="mainCanvas"></canvas>
+        <div id="diagConsole" hidden data-errors=""></div>
         <div id="overlay-info">
             <!-- Dynamically populated by updateOverlayLegend() -->
         </div>
@@ -480,12 +599,29 @@
              numbers below + a live in-browser micro-bench that toggles the
              axes the GPU shader actually exposes (FMM order, fixed/adaptive,
              open-addressing hash (linear probe), quantized state) and measures
-             real per-frame step latency + a far-field accuracy column. The
-             1euro filter is a UI toggle only (boids) and is NOT a benchmark
-             axis. The GPU hash is generic open addressing (hashU32 + linear
-             probe), NOT the funnel schedule of core/elastic_hash.py; the
-             static reference table's +elastichash rows are Python results
-             pasted from BENCHMARKS.md and DO use the real funnel hash. -->
+             real per-frame step latency and far-field accuracy for each axis.
+             NOTE: the static reference table's +elastichash rows are Python
+             results pasted from BENCHMARKS.md and DO use the real funnel hash. -->
+        <!--
+            =================================================================
+            CORE-ALGORITHM MAPPING (GPU path -> Python core module)
+            =================================================================
+            uniform-lattice FMM + counting sort  ->  GPU analogue of
+                core/spatial_index.py CellIndex (uniform grid cell lists)
+                + core/cgr88_adaptive_fmm.py CGR88 multipoles
+                + core/gaussian2d_fgt.py (fast Gauss transform primitives)
+            adaptive CGR88 FMM                  ->  GPU port of
+                core/webgpu_kernels/adaptive_cgr88.wgsl
+                + core/cgr88_adaptive_fmm.py (multi-level tree build)
+            funnel hash                         ->  port of
+                core/elastic_hash.py (FCK funnel schedule:
+                alpha slabs of beta-slot sub-arrays + overflow)
+            open-addressing hash                ->  standard open addressing
+                (hashU32 + linear probe; NOT the funnel schedule)
+            quantized (f16 pack)                ->  f16 pack of
+                core quantization variants (lossy state round-trip)
+            =================================================================
+        -->
         <div id="bench-panel" class="collapsed">
             <div id="bench-header">
                 <span class="bench-title">Variant Benchmark</span>
@@ -508,33 +644,46 @@
                     <table class="bench-table" id="bench-static-table">
                         <thead><tr><th>Domain / app</th><th>Variant</th><th class="num">Time (ms)</th><th class="num">rel L2 / recall</th><th>Note</th></tr></thead>
                         <tbody>
-                            <tr><td>Core FMM (2D log)</td><td>standard (exact direct)</td><td class="num">41.4</td><td class="num">&ndash;</td><td>O(N^2) reference</td></tr>
-                            <tr><td>Core FMM (2D log)</td><td>+fmm (CGR88 adaptive)</td><td class="num">845.3</td><td class="num">1.97e-7</td><td>NOT faster than direct at N=2000</td></tr>
-                            <tr><td>Core FMM (2D log)</td><td>+fmm (flat vectorized)</td><td class="num">478.9</td><td class="num">7.52e-7</td><td>NOT faster than direct at N=2000</td></tr>
-                            <tr><td>Core FMM (2D log)</td><td>+quantized (32-bit packed)</td><td class="num">40.7</td><td class="num">3.89e-1</td><td>lossy packed cost</td></tr>
-                            <tr><td>Physics broadphase</td><td>standard (brute O(N^2))</td><td class="num">841.5</td><td class="num">&ndash;</td><td>exact AABB overlap pair set</td></tr>
-                            <tr><td>Physics broadphase</td><td>+elastichash (CellIndex ring-1)</td><td class="num">211.1</td><td class="num">no missed</td><td>4.0x faster, zero missed collisions</td></tr>
-                            <tr><td>Video splat</td><td>standard (exact per-pixel)</td><td class="num">0.0</td><td class="num">&ndash;</td><td>lossless per-Gaussian SH colors</td></tr>
-                            <tr><td>Video splat</td><td>+elastichash (cell-bucketed)</td><td class="num">8.95</td><td class="num">3.19e-1</td><td>order-0 cluster-mean (lossy)</td></tr>
-                            <tr><td>Video splat</td><td>+quantized (4-bit color)</td><td class="num">8.40</td><td class="num">3.21e-1</td><td>cluster-mean + 4-bit color (lossy)</td></tr>
-                            <tr><td>Graphics AO (3D inv-sq)</td><td>standard (exact per-particle)</td><td class="num">102.8</td><td class="num">&ndash;</td><td>O(Q*N) reference</td></tr>
-                            <tr><td>Graphics AO (3D inv-sq)</td><td>+elastichash near/far</td><td class="num">894.7</td><td class="num">8.27e-4</td><td>slower than exact at this scale</td></tr>
-                            <tr><td>Graphics AO (3D inv-sq)</td><td>+quantized (all-cluster)</td><td class="num">19.4</td><td class="num">2.00e-2</td><td>5.3x faster, 2e-2 rel-L2 cost</td></tr>
-                            <tr><td>Game flocking (2D)</td><td>standard (brute O(N^2))</td><td class="num">81.9</td><td class="num">&ndash;</td><td>O(N^2) near-field reference</td></tr>
-                            <tr><td>Game flocking (2D)</td><td>+elastichash (near+far)</td><td class="num">239.1</td><td class="num">5.9% far residual</td><td>NOT faster at N=1000 (Python loop overhead)</td></tr>
-                            <tr><td>App 1 galaxy (2D log)</td><td>+fmm (FastVectorizedFMM)</td><td class="num">18.2</td><td class="num">2.39e-5</td><td>parity with direct at N=500</td></tr>
-                            <tr><td>App 5 protein (3D Yukawa)</td><td>+elastichash (cluster O(K^2))</td><td class="num">21.1</td><td class="num">5.68e-1</td><td>15.8x faster, 57% rel-L2 cluster cost</td></tr>
-                            <tr><td>App 8 manifold (LSH k-NN)</td><td>+elastichash (LSH k-NN graph)</td><td class="num">9.7</td><td class="num">recall@12=100%</td><td>26.3x faster, 100% edge recall</td></tr>
-                            <tr><td>App 9 vector DB (LSH ANN)</td><td>+elastichash (LSH multi-probe)</td><td class="num">23.4</td><td class="num">recall@10=0.6%</td><td>2.9x faster, low recall (fine-grained LSH)</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>standard (exact direct)</td><td class="num">57.14</td><td class="num">&ndash;</td><td>O(N^2) reference</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+fmm (CGR88 adaptive)</td><td class="num">1057.39</td><td class="num">1.974e-7</td><td>NOT faster than direct at N=2000</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+fmm (flat vectorized)</td><td class="num">710.61</td><td class="num">7.522e-7</td><td>NOT faster than direct at N=2000</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+quantized (32-bit packed)</td><td class="num">68.51</td><td class="num">3.891e-1</td><td>lossy packed cost</td></tr>
+                            <tr><td>Physics broadphase</td><td>standard (brute O(N^2))</td><td class="num">841.49</td><td class="num">&ndash;</td><td>exact AABB overlap pair set</td></tr>
+                            <tr><td>Physics broadphase</td><td>+elastichash (CellIndex ring-1)</td><td class="num">211.06</td><td class="num">no missed</td><td>4.0x faster, zero missed collisions</td></tr>
+                            <tr><td>Video splat</td><td>standard (exact per-pixel)</td><td class="num">0.00</td><td class="num">&ndash;</td><td>lossless per-Gaussian SH colors</td></tr>
+                            <tr><td>Video splat</td><td>+elastichash (cell-bucketed)</td><td class="num">8.95</td><td class="num">3.190e-1</td><td>order-0 cluster-mean (lossy)</td></tr>
+                            <tr><td>Video splat</td><td>+quantized (4-bit color)</td><td class="num">8.40</td><td class="num">3.207e-1</td><td>cluster-mean + 4-bit color (lossy)</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>standard (exact per-particle)</td><td class="num">102.84</td><td class="num">&ndash;</td><td>O(Q*N) reference</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>+elastichash near/far</td><td class="num">894.67</td><td class="num">8.269e-4</td><td>slower than exact at this scale</td></tr>
+                            <tr><td>Graphics AO (3D inv-sq)</td><td>+quantized (all-cluster)</td><td class="num">19.41</td><td class="num">2.001e-2</td><td>5.3x faster, 2e-2 rel-L2 cost</td></tr>
+                            <tr><td>Game flocking (2D)</td><td>standard (brute O(N^2))</td><td class="num">81.85</td><td class="num">&ndash;</td><td>O(N^2) near-field reference</td></tr>
+                            <tr><td>Game flocking (2D)</td><td>+elastichash (near+far)</td><td class="num">239.08</td><td class="num">5.9% far residual</td><td>NOT faster at N=1000 (Python loop overhead)</td></tr>
+                            <tr><td>App 1 galaxy (2D log)</td><td>+fmm (FastVectorizedFMM)</td><td class="num">18.18</td><td class="num">2.386e-5</td><td>parity with direct at N=500</td></tr>
+                            <tr><td>App 5 protein (3D Yukawa)</td><td>+elastichash (per-atom dipole)</td><td class="num">147.96</td><td class="num">2.002e-3</td><td>1.7x faster, 2e-3 rel-L2 (Round-7 T-C2 per-atom dipole)</td></tr>
+                            <tr><td>App 8 manifold (LSH k-NN)</td><td>+elastichash (LSH k-NN graph)</td><td class="num">9.69</td><td class="num">recall@12=100%</td><td>26.3x faster, 100% edge recall</td></tr>
+                            <tr><td>App 9 vector DB (LSH ANN)</td><td>+elastichash (LSH multi-probe)</td><td class="num">24.09</td><td class="num">recall@10=0.6%</td><td>3.4x faster, low recall (fine-grained LSH)</td></tr>
                         </tbody>
                     </table>
                     <div class="bench-note">Full per-domain and per-app tables with honest &ldquo;not faster at this scale&rdquo; takeaways: see <a href="https://github.com/OpenAnimal/tree-free-nbody-engine/blob/main/BENCHMARKS.md" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">BENCHMARKS.md</a>. Speed is never shown without the accuracy it costs (rel-L2 vs exact reference, or recall@k for approximate retrieval / filter broadphases).</div>
                 </div>
+                <div class="bench-note" style="margin-top:10px;"><strong>Why isn&rsquo;t FMM faster?</strong> Three force models, three costs: direct O(N&sup2;) self-gravity is impossible per frame at 5M (25&times;10&sup1;&sup2; pairs &asymp; seconds even on a 4070); &ldquo;None&rdquo; is the analytic two-core O(N) formula (real physics replaced by two point masses &mdash; no particle-particle forces, no tidal response of one disk on the other); FMM is true particle-particle gravity in O(N) (Build+M2L+L2P &asymp; 7.5 ms at 5M). Measured at 5M on a 4070-class adapter (GPU_NOTES.md &sect;4): Render &asymp; 1.8 ms (5M points are cheap for the rasterizer, as expected), FMM chain &asymp; 7.5 ms, and the <em>P2P near-field pass</em> (&ldquo;Main Compute&rdquo;) &asymp; 59 ms &mdash; 86% of the frame. That pass is slow not from math but from millions of dependent, uncoalesced gathers through the cell lists; the round-6 leaf auto-tune targets exactly this pass. The per-pass telemetry above shows the live split on your GPU.</div>
             </div>
         </div>
     </div>
 
     <script>
+        // Debug hook: capture early console errors (GPU init) into a DOM
+        // attribute so headless/diagnostic runs can read them.
+        (() => {
+            const origErr = console.error.bind(console);
+            window.__initErrors = [];
+            console.error = (...a) => {
+                window.__initErrors.push(a.map(x => (x instanceof Error ? x.message : String(x))).join(' '));
+                const el = document.getElementById('diagConsole');
+                if (el) el.setAttribute('data-errors', window.__initErrors.slice(-5).join(' ||| '));
+                origErr(...a);
+            };
+        })();
         const canvas = document.getElementById('mainCanvas');
         const MAX_P = 10000000; // Supports Extreme Mode up to 10,000,000 live particles on GPU
         let N = 120000;
@@ -557,8 +706,44 @@
         const initialExtras = new Float32Array(MAX_P * 4);    // [prevVx, prevVy, group, stateFlags]
 
         function generateParticles() {
-            core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
-            core2 = { x: 0.75, y: 0.55, vx: -0.024, vy: -0.011, mass: 1.0 };
+            // ==================================================================
+            // GALAXY INITIAL CONDITIONS — Toomre & Toomre-style interacting pair
+            // ==================================================================
+            // Two equal-mass (m=1) galaxies on an eccentric mutual orbit. The
+            // core orbit uses the SAME softened Plummer potential the particles
+            // feel in the compute shader (GM_core = 0.00075, eps = 0.038), so
+            // the mutual force is physically consistent with the disk gravity.
+            //
+            // Derivation of the mutual G:
+            //   Particle force from one core: F = GM_core * r / (r^2 + eps^2)^(3/2)
+            //   Mutual force between cores:   F = G_mut * m1 * m2 * r / (r^2 + eps^2)^(3/2)
+            //   Consistency requires: G_mut * m1 * m2 = GM_core
+            //   With m1 = m2 = 1: G_mut = 0.00075
+            //
+            // Circular speed at separation d (two-body, softened). Setting
+            // centripetal acceleration v_rel^2/d = G(m1+m2) d/(d^2+eps^2)^(3/2)
+            // gives the d^3 numerator (d, not d^2, would be the force itself):
+            //   v_circ = sqrt(G_mut * (m1+m2) * d^3 / (d^2 + eps^2)^(3/2))
+            //          = sqrt(0.0015 * d^3 / (d^2 + 0.001444)^(3/2))
+            //
+            // At d = 0.45: v_circ ~ 0.0385. Near-parabolic: v_rel = 1.1 * v_circ ~ 0.0424.
+            // Each core gets v_rel/2 ~ 0.0212 (equal mass, COM frame).
+            if (scenario === 'galaxy') {
+                const dSep = 0.45;
+                const epsCore = 0.038;
+                const epsCoreSq = epsCore * epsCore;
+                const GMtotal = 0.0015; // 2 * 0.00075
+                const vCirc = Math.sqrt(GMtotal * dSep * dSep * dSep / Math.pow(dSep * dSep + epsCoreSq, 1.5));
+                const vRel = 1.1 * vCirc; // near-parabolic (eccentric flyby)
+                const vCore = vRel / 2;
+                // Barycenter at screen center. Separation along x, velocity
+                // along y → orbital angular momentum in +z (out of screen).
+                core1 = { x: 0.5 - dSep / 2, y: 0.5, vx: 0, vy: vCore, mass: 1.0 };
+                core2 = { x: 0.5 + dSep / 2, y: 0.5, vx: 0, vy: -vCore, mass: 1.0 };
+            } else {
+                core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
+                core2 = { x: 0.75, y: 0.55, vx: -0.024, vy: -0.011, mass: 1.0 };
+            }
 
             for (let i = 0; i < N; i++) {
                 let px = 0.5, py = 0.5, vx = 0, vy = 0, grp = 0.0, state = 0.0;
@@ -571,39 +756,41 @@
                     const cVx = isG1 ? core1.vx : core2.vx;
                     const cVy = isG1 ? core1.vy : core2.vy;
 
-                    // Standard Exponential Surface Density Disk (50% smaller scale): Sigma(r) = Sigma_0 * exp(-r / R_d)
-                    // Sampling via Gamma(2, R_d): r = -R_d * ln(u1 * u2)
-                    const Rd = 0.026;
+                    // Pure exponential surface-density disk (standard IC):
+                    // Sigma(r) = Sigma_0 * exp(-r / Rd). Sampling via
+                    // Gamma(2, Rd): r = -Rd * ln(u1 * u2) gives the correct
+                    // radial distribution. Rd = 0.045 so disks are resolved.
+                    const Rd = 0.045;
                     const u1 = Math.max(1e-4, Math.random());
                     const u2 = Math.max(1e-4, Math.random());
-                    const r = -Rd * Math.log(u1 * u2) + 0.005;
+                    const r = -Rd * Math.log(u1 * u2) + 0.003;
 
-                    // Classical Logarithmic Spiral Arm Distribution: phi(r) = cot(alpha) * ln(r / r_0)
-                    const arms = 2.0;
-                    const armIdx = Math.floor(Math.random() * arms);
-                    const pitch = 1.45; // Logarithmic winding parameter
-                    const phi = pitch * Math.log(r / 0.018 + 0.003);
-                    // Gaussian angular dispersion (Central Limit Theorem via 3 uniform randoms)
-                    const armDispersion = (Math.random() + Math.random() + Math.random() - 1.5) * 0.42;
-                    const th = (armIdx * (Math.PI * 2.0 / arms)) + phi + armDispersion;
+                    // No spiral-arm modulation — pure exponential disk.
+                    const th = Math.random() * Math.PI * 2.0;
 
-                    // 3D disk inclination tilt for rich 3D-projected warping & counter-tail uncurling
-                    const tilt = isG1 ? 0.25 : -0.35;
+                    // 3D disk inclination: tilt each disk a distinct angle for
+                    // a classic 3D-projected interacting pair (Toomre & Toomre).
+                    const tilt = isG1 ? (30 * Math.PI / 180) : (-45 * Math.PI / 180);
+                    const cosTilt = Math.cos(tilt);
                     const dx = r * Math.cos(th);
-                    const dy = (r * Math.sin(th)) * Math.cos(tilt);
+                    const dy = r * Math.sin(th) * cosTilt;
                     px = cx + dx;
                     py = cy + dy;
 
-                    // Calibrated non-collapsing softened potential circular orbital velocity (GM = 0.00075, eps = 0.038)
-                    // v_orb(r) = sqrt( G*M * r^2 / (r^2 + eps^2)^(3/2) )
-                    const epsSq = 0.038 * 0.038; // 0.001444
+                    // Softened circular velocity from the sim's core potential:
+                    // v_c(r) = sqrt(GM * r^2 / (r^2 + eps^2)^(3/2))
+                    // GM = 0.00075, eps = 0.038 (same as compute shader).
+                    const epsSq = 0.038 * 0.038;
                     const rSq = r * r;
                     const vOrb = Math.sqrt((0.00075 * rSq) / Math.pow(rSq + epsSq, 1.5));
 
-                    const dir = isG1 ? 1.0 : -1.0;
-                    // Natural velocity dispersion
-                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.0020;
-                    vy = cVy + dir * vOrb * Math.cos(th) * Math.cos(tilt) + (Math.random() - 0.5) * 0.0020;
+                    // Prograde encounter: both galaxies spin in the same
+                    // direction as the orbital angular momentum (+z), which
+                    // maximizes tidal tail formation (Toomre & Toomre 1972).
+                    const dir = 1.0;
+                    // Small isotropic velocity dispersion.
+                    vx = cVx - dir * vOrb * Math.sin(th) + (Math.random() - 0.5) * 0.003;
+                    vy = cVy + dir * vOrb * Math.cos(th) * cosTilt + (Math.random() - 0.5) * 0.003;
                     grp = isG1 ? 0.0 : 1.0;
                     state = 0.0;
                 } else if (scenario === 'boids') {
@@ -711,7 +898,8 @@
             useElasticHash: u32, // T3: 1 => P2P cell lookups probe the open-addr hash
             useQuantized: u32,   // T4: reserved (pack/unpack run as separate passes)
             useFunnelHash: u32,  // T6.4: 1 => P2P cell lookups probe the funnel hash
-            _pad0: u32,
+            cellListsReady: u32, // 1 => counting-sort cell lists are valid this frame (boids spatial neighbors)
+            useSortedPayload: u32, // 1 => sortedParticles is valid; main compute iterates over sorted slots
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -738,6 +926,10 @@
         // computeFunnelGeometry() on the JS side). Bound to a 4-byte-aligned
         // u32 storage buffer; ignored unless params.useFunnelHash == 1.
         @group(0) @binding(11) var<storage, read> funnelGeom: array<u32>;
+        // Sorted payload: particle data re-ordered by cell so P2P neighbor
+        // reads are contiguous (coalesced). Written by gather_sorted in the
+        // FMM shader after scatter_cells; read here when useSortedPayload == 1.
+        @group(0) @binding(12) var<storage, read> sortedParticles: array<Particle>;
         // Shared softening length^2: identical to the P2P kernel below and to
         // the ring M2P / parent M2L monopole terms so the force field stays
         // continuous across the P2P / ring / M2L zone boundaries.
@@ -861,12 +1053,21 @@
 
             if (gid >= n) { return; }
 
-            let p = posVelIn[gid];
-            var px = p.pos.x;
-            var py = p.pos.y;
-            var vx = p.vel.x;
-            var vy = p.vel.y;
-            let ext = extras[gid];
+            // When useSortedPayload == 1, gid is a SORTED slot index and
+            // origId is the original particle ID. All per-particle state
+            // (extras, fmmField, posVelOut) is indexed by origId. When 0,
+            // gid == origId and we read posVelIn directly (legacy path).
+            var origId: u32 = gid;
+            var px: f32; var py: f32; var vx: f32; var vy: f32;
+            if (params.useSortedPayload == 1u) {
+                origId = fmmSortedIndex[gid];
+                let sp = sortedParticles[gid];
+                px = sp.pos.x; py = sp.pos.y; vx = sp.vel.x; vy = sp.vel.y;
+            } else {
+                let pp = posVelIn[gid];
+                px = pp.pos.x; py = pp.pos.y; vx = pp.vel.x; vy = pp.vel.y;
+            }
+            let ext = extras[origId];
             let grp = ext.group;
 
             var fx: f32 = 0.0;
@@ -878,14 +1079,17 @@
 
             // 1. SCENARIO PHYSICS EVALUATION
             if (params.scenario == 0u) {
-                if (params.fmmEnabled != 1u) {
-                // Calibrated Non-Collapsing Softened Galactic Potential (GM = 0.00075, eps = 0.038).
-                // Analytic dual-core mode: exactly the pre-FMM baseline (total
-                // GM = 2 x 0.00075 = 0.0015). When the FMM is enabled these
-                // cores are REPLACED by the particle self-gravity below
-                // (Gp = 0.0015 / N => same total GM), so the calibration stays
-                // valid in both paths without doubling the gravity.
+                // Analytic dual softened cores (GM = 0.00075 each, eps = 0.038).
+                // In non-FMM mode both cores run at full strength (total
+                // GM = 2 x 0.00075 = 0.0015). In FMM mode the cores are kept
+                // ACTIVE at HALF strength (GM = 0.000375 each) to represent the
+                // halo/bulge mass and preserve TWO distinct gravity centers so
+                // the dual-disk flyby shears both disks instead of collapsing
+                // to the common center of mass; the FMM particle self-gravity
+                // below supplies the remaining half of the pull (Gp halved from
+                // 0.03/N to 0.015/N) so the total disk pull stays calibrated.
                 let epsSq: f32 = 0.001444; // 0.038^2
+                let coreGM = select(0.00075, 0.000375, params.fmmEnabled == 1u);
 
                 // Core 1 Attraction
                 let d1x = params.g1x - px;
@@ -893,7 +1097,7 @@
                 let r1_sq = d1x * d1x + d1y * d1y + epsSq;
                 let inv_r1 = inverseSqrt(r1_sq);
                 let inv_r1_3 = inv_r1 * inv_r1 * inv_r1;
-                let f1 = 0.00075 * inv_r1_3;
+                let f1 = coreGM * inv_r1_3;
                 fx += d1x * f1; fy += d1y * f1;
 
                 // Core 2 Attraction
@@ -902,25 +1106,29 @@
                 let r2_sq = d2x * d2x + d2y * d2y + epsSq;
                 let inv_r2 = inverseSqrt(r2_sq);
                 let inv_r2_3 = inv_r2 * inv_r2 * inv_r2;
-                let f2 = 0.00075 * inv_r2_3;
+                let f2 = coreGM * inv_r2_3;
                 fx += d2x * f2; fy += d2y * f2;
-                } // end analytic cores (FMM replaces them)
 
                 if (params.fmmEnabled == 1u) {
-                // Unified self-gravity constant: one galaxy (N/2 particles) must
-                // exert the same total pull as one analytic core (GM = 0.00075),
-                // so Gp = 0.0015 / N keeps the calibrated disk rotation valid
-                // while making the P2P near field and FMM far field consistent.
-                let Gp = 0.0015 / f32(max(params.numParticles, 1u));
+                // Unified self-gravity constant. The FMM uses a 2D logarithmic
+                // potential (force ~ 1/r), while the analytic cores above use
+                // 3D gravity (force ~ 1/r^2). To match the analytic core's
+                // pull at the calibrated disk radius (r ≈ 0.05):
+                //   analytic: 0.00075 / r^2 = 0.3
+                //   FMM:      (N/2)/r * Gp  =>  Gp = 0.3 * r / (N/2) = 0.03 / N
+                // The cores now supply half (0.000375 each), so the FMM Gp is
+                // halved to 0.015/N to keep the total disk pull calibrated while
+                // preserving two distinct gravity centers.
+                let Gp = 0.015 / f32(max(params.numParticles, 1u));
 
                 // FMM far field (mass-count units). Fixed-grid L2P additionally
                 // evaluates the leaf ring (Chebyshev 2..3 cells) via leaf
                 // multipoles; multi-level L2P evaluates the List 1 near field
                 // directly, so no substitute sampling is needed here.
-                let far = fmmField[gid].xy;
+                let far = fmmField[origId].xy;
                 fx += far.x * Gp;
                 fy += far.y * Gp;
-                farMultipoleIntensity = clamp(length(far) * Gp * 400.0, 0.0, 1.0);
+                farMultipoleIntensity = clamp(length(far) * Gp * 20.0, 0.0, 1.0);
 
                 if (params.adaptiveMode == 1u) {
                     // Near field is handled exactly by the multi-level L2P
@@ -965,9 +1173,14 @@
                         loop {
                             if (s >= count) { break; }
                             let candidate = fmmSortedIndex[start + s];
-                            if (candidate != gid) {
-                                let q = posVelIn[candidate];
-                                let d = vec2(px, py) - q.pos;
+                            if (candidate != origId) {
+                                // select() evaluates BOTH operands in WGSL, so a
+                                // select would keep the scattered posVelIn
+                                // gather alive; branch instead (uniform cond).
+                                var qpos: vec2<f32>;
+                                if (params.useSortedPayload == 1u) { qpos = sortedParticles[start + s].pos; }
+                                else { qpos = posVelIn[candidate].pos; }
+                                let d = vec2(px, py) - qpos;
                                 let r2 = dot(d, d) + P2P_EPS2;
                                 if (r2 < rcSq) {
                                     let inv = inverseSqrt(r2);
@@ -1078,42 +1291,129 @@
             }
 
             // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH / Vortex only)
-            if (params.scenario != 0u) {
-                let sample_start = (gid * 37u) % n;
-                let sample_count = select(16u, 32u, n < 250000u);
-                for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
-                    let other_idx = (sample_start + s) % n;
-                    if (other_idx != gid) {
-                        let other = posVelIn[other_idx];
-                        let diffX = px - other.pos.x;
-                        let diffY = py - other.pos.y;
-                        let r2 = diffX * diffX + diffY * diffY + 1e-4;
+            if (params.scenario == 1u) {
+                // Boids: TRUE spatial neighbors via the counting-sorted cell
+                // lists (built for scenario 1 in runWebGPUFrame). Traverse the
+                // 3x3 leaf neighborhood with a per-list sample cap so work
+                // stays bounded. Falls back to the old random global sampling
+                // when the cell-list build passes are unavailable on this
+                // device (cellListsReady == 0).
+                let sepR = params.p2pRadius * 0.35;
+                let alignR = params.p2pRadius;
+                let sepR2 = sepR * sepR;
+                let alignR2 = alignR * alignR;
 
-                        if (params.scenario == 1u) {
-                            // Boids Separation (Near-Field P2P)
-                            if (r2 < 0.0010) {
+                if (params.cellListsReady == 1u) {
+                    let side = 1u << params.leafBits;
+                    let leaf = leafIndex(vec2(px, py));
+                    let cx = leaf % side; let cy = leaf / side;
+                    let P2P_LIST_CAP = max(16u, params.p2pListCap);
+                    for (var oy: i32 = -1; oy <= 1; oy++) { for (var ox: i32 = -1; ox <= 1; ox++) {
+                        let nx = i32(cx) + ox; let ny = i32(cy) + oy;
+                        if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
+                            let neighborCell = u32(ny) * side + u32(nx);
+                            let start = cellStartOf(neighborCell);
+                            let count = cellCountOf(neighborCell);
+                            let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
+                            var s: u32 = gid % stride;
+                            loop {
+                                if (s >= count) { break; }
+                                let candidate = fmmSortedIndex[start + s];
+                                if (candidate != origId) {
+                                    var qpos: vec2<f32>; var qvel: vec2<f32>;
+                                    if (params.useSortedPayload == 1u) {
+                                        qpos = sortedParticles[start + s].pos;
+                                        qvel = sortedParticles[start + s].vel;
+                                    } else {
+                                        qpos = posVelIn[candidate].pos;
+                                        qvel = posVelIn[candidate].vel;
+                                    }
+                                    let diffX = px - qpos.x;
+                                    let diffY = py - qpos.y;
+                                    let r2 = diffX * diffX + diffY * diffY + 1e-4;
+                                    // Separation (short range)
+                                    if (r2 < sepR2) {
+                                        let inv_r = inverseSqrt(r2);
+                                        fx += diffX * inv_r * 0.040;
+                                        fy += diffY * inv_r * 0.040;
+                                        nearP2PIntensity += 0.4;
+                                    }
+                                    // Alignment + Cohesion (longer range)
+                                    if (r2 < alignR2) {
+                                        fx += (qvel.x - vx) * 0.030;
+                                        fy += (qvel.y - vy) * 0.030;
+                                        fx -= diffX * 0.015;
+                                        fy -= diffY * 0.015;
+                                        farMultipoleIntensity += 0.2;
+                                    }
+                                }
+                                s = s + stride;
+                            }
+                        }
+                    } }
+                } else {
+                    // Fallback: random global sampling (cell-list passes
+                    // unavailable on this device). Same coefficients/radii.
+                    // Reads posVelIn[other_idx] for arbitrary other_idx (not
+                    // cell-local), so it stays on posVelIn per the design; the
+                    // self-skip and sample-start phase use origId so behavior
+                    // is stable across the sort re-ordering.
+                    let sample_start = (origId * 37u) % n;
+                    let sample_count = select(16u, 32u, n < 250000u);
+                    for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
+                        let other_idx = (sample_start + s) % n;
+                        if (other_idx != origId) {
+                            let other = posVelIn[other_idx];
+                            let diffX = px - other.pos.x;
+                            let diffY = py - other.pos.y;
+                            let r2 = diffX * diffX + diffY * diffY + 1e-4;
+                            if (r2 < sepR2) {
                                 let inv_r = inverseSqrt(r2);
                                 fx += diffX * inv_r * 0.040;
                                 fy += diffY * inv_r * 0.040;
                                 nearP2PIntensity += 0.4;
                             }
-                            // Boids Alignment & Cohesion (Far-Field Multi-agent)
-                            if (r2 < 0.0040) {
+                            if (r2 < alignR2) {
                                 fx += (other.vel.x - vx) * 0.030;
                                 fy += (other.vel.y - vy) * 0.030;
                                 fx -= diffX * 0.015;
                                 fy -= diffY * 0.015;
                                 farMultipoleIntensity += 0.2;
                             }
-                        } else if (params.scenario == 2u) {
-                            // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing
-                            if (r2 < 0.0030) {
+                        }
+                    }
+                }
+            } else if (params.scenario == 2u || params.scenario == 3u) {
+                // Vortex / SPH: random-sample neighbor loop. Interaction radii
+                // scale with p2pRadius so the slider visibly changes behavior.
+                // Reads posVelIn[other_idx] for arbitrary other_idx (not
+                // cell-local), so it stays on posVelIn per the design; the
+                // self-skip and sample-start phase use origId so behavior is
+                // stable across the sort re-ordering.
+                let sample_start = (origId * 37u) % n;
+                let sample_count = select(16u, 32u, n < 250000u);
+                for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
+                    let other_idx = (sample_start + s) % n;
+                    if (other_idx != origId) {
+                        let other = posVelIn[other_idx];
+                        let diffX = px - other.pos.x;
+                        let diffY = py - other.pos.y;
+                        let r2 = diffX * diffX + diffY * diffY + 1e-4;
+
+                        if (params.scenario == 2u) {
+                            // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing.
+                            // Cutoffs scale proportionally to p2pRadius/0.035.
+                            let vScale = params.p2pRadius / 0.035;
+                            let vSupp = 0.055 * vScale;
+                            let vSupp2 = vSupp * vSupp;
+                            let vCore2 = 0.0008 * vScale * vScale;
+                            if (r2 < vSupp2) {
                                 let r = sqrt(r2);
-                                let q = max(0.0, 1.0 - r / 0.055);
+                                let q = max(0.0, 1.0 - r / vSupp);
                                 fx += (other.vel.x - vx) * q * 0.040;
                                 fy += (other.vel.y - vy) * q * 0.040;
                                 // Dispersion pressure preventing 1D thin curve clumping
-                                if (r2 < 0.0008) {
+                                if (r2 < vCore2) {
                                     let inv_r = inverseSqrt(r2);
                                     fx += diffX * inv_r * 0.018;
                                     fy += diffY * inv_r * 0.018;
@@ -1121,10 +1421,12 @@
                                 nearP2PIntensity += q * 0.4;
                             }
                         } else if (params.scenario == 3u) {
-                            // SPH Fluid Incompressibility & Active Lateral Pressure Expansion
-                            if (r2 < 0.0036) {
+                            // SPH Fluid Incompressibility & Active Lateral Pressure Expansion.
+                            // Kernel support h scales with p2pRadius (clamped).
+                            let h = clamp(params.p2pRadius * 1.7, 0.03, 0.09);
+                            let h2 = h * h;
+                            if (r2 < h2) {
                                 let r = sqrt(r2);
-                                let h = 0.060;
                                 if (r < h) {
                                     let q = 1.0 - r / h;
                                     let rep = q * q * 2.8;
@@ -1186,12 +1488,12 @@
             px = clamp(px + filteredVx * dt, 0.01, 0.99);
             py = clamp(py + filteredVy * dt, 0.01, 0.99);
 
-            posVelOut[gid].pos = vec2<f32>(px, py);
-            posVelOut[gid].vel = vec2<f32>(filteredVx, filteredVy);
-            extras[gid].prevVel = vec2<f32>(filteredVx, filteredVy);
-            
+            posVelOut[origId].pos = vec2<f32>(px, py);
+            posVelOut[origId].vel = vec2<f32>(filteredVx, filteredVy);
+            extras[origId].prevVel = vec2<f32>(filteredVx, filteredVy);
+
             // Encode state: low-byte near-field, mid-byte far-field, high-byte filter
-            extras[gid].state = clamp(nearP2PIntensity, 0.0, 1.0) * 1.0 + clamp(farMultipoleIntensity, 0.0, 1.0) * 2.0 + clamp(filterDamping, 0.0, 1.0) * 4.0;
+            extras[origId].state = clamp(nearP2PIntensity, 0.0, 1.0) * 1.0 + clamp(farMultipoleIntensity, 0.0, 1.0) * 2.0 + clamp(filterDamping, 0.0, 1.0) * 4.0;
         }
         `;
 
@@ -1243,6 +1545,7 @@
             localCellBase: u32,// this level's first cell in fmmLocals
             useElasticHash: u32, // T3: 1 => cell lookups probe ehSlots, 0 => direct index
             useFunnelHash: u32,  // T6.4: 1 => cell lookups probe the funnel hash
+            useSortedPayload: u32, // 1 => gather_sorted runs and sortedFmmParticles is valid
             _pad1: u32,
         };
         @group(0) @binding(0) var<storage, read> fmmPos: array<FmmParticle>;
@@ -1273,6 +1576,10 @@
         // probe helpers accumulate search probes. Read back for the TELEM
         // probe-bound assertion and the ?hashverify=1 startup report.
         @group(0) @binding(14) var<storage, read_write> funnelProbeCount: array<atomic<u32>>;
+        // Sorted payload: fmmPos re-ordered by cell so build_moments and the
+        // main compute P2P neighbor reads are contiguous (coalesced). Written
+        // by gather_sorted after scatter_cells; read when useSortedPayload==1.
+        @group(0) @binding(15) var<storage, read_write> sortedFmmParticles: array<FmmParticle>;
         const EH_EMPTY: u32 = 0xFFFFFFFFu;
         fn ehTableSize() -> u32 { return 1u << (2u * fmmParams.leafBits + 1u); }
         // u32 splitmix-style finalizer (low-bias, used by the build + probe
@@ -1466,6 +1773,19 @@
             let cell = leafIndex(fmmPos[id.x].pos);
             let slot = atomicAdd(&cellCursor[cell], 1u);
             sortedIndex[slot] = id.x;
+        }
+        // gather_sorted: re-order the particle PAYLOAD by cell so neighbor
+        // reads in build_moments and the main compute P2P loops are
+        // contiguous (coalesced). For each sorted slot gid, sortedIndex[gid]
+        // is the original particle id; copy fmmPos[origId] -> sortedFmmParticles[gid].
+        // One random read + one coalesced write per thread. Dispatched AFTER
+        // scatter_cells (and the eh/funnel scatter variants) each frame the
+        // cell lists are built, when fmmParams.useSortedPayload == 1.
+        @compute @workgroup_size(256)
+        fn gather_sorted(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= fmmParams.numParticles) { return; }
+            let src = sortedIndex[id.x];
+            sortedFmmParticles[id.x] = fmmPos[src];
         }
         // ---- T3 elastic-hash build passes (replace count/scan/scatter when
         // useElasticHash == 1). Produces the SAME sortedIndex contiguous
@@ -1741,7 +2061,13 @@
             var a0 = 0.0; var a1 = vec2<f32>(0.0); var a2 = vec2<f32>(0.0); var a3 = vec2<f32>(0.0); var a4 = vec2<f32>(0.0);
             for (var s: u32 = 0u; s < cnt; s = s + 1u) {
                 let p = sortedIndex[start + s];
-                let dz = fmmPos[p].pos - center;
+                // When useSortedPayload == 1 the payload is already gathered
+                // into sortedFmmParticles by slot, so read it directly
+                // (coalesced) instead of random-accessing fmmPos[origId].
+                var dzpos: vec2<f32>;
+                if (fmmParams.useSortedPayload == 1u) { dzpos = sortedFmmParticles[start + s].pos; }
+                else { dzpos = fmmPos[p].pos; }
+                let dz = dzpos - center;
                 var power = vec2<f32>(1.0, 0.0);
                 a0 += 1.0;
                 if (fmmParams.order >= 1u) { power = cmul(power, dz); a1 -= power; }
@@ -2055,9 +2381,9 @@ struct FmmParams {
     expansionOrder: u32,
     levelCount: u32,
     levelBase: u32,
-    _pad0: u32,
+    zeroNearP2P: u32,  // probe flag: 1 = skip List-1 P2P (measure multipole path only)
     _pad1: u32,
-    _pad2: u32,
+    useAdaptiveNodeHash: u32, // 1 => l2p resolves the target leaf via a funnel probe of nodeHashKeys
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -2075,9 +2401,21 @@ struct FmmParams {
 @group(0) @binding(12) var<storage, read> nodeParent: array<u32>;
 @group(0) @binding(13) var<storage, read> nodeChildren: array<vec4<u32>>;
 @group(0) @binding(14) var<storage, read> nodeFlags: array<u32>;
+@group(0) @binding(15) var<storage, read> charges: array<f32>;  // T-D7: per-particle charge
+// Funnel-hash occupied-node directory (read-only; built on CPU by
+// FunnelTable in buildAdaptiveMetadata). Packed into ONE storage buffer to
+// stay under WebGPU's 16-storage-buffer per-stage limit:
+//   [0, geomSize)            packed funnel geometry (same layout as the
+//                            cell-lists funnelGeom; see computeFunnelGeometry)
+//   [geomSize, +totalSize)   nodeHashKeys: packed node key or AHASH_EMPTY
+//   [geomSize+totalSize, ...) nodeHashValues: node index for that key
+// Probed by l2p when params.useAdaptiveNodeHash == 1 to resolve the target
+// leaf node from the particle position (derive cell -> pack key -> probe).
+@group(0) @binding(16) var<storage, read> nodeHash: array<u32>;
 
 const INVALID: u32 = 0xFFFFFFFFu;
 const FLAG_TERMINAL: u32 = 1u;
+const AHASH_EMPTY: u32 = 0xFFFFFFFFu;
 
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x);
@@ -2120,6 +2458,98 @@ fn isTerminal(node: u32) -> bool {
     return (nodeFlags[node] & FLAG_TERMINAL) != 0u;
 }
 
+// ---- Funnel-hash occupied-node directory probe (port of the cell-lists
+// funnelProbe; same layout math as JS FunnelTable + computeFunnelGeometry).
+// The WGSL probe here is the AUTHORITATIVE one; the JS FunnelTable only
+// builds the table. hashU32 MUST match hashU32JS on the JS side.
+fn ahashU32(k: u32) -> u32 {
+    var x = k ^ 0x9E3779B9u;
+    x = x ^ (x >> 16);
+    x = x * 0x7FEB352Du;
+    x = x ^ (x >> 15);
+    x = x * 0x846CA68Bu;
+    x = x ^ (x >> 16);
+    return x;
+}
+fn ahAlpha() -> u32 { return nodeHash[0u]; }
+fn ahBeta() -> u32 { return nodeHash[1u]; }
+fn ahBOffset() -> u32 { return nodeHash[2u]; }
+fn ahBSize() -> u32 { return nodeHash[3u]; }
+fn ahCOffset() -> u32 { return nodeHash[4u]; }
+fn ahCNumBuckets() -> u32 { return nodeHash[5u]; }
+fn ahCBucketSlots() -> u32 { return nodeHash[6u]; }
+fn ahBAttempts() -> u32 { return nodeHash[7u]; }
+fn ahTotalSize() -> u32 { return nodeHash[9u]; }
+// geomSize = 11 + 3*alpha + bAttempts + 2 (matches the JS packed layout).
+fn ahGeomSize() -> u32 { return 11u + 3u * ahAlpha() + ahBAttempts() + 2u; }
+fn ahKeysAt(pos: u32) -> u32 { return nodeHash[ahGeomSize() + pos]; }
+fn ahValuesAt(pos: u32) -> u32 { return nodeHash[ahGeomSize() + ahTotalSize() + pos]; }
+fn ahSlabOffset(i: u32) -> u32 { return nodeHash[11u + i]; }
+fn ahSubarrayCount(i: u32) -> u32 { return nodeHash[11u + ahAlpha() + i]; }
+fn ahSlabSalt(i: u32) -> u32 { return nodeHash[11u + 2u * ahAlpha() + i]; }
+fn ahBSalt(t: u32) -> u32 { return nodeHash[11u + 3u * ahAlpha() + t]; }
+fn ahCSalt1() -> u32 { return nodeHash[11u + 3u * ahAlpha() + ahBAttempts()]; }
+fn ahCSalt2() -> u32 { return nodeHash[11u + 3u * ahAlpha() + ahBAttempts() + 1u]; }
+// Probe the directory for key; returns the node index (nodeHashValues[slot])
+// or INVALID if absent. Mirrors the JS FunnelTable.probe descent exactly.
+fn adaptiveNodeProbe(key: u32) -> u32 {
+    let alpha = ahAlpha();
+    let beta = ahBeta();
+    for (var i: u32 = 0u; i < alpha; i = i + 1u) {
+        let aCount = ahSubarrayCount(i);
+        let base = ahSlabOffset(i) + (ahashU32(key ^ ahSlabSalt(i)) % aCount) * beta;
+        for (var s: u32 = 0u; s < beta; s = s + 1u) {
+            let pos = base + s;
+            let k = ahKeysAt(pos);
+            if (k == key) { return ahValuesAt(pos); }
+            if (k == AHASH_EMPTY) { return INVALID; }
+        }
+    }
+    let bSize = ahBSize();
+    let bOff = ahBOffset();
+    let bAttempts = ahBAttempts();
+    if (bSize > 0u) {
+        for (var t: u32 = 0u; t < bAttempts; t = t + 1u) {
+            let pos = bOff + (ahashU32(key ^ ahBSalt(t)) % bSize);
+            let k = ahKeysAt(pos);
+            if (k == key) { return ahValuesAt(pos); }
+            if (k == AHASH_EMPTY) { return INVALID; }
+        }
+    }
+    let cOff = ahCOffset();
+    let cNumBuckets = ahCNumBuckets();
+    let cBucketSlots = ahCBucketSlots();
+    if (cNumBuckets > 0u) {
+        let b1 = ahashU32(key ^ ahCSalt1()) % cNumBuckets;
+        let b2 = ahashU32(key ^ ahCSalt2()) % cNumBuckets;
+        for (var t: u32 = 0u; t < cBucketSlots; t = t + 1u) {
+            let pa = cOff + b1 * cBucketSlots + t;
+            let ka = ahKeysAt(pa);
+            if (ka == key) { return ahValuesAt(pa); }
+            if (ka == AHASH_EMPTY) { return INVALID; }
+            let pb = cOff + b2 * cBucketSlots + t;
+            let kb = ahKeysAt(pb);
+            if (kb == key) { return ahValuesAt(pb); }
+            if (kb == AHASH_EMPTY) { return INVALID; }
+        }
+    }
+    return INVALID;
+}
+// Resolve the target leaf node for a particle position via the funnel
+// directory. Derives the leaf cell from pos at the deepest level
+// (levelCount - 1), packs the node key (level<<20 | iy<<10 | ix) -- matching
+// the JS buildAdaptiveMetadata encoding -- and probes the directory. Returns
+// the node index or INVALID if the probe misses (should not happen for a
+// particle inside [0,1)^2; falls back to leafForParticle at the call site).
+fn resolveLeafNode(pos: vec2<f32>) -> u32 {
+    let leafLevel = params.levelCount - 1u;
+    let side = 1u << leafLevel;
+    let ix = min(u32(clamp(pos.x, 0.0, 0.999999) * f32(side)), side - 1u);
+    let iy = min(u32(clamp(pos.y, 0.0, 0.999999) * f32(side)), side - 1u);
+    let key = (leafLevel << 20u) | (iy << 10u) | ix;
+    return adaptiveNodeProbe(key);
+}
+
 @compute @workgroup_size(256)
 fn clear(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.nodeCount * 3u) { return; }
@@ -2139,7 +2569,7 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
         let particle = particleIndices[range.x + n];
         let dz = particles[particle].pos - center;
         var power = vec2<f32>(1.0, 0.0);
-        coeff[0].x += 1.0;
+        coeff[0].x += charges[particle];  // T-D7: use per-particle charge
         for (var k = 1u; k <= 4u; k = k + 1u) {
             power = cmul(power, dz);
             if (k <= params.expansionOrder) { coeff[k] -= power / f32(k); }
@@ -2282,7 +2712,19 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         fn l2p(@builtin(global_invocation_id) id: vec3<u32>) {
             let particle = id.x;
             if (particle >= params.numParticles) { return; }
-            let targetNode = leafForParticle[particle];
+            // Target leaf node: when useAdaptiveNodeHash == 1, derive the leaf
+            // cell from the particle position and resolve it through the
+            // funnel-hash occupied-node directory (the "derive arithmetically
+            // -> probe" path this directory replaces). When 0 (or if the probe
+            // misses, which should not happen for in-bounds particles), fall
+            // back to the precomputed leafForParticle array (legacy path).
+            var targetNode: u32;
+            if (params.useAdaptiveNodeHash == 1u) {
+                targetNode = resolveLeafNode(particles[particle].pos);
+                if (targetNode == INVALID) { targetNode = leafForParticle[particle]; }
+            } else {
+                targetNode = leafForParticle[particle];
+            }
             let center = nodeCenterSize[targetNode].xy;
             let dz = particles[particle].pos - center;
             var potential = 0.0;
@@ -2326,26 +2768,37 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // (softened, 1/r log-potential magnitude to match the FMM far
             // field). Budgeted per leaf with an id-dependent stride so the
             // sampled subset is decorrelated between particles.
+            // Uses per-particle charges[j] (binding 15) and includes the
+            // near-field log-potential term, matching the Python emulator in
+            // core/test_flat_adaptive_gpu.py.
+            // When params.zeroNearP2P == 1 (probe mode), the P2P accumulation
+            // is skipped so the probe measures the multipole (M2L/L2P) path
+            // only, without conflating P2P sampling noise with far-field
+            // truncation error.
             var p2pForce = vec2<f32>(0.0);
-            let list1Offset = listOffsets[targetNode].x;
-            let list1Count = listCounts[targetNode].x;
-            var p2pBudget = 24u;
-            if (params.numParticles > 500000u) { p2pBudget = 12u; }
-            if (params.numParticles > 2000000u) { p2pBudget = 6u; }
-            for (var q = 0u; q < list1Count; q = q + 1u) {
-                let src = listData[list1Offset + q];
-                let range = nodeParticleRange[src];
-                if (range.y == 0u) { continue; }
-                let cnt = min(range.y, p2pBudget);
-                let skip = (particle * 2654435761u + src * 40503u) % range.y;
-                for (var n = 0u; n < cnt; n = n + 1u) {
-                    let j = particleIndices[range.x + ((skip + n) % range.y)];
-                    if (j == particle) { continue; }
-                    let d = particles[particle].pos - particles[j].pos;
-                    let r2 = dot(d, d) + 0.00004;
-                    let inv2 = inverseSqrt(r2);
-                    // Attraction toward j: -(d) * m / (r^2 + eps^2)
-                    p2pForce -= d * (inv2 * inv2);
+            if (params.zeroNearP2P == 0u) {
+                let list1Offset = listOffsets[targetNode].x;
+                let list1Count = listCounts[targetNode].x;
+                var p2pBudget = 24u;
+                if (params.numParticles > 500000u) { p2pBudget = 12u; }
+                if (params.numParticles > 2000000u) { p2pBudget = 6u; }
+                for (var q = 0u; q < list1Count; q = q + 1u) {
+                    let src = listData[list1Offset + q];
+                    let range = nodeParticleRange[src];
+                    if (range.y == 0u) { continue; }
+                    let cnt = min(range.y, p2pBudget);
+                    let skip = (particle * 2654435761u + src * 40503u) % range.y;
+                    for (var n = 0u; n < cnt; n = n + 1u) {
+                        let j = particleIndices[range.x + ((skip + n) % range.y)];
+                        if (j == particle) { continue; }
+                        let d = particles[particle].pos - particles[j].pos;
+                        let r2 = dot(d, d) + 0.00004;
+                        let inv2 = inverseSqrt(r2);
+                        let qj = charges[j];
+                        // Near-field log-potential + force with per-particle charge.
+                        potential += qj * 0.5 * log(r2);
+                        p2pForce -= d * (qj * inv2 * inv2);
+                    }
                 }
             }
 
@@ -2399,6 +2852,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             output.position = vec4<f32>(clipX, clipY, 0.0, 1.0);
 
             let speed = length(vel) * 22.0;
+            // Normalized speed t in [0,1] against the per-scenario clamp used
+            // in the compute shader (0.14 for galaxy/boids/vortex, 0.35 SPH).
+            // The old speed*22 breakpoints (0.5/1.0/1.2) mapped galaxy speeds
+            // straight to pink/gold because maxSpeed=0.14 => max speed=3.08;
+            // normalizing spreads the cyan->purple->pink->gold palette across
+            // the actual speed range.
+            let maxSpeed = select(0.14, 0.35, params.scenario == 3u);
+            let t = clamp(length(vel) / maxSpeed, 0.0, 1.0);
             var ptScale: f32 = 1.0;
             if (params.numParticles > 6000000u) {
                 ptScale = 0.30;
@@ -2418,13 +2879,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             var col = cCyan;
 
             if (params.colorMode == 0u) {
-                // 1. Velocity Heatmap
-                if (speed < 0.5) {
-                    col = mix(cCyan, cPurple, speed * 2.0);
-                } else if (speed < 1.0) {
-                    col = mix(cPurple, cPink, (speed - 0.5) * 2.0);
+                // 1. Velocity Heatmap (normalized t over per-scenario maxSpeed)
+                if (t < 0.33) {
+                    col = mix(cCyan, cPurple, t / 0.33);
+                } else if (t < 0.66) {
+                    col = mix(cPurple, cPink, (t - 0.33) / 0.33);
                 } else {
-                    col = mix(cPink, cGold, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
+                    col = mix(cPink, cGold, (t - 0.66) / 0.34);
                 }
             } else if (params.colorMode == 1u) {
                 // 2. FMM & 1€ Dynamics (Cyan=Near, Purple=Far, Green=1€ Filter, Pink=Evasion)
@@ -2439,8 +2900,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (filterAct > 0.15) {
                     col = mix(col, cGreen, clamp(filterAct * 2.5, 0.0, 1.0));
                 }
-                if (speed > 1.2) {
-                    col = mix(col, cPink, clamp((speed - 1.2) * 1.5, 0.0, 1.0));
+                if (t > 0.85) {
+                    col = mix(col, cPink, clamp((t - 0.85) * 4.0, 0.0, 1.0));
                 }
             } else if (params.colorMode == 2u) {
                 // 3. Scenario Clusters
@@ -2460,10 +2921,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     col = mix(vec3<f32>(0.0, 0.5, 1.0), cCyan, clamp((pos.y - 0.1) * 1.2, 0.0, 1.0));
                 }
             } else if (params.colorMode == 3u) {
-                // 4. 1€ Filter Damping Activity (Green=Jitter-damped, Cyan=Cruising, Pink=Evasion)
-                col = mix(cGreen, cCyan, clamp(speed * 0.8, 0.0, 1.0));
-                if (speed > 1.0) {
-                    col = mix(col, cPink, clamp((speed - 1.0) * 1.5, 0.0, 1.0));
+                // 4. 1€ Filter Damping Activity. The compute shader encodes
+                // state = near*1 + far*2 + filterDamping*4, so filterAct =
+                // fract(state*0.25) recovers the normalized filter activity.
+                // Green gradient = active smoothing, cyan = cruising (low
+                // filterAct), pink only for genuinely high normalized speed.
+                let filterAct = fract(state * 0.25);
+                col = mix(cCyan, cGreen, clamp(filterAct * 1.5, 0.0, 1.0));
+                if (t > 0.8) {
+                    col = mix(col, cPink, clamp((t - 0.8) * 2.5, 0.0, 1.0));
                 }
             }
 
@@ -2641,6 +3107,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             gl_Position = vec4(clipSpace, 0.0, 1.0);
             float speedNorm = length(filteredVel) * 22.0;
             gl_PointSize = clamp(2.0 - speedNorm * 0.1, 0.8, 3.0);
+            // Normalized speed t over the per-scenario clamp (matches compute).
+            float maxSpeed = (u_scenario == 3) ? 0.35 : 0.14;
+            float t = clamp(length(filteredVel) / maxSpeed, 0.0, 1.0);
 
             vec3 cCyan = vec3(0.0, 0.94, 1.0);
             vec3 cPurple = vec3(0.64, 0.44, 0.97);
@@ -2651,16 +3120,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             vec3 col = cCyan;
 
             if (u_colorMode == 0) {
-                // Velocity Heatmap
-                if (speedNorm < 0.5) col = mix(cCyan, cPurple, speedNorm * 2.0);
-                else if (speedNorm < 1.0) col = mix(cPurple, cPink, (speedNorm - 0.5) * 2.0);
-                else col = mix(cPink, cGold, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
+                // Velocity Heatmap (normalized t over per-scenario maxSpeed)
+                if (t < 0.33) col = mix(cCyan, cPurple, t / 0.33);
+                else if (t < 0.66) col = mix(cPurple, cPink, (t - 0.33) / 0.33);
+                else col = mix(cPink, cGold, (t - 0.66) / 0.34);
             } else if (u_colorMode == 1) {
                 // FMM & 1€ Dynamics
                 col = cPurple;
                 if (nearP2P > 0.2) col = mix(col, cCyan, clamp(nearP2P * 1.5, 0.0, 1.0));
                 if (filterDamping > 0.15) col = mix(col, cGreen, clamp(filterDamping * 2.5, 0.0, 1.0));
-                if (speedNorm > 1.2) col = mix(col, cPink, clamp((speedNorm - 1.2) * 1.5, 0.0, 1.0));
+                if (t > 0.85) col = mix(col, cPink, clamp((t - 0.85) * 4.0, 0.0, 1.0));
             } else if (u_colorMode == 2) {
                 // Scenario Clusters
                 if (u_scenario == 1) {
@@ -2671,9 +3140,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     col = mix(vec3(0.0, 0.5, 1.0), cCyan, clamp((pos.y - 0.1) * 1.2, 0.0, 1.0));
                 }
             } else if (u_colorMode == 3) {
-                // 1€ Filter Damping
-                col = mix(cGreen, cCyan, clamp(speedNorm * 0.8, 0.0, 1.0));
-                if (speedNorm > 1.0) col = mix(col, cPink, clamp((speedNorm - 1.0) * 1.5, 0.0, 1.0));
+                // 1€ Filter Damping: green=active smoothing, cyan=cruising,
+                // pink only for genuinely high normalized speed.
+                col = mix(cCyan, cGreen, clamp(filterDamping * 1.5, 0.0, 1.0));
+                if (t > 0.8) col = mix(col, cPink, clamp((t - 0.8) * 2.5, 0.0, 1.0));
             }
 
             v_renderColor = vec4(col, 0.88);
@@ -2704,6 +3174,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuUniformBuffer = null;
         let webgpuFmmCellCount = null, webgpuFmmCellCursor = null, webgpuFmmCellStart = null, webgpuFmmSortedIndex = null;
         let webgpuFmmMoments = null, webgpuFmmLocals = null, webgpuFmmField = null;
+        let webgpuSortedParticles = null; // sorted payload (coalesced P2P reads)
         let webgpuFmmParams = null;
         let webgpuBufferBytes = 0;
         let webgpuBufferLimitBytes = 0;
@@ -2746,6 +3217,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let fmmProbeDone = false;
         let fmmProbeFrames = 0;
         let fmmDebugDone = false;
+        let fmmFieldCheckDone = false;
         // Multi-level geometry: level l grid has 2^(leafBits-l) cells/side;
         // the top level K is a 4x4 grid (leafBits - 2), floored at K=1.
         function fmmLevelCount() {
@@ -2852,8 +3324,133 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                      bAttempts, probeBound, totalSize, funnelEnd, slabOffsets,
                      subarrayCounts, slabSalts, bSalts, cSalt1, cSalt2, packed: buf };
         }
+        // u32 splitmix-style finalizer — MUST match the WGSL hashU32 in both
+        // the cell-lists shader and the adaptive shader so JS insert and WGSL
+        // probe produce identical slot sequences for a given key. Uses
+        // Math.imul + >>> 0 to stay in unsigned u32 arithmetic.
+        function hashU32JS(k) {
+            let x = (k ^ 0x9E3779B9) >>> 0;
+            x = (x ^ (x >>> 16)) >>> 0;
+            x = Math.imul(x, 0x7FEB352D) >>> 0;
+            x = (x ^ (x >>> 15)) >>> 0;
+            x = Math.imul(x, 0x846CA68B) >>> 0;
+            x = (x ^ (x >>> 16)) >>> 0;
+            return x;
+        }
+        // FunnelTable: a minimal JS port of the WGSL funnel schedule
+        // (Farach-Colton/Krapivin/Kuszmaul Section 3) used for the adaptive
+        // occupied-node directory. The WGSL port in the adaptive shader is the
+        // AUTHORITATIVE one; this JS class exists only to BUILD the table on
+        // CPU during adaptiveMetadata construction. Layout math mirrors
+        // computeFunnelGeometry exactly (same alpha/beta/overflow/salts), and
+        // insert/probe mirror the WGSL funnel_build/funnelProbe descent so the
+        // GPU probe finds every key JS inserted.
+        //
+        // Stores (key -> value) in two parallel u32 arrays (keys + values);
+        // EH_EMPTY (0xFFFFFFFF) marks an empty key slot. insert returns the
+        // claimed slot or -1 if the table is full (should not happen at load
+        // <= 1 - delta). probe returns the value for key, or -1 if absent.
+        const FUNNEL_EMPTY = 0xFFFFFFFF;
+        class FunnelTable {
+            constructor(capacity, delta) {
+                this.geom = computeFunnelGeometry(capacity, delta);
+                const g = this.geom;
+                this.keys = new Uint32Array(g.totalSize).fill(FUNNEL_EMPTY);
+                this.values = new Uint32Array(g.totalSize);
+            }
+            // Claim a slot for key (serial insert; the WGSL build uses parallel
+            // CAS but the schedule + probe bound are identical). Returns slot
+            // or -1 if the table is full.
+            insert(key, value) {
+                const g = this.geom;
+                const alpha = g.alpha, beta = g.beta;
+                // Funnel region: one beta-slot sub-array per slab.
+                for (let i = 0; i < alpha; i++) {
+                    const aCount = g.subarrayCounts[i];
+                    const base = g.slabOffsets[i] + (hashU32JS(key ^ g.slabSalts[i]) % aCount) * beta;
+                    for (let s = 0; s < beta; s++) {
+                        const pos = base + s;
+                        if (this.keys[pos] === FUNNEL_EMPTY) {
+                            this.keys[pos] = key; this.values[pos] = value; return pos;
+                        }
+                        if (this.keys[pos] === key) { this.values[pos] = value; return pos; }
+                    }
+                }
+                // Overflow B: uniform probing, bAttempts slots.
+                const bSize = g.bSize, bOff = g.bOffset, bAttempts = g.bAttempts;
+                if (bSize > 0) {
+                    for (let t = 0; t < bAttempts; t++) {
+                        const pos = bOff + (hashU32JS(key ^ g.bSalts[t]) % bSize);
+                        if (this.keys[pos] === FUNNEL_EMPTY) {
+                            this.keys[pos] = key; this.values[pos] = value; return pos;
+                        }
+                        if (this.keys[pos] === key) { this.values[pos] = value; return pos; }
+                    }
+                }
+                // Overflow C: two-choice buckets of cBucketSlots slots.
+                const cOff = g.cOffset, cNumBuckets = g.cNumBuckets, cBucketSlots = g.cBucketSlots;
+                if (cNumBuckets > 0) {
+                    const b1 = hashU32JS(key ^ g.cSalt1) % cNumBuckets;
+                    const b2 = hashU32JS(key ^ g.cSalt2) % cNumBuckets;
+                    for (let t = 0; t < cBucketSlots; t++) {
+                        const pa = cOff + b1 * cBucketSlots + t;
+                        if (this.keys[pa] === FUNNEL_EMPTY) {
+                            this.keys[pa] = key; this.values[pa] = value; return pa;
+                        }
+                        if (this.keys[pa] === key) { this.values[pa] = value; return pa; }
+                        const pb = cOff + b2 * cBucketSlots + t;
+                        if (this.keys[pb] === FUNNEL_EMPTY) {
+                            this.keys[pb] = key; this.values[pb] = value; return pb;
+                        }
+                        if (this.keys[pb] === key) { this.values[pb] = value; return pb; }
+                    }
+                }
+                return -1; // table full (should not happen at load <= 1 - delta)
+            }
+            // probe returns the value for key, or -1 if absent. Mirrors the
+            // WGSL funnelProbe descent exactly.
+            probe(key) {
+                const g = this.geom;
+                const alpha = g.alpha, beta = g.beta;
+                for (let i = 0; i < alpha; i++) {
+                    const aCount = g.subarrayCounts[i];
+                    const base = g.slabOffsets[i] + (hashU32JS(key ^ g.slabSalts[i]) % aCount) * beta;
+                    for (let s = 0; s < beta; s++) {
+                        const pos = base + s;
+                        const k = this.keys[pos];
+                        if (k === key) { return this.values[pos]; }
+                        if (k === FUNNEL_EMPTY) { return -1; }
+                    }
+                }
+                const bSize = g.bSize, bOff = g.bOffset, bAttempts = g.bAttempts;
+                if (bSize > 0) {
+                    for (let t = 0; t < bAttempts; t++) {
+                        const pos = bOff + (hashU32JS(key ^ g.bSalts[t]) % bSize);
+                        const k = this.keys[pos];
+                        if (k === key) { return this.values[pos]; }
+                        if (k === FUNNEL_EMPTY) { return -1; }
+                    }
+                }
+                const cOff = g.cOffset, cNumBuckets = g.cNumBuckets, cBucketSlots = g.cBucketSlots;
+                if (cNumBuckets > 0) {
+                    const b1 = hashU32JS(key ^ g.cSalt1) % cNumBuckets;
+                    const b2 = hashU32JS(key ^ g.cSalt2) % cNumBuckets;
+                    for (let t = 0; t < cBucketSlots; t++) {
+                        const pa = cOff + b1 * cBucketSlots + t;
+                        const ka = this.keys[pa];
+                        if (ka === key) { return this.values[pa]; }
+                        if (ka === FUNNEL_EMPTY) { return -1; }
+                        const pb = cOff + b2 * cBucketSlots + t;
+                        const kb = this.keys[pb];
+                        if (kb === key) { return this.values[pb]; }
+                        if (kb === FUNNEL_EMPTY) { return -1; }
+                    }
+                }
+                return -1;
+            }
+        }
         // Preallocated per-frame uniform staging (zero allocations per frame).
-        const simUniformData = new ArrayBuffer(96);
+        const simUniformData = new ArrayBuffer(112);
         const simUniformF = new Float32Array(simUniformData);
         const simUniformU = new Uint32Array(simUniformData);
         // FMM per-level uniform staging: 256-byte blocks (dynamic-offset
@@ -2877,7 +3474,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuQueryReadbackBufs = [null, null, null];
         let webgpuQueryBufState = [0, 0, 0];
         let webgpuQueryCopyIdx = 0;
+        // Tracks whether each readback buffer's frame used the adaptive path.
+        // When true, the GPU timestamp slots for fmmBuild/fmmM2l/fmmL2p are
+        // not meaningful (the adaptive path has >6 passes but only 3 ts slot
+        // pairs), so the readback preserves the CPU-measured values instead.
+        let webgpuQueryBufAdaptive = [false, false, false];
         let webgpuPassTimings = { fmmBuild: 0, fmmM2l: 0, fmmL2p: 0, mainCompute: 0, render: 0, totalGpu: 0 };
+        let webgpuL2lDownMs = 0; // CPU-timed l2l_down pass (no GPU ts slot); added to fmmM2l for display
         let webgpuGpuCompleteMs = 0; // Actual GPU completion time via fence
 
         // 5M-particle instrumentation (round 4 task 4.7). When N >= 5e6 the
@@ -2892,6 +3495,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         // Adaptive CGR88 FMM state
         let webgpuAdaptiveEnabled = false;
+        // Race fix: the adaptive pipeline builds asynchronously inside
+        // initEngine(). If the user selects 'adaptive' before init settles,
+        // we defer the selection via pendingAdaptive and show an
+        // 'initializing' label. adaptiveInitSettled is flipped in both the
+        // success and failure paths of the adaptive init try/catch.
+        let adaptiveInitSettled = false;
+        let pendingAdaptive = false;
         let webgpuAdaptivePipelines = {};
         let webgpuAdaptiveBindGroupA = null, webgpuAdaptiveBindGroupB = null;
         let webgpuAdaptiveParams = null;
@@ -2900,6 +3510,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let adaptiveMetadata = null;       // JS metadata object
         let adaptiveDepth = 4;             // Regular quadtree depth for browser path (16x16 leaves)
         let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
+        let useAdaptiveNodeHash = true;    // funnel-hash occupied-node directory for adaptive mode (A/B via ?adaptiveHash=0)
+        let adaptiveNodeHashWarned = false; // one-shot warn flag for FunnelTable verify failure
+        let p2pBudgetWarned = false;       // one-shot warn flag for P2P subsampling (see buildAdaptiveMetadata)
         // Benchmark axis flags (default off => validated counting-sort / f32
         // paths; toggled only by the live bench panel to measure the
         // +openaddr-hash / +quantized_bitpacked axes). See T3/T4.
@@ -2915,6 +3528,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // One buffer holds the packed state between frames (pack writes it
         // after compute, unpack reads it before the next frame's FMM).
         let webgpuQuantPosVel = null;
+        let webgpuChargesBuffer = null;    // T-D7: per-particle charge (adaptive FMM binding 15)
         let webgpuEhPipelines = {};        // eh_clear / eh_build / eh_scan / eh_scatter
         let webgpuFunnelPipelines = {};    // T6.4 funnel_clear / funnel_build / funnel_scan / funnel_scatter
         let webgpuFunnelGeom = null;       // T6.4 funnel geometry storage buffer
@@ -2922,8 +3536,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let funnelGeometry = null;         // JS geometry object (alpha/beta/offsets/salts/probeBound/totalSize)
         let webgpuFunnelProbeCount = null; // T6.4 atomic probe-counter buffer (1 u32)
         let webgpuFunnelProbeReadback = null; // MAP_READ staging for the probe counter
+        let webgpuFunnelRbPending = false; // readback map in flight — no submit may reference the rb while set
         let funnelProbeCountVal = null;    // last readback value (mean insert probes), for TELEM
+        let funnelProbeBoundWarned = false; // one-shot warn flag for TELEM probe-bound violation
         let useFunnelHash = false;         // T6.4 bench axis: route cell membership through the funnel hash
+        let useSortedPayload = true;       // sorted-payload gather for coalesced P2P reads (A/B via ?sortedPayload=0)
         const HASH_VERIFY = new URLSearchParams(location.search).get('hashverify') === '1';
         let hashVerifyDone = false;
         let webgpuQuantPipelines = {};     // pack_state / unpack_state
@@ -2983,6 +3600,21 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const p2pBudget = document.getElementById('valP2pBudget');
             if (gpuMemory) gpuMemory.innerText = `${formatBytes(webgpuBufferBytes)} allocated`;
             if (gpuLimit) gpuLimit.innerText = webgpuBufferLimitBytes ? formatBytes(webgpuBufferLimitBytes) : 'Browser query unavailable';
+            const detailRow = document.getElementById('rowGpuBufferDetail');
+            if (detailRow) {
+                if (webgpuBufferEntries.length && activeBackend === 'WEBGPU') {
+                    detailRow.style.display = '';
+                    renderBufferBreakdownPanel();
+                    detailRow.onclick = () => {
+                        bufferBreakdownExpanded = !bufferBreakdownExpanded;
+                        renderBufferBreakdownPanel();
+                    };
+                } else {
+                    detailRow.style.display = 'none';
+                    const panel = document.getElementById('gpuBufferDetailPanel');
+                    if (panel) panel.style.display = 'none';
+                }
+            }
             if (fmmHash) {
                 if (activeBackend === 'WEBGPU' && webgpuAdaptiveEnabled && useAdaptiveFmm && scenario === 'galaxy') {
                     const md = adaptiveMetadata;
@@ -3005,9 +3637,45 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     p2pBudget.innerText = 'Scenario dependent';
                 }
             }
+            const gpEl = document.getElementById('valGravityGp');
+            if (gpEl) {
+                const fmmOn = activeBackend === 'WEBGPU' && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) && scenario === 'galaxy';
+                if (fmmOn) {
+                    const gp = 0.015 / N;
+                    gpEl.innerText = `${gp.toExponential(2)} (FMM 1/r) + 0.000375/core`;
+                } else if (scenario === 'galaxy') {
+                    gpEl.innerText = '0.00075/core (analytic 1/r²)';
+                } else {
+                    gpEl.innerText = 'Inactive';
+                }
+            }
             // Per-pass GPU timing telemetry (refreshed at 1 Hz from frameLoop —
             // webgpuPassTimings arrive asynchronously via timestamp readback)
             updatePassTimingTelemetry();
+            updateFmmAxisTelemetry();
+        }
+
+        // Sidebar "FMM Axis" metric-row: shows the currently active live FMM
+        // configuration (mode, order, hash, quantization) so the main view
+        // reflects the axis state. Updated whenever telemetry refreshes and
+        // after any FMM state change (mode/order handlers, applyBenchConfig).
+        function updateFmmAxisTelemetry() {
+            const el = document.getElementById('valFmmAxis');
+            if (!el) return;
+            if (scenario !== 'galaxy') {
+                el.innerText = 'galaxy-only';
+                return;
+            }
+            if (activeBackend !== 'WEBGPU') {
+                el.innerText = 'WebGL (no FMM)';
+                return;
+            }
+            const mode = useAdaptiveFmm ? 'adaptive' : (webgpuFmmEnabled ? 'fixed' : 'off');
+            const hash = useFunnelHash ? 'funnel' : (useElasticHash ? 'openaddr' : 'off');
+            const quant = useQuantized ? 'on' : 'off';
+            // Adaptive node-hash state: only meaningful in adaptive mode.
+            const ahash = (useAdaptiveFmm && useAdaptiveNodeHash) ? 'on' : 'off';
+            el.innerText = `${mode} p=${fmmOrder} / hash=${hash} / ahash=${ahash} / quant=${quant}`;
         }
 
         // ?probe=1 — one-shot far-field validation: after the copies are
@@ -3136,7 +3804,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const side = 1 << fmmLeafBits;
                 const EH_EMPTY = 0xFFFFFFFF;
                 // Build the counting-sort reference: per-cell counts from the
-                // live positions, then a prefix sum for starts.
+                // live positions.  Starts are NOT compared in cell order —
+                // the funnel hash assigns ehStart via atomicAdd completion
+                // order, which differs from a cell-order prefix sum whenever
+                // >1 cell is occupied.  Instead we verify order-insensitively:
+                //   (a) each cell's COUNT matches (order-independent), and
+                //   (b) the (start,count) intervals form a valid contiguous
+                //       partition of [0, N) — i.e. the starts are a valid
+                //       permutation of the prefix sums.
                 const refCount = new Uint32Array(leafCells);
                 for (let i = 0; i < N; i++) {
                     const px = stateF32[i * 4], py = stateF32[i * 4 + 1];
@@ -3144,33 +3819,48 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     const cy = Math.min(Math.max(Math.trunc(py * side), 0), side - 1);
                     refCount[cy * side + cx]++;
                 }
-                const refStart = new Uint32Array(leafCells);
-                let acc = 0;
-                for (let c = 0; c < leafCells; c++) { refStart[c] = acc; acc += refCount[c]; }
-                // Walk the funnel table: for each occupied slot, recover the
-                // cell key and compare (start,count) to the reference.
+                // Walk the funnel table: collect (start, count, key) for each
+                // occupied slot and verify counts match the reference.
                 let occupied = 0, mismatches = 0, missing = 0;
                 let maxCount = 0;
                 const seen = new Uint8Array(leafCells);
                 const tableSize = funnelGeometry ? funnelGeometry.totalSize : leafCells * 2;
+                const intervals = [];
                 for (let s = 0; s < tableSize; s++) {
                     const k = ehKeys[s];
                     if (k === EH_EMPTY) continue;
                     occupied++;
                     if (k >= leafCells) { mismatches++; continue; }
+                    if (seen[k]) { mismatches++; continue; } // duplicate key
                     seen[k] = 1;
-                    if (ehStart[s] !== refStart[k] || ehCount[s] !== refCount[k]) mismatches++;
+                    if (ehCount[s] !== refCount[k]) mismatches++;
                     if (ehCount[s] > maxCount) maxCount = ehCount[s];
+                    intervals.push({ start: ehStart[s], count: ehCount[s], key: k });
                 }
                 for (let c = 0; c < leafCells; c++) if (refCount[c] > 0 && !seen[c]) missing++;
                 const totalRef = refCount.reduce((a, b) => a + b, 0);
-                const pass = mismatches === 0 && missing === 0 && totalRef === N;
+                // Order-insensitive partition check: sort intervals by start
+                // and verify they form a contiguous partition of [0, N).
+                let partitionOk = true;
+                if (missing === 0 && mismatches === 0 && totalRef === N) {
+                    intervals.sort((a, b) => a.start - b.start);
+                    let expected = 0;
+                    for (const iv of intervals) {
+                        if (iv.start !== expected) { partitionOk = false; break; }
+                        expected += iv.count;
+                    }
+                    if (expected !== N) partitionOk = false;
+                } else {
+                    partitionOk = false;
+                }
+                const pass = mismatches === 0 && missing === 0 && totalRef === N && partitionOk;
                 const result = {
                     pass, N, leafBits: fmmLeafBits, leafCells, tableSize,
                     occupiedSlots: occupied,
                     occupiedCells: seen.reduce((a, b) => a + b, 0),
                     refOccupiedCells: refCount.reduce((a, b) => a + (b > 0 ? 1 : 0), 0),
                     mismatches, missing, totalRef,
+                    partitionOk,
                     probeBound: funnelGeometry ? funnelGeometry.probeBound : null,
                     meanInsertProbes: (funnelProbeCountVal != null && N > 0)
                         ? +(funnelProbeCountVal / N).toFixed(4) : null,
@@ -3218,6 +3908,45 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             } catch (e) {
                 console.warn('FMM debug dump failed:', e);
                 diagPush('fmmdebug: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        // Lightweight one-shot field magnitude check: reads the first 256
+        // fmmField entries, computes the average |force|, and logs it so we
+        // can verify the FMM is producing non-zero gravity.
+        function scheduleFmmFieldCheck(commandEncoder, N) {
+            try {
+                const sampleCount = Math.min(256, N);
+                const bytes = sampleCount * 16;
+                const fieldBuf = webgpuDevice.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                commandEncoder.copyBufferToBuffer(webgpuFmmField, 0, fieldBuf, 0, bytes);
+                requestAnimationFrame(() => {
+                    webgpuDevice.queue.onSubmittedWorkDone().then(async () => {
+                        await fieldBuf.mapAsync(GPUMapMode.READ);
+                        const f32 = new Float32Array(fieldBuf.getMappedRange());
+                        let sumMag = 0, maxMag = 0, nonZero = 0;
+                        for (let i = 0; i < sampleCount; i++) {
+                            const fx = f32[i * 4], fy = f32[i * 4 + 1];
+                            const mag = Math.hypot(fx, fy);
+                            sumMag += mag;
+                            if (mag > maxMag) maxMag = mag;
+                            if (mag > 1e-10) nonZero++;
+                        }
+                        const avgMag = sumMag / sampleCount;
+                        const Gp = 0.03 / N;
+                        const avgForce = avgMag * Gp;
+                        fieldBuf.unmap();
+                        fieldBuf.destroy();
+                        const status = nonZero > sampleCount * 0.5 ? 'OK' : 'WARNING: mostly zero';
+                        console.log(`FMM field check: ${nonZero}/${sampleCount} non-zero | avg|field|=${avgMag.toExponential(3)} | max|field|=${maxMag.toExponential(3)} | avg force=${avgForce.toExponential(3)} => ${status}`);
+                        const gpEl = document.getElementById('valGravityGp');
+                        if (gpEl) {
+                            gpEl.innerText = `${Gp.toExponential(2)} (avg F=${avgForce.toExponential(2)})`;
+                        }
+                    });
+                });
+            } catch (e) {
+                console.warn('FMM field check failed:', e);
             }
         }
 
@@ -3464,9 +4193,21 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const renderPassEl = document.getElementById('valRenderPass');
             const fmmActive = activeBackend === 'WEBGPU' && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) && scenario === 'galaxy';
             const tsActive = fmmActive && webgpuTimestampQueryEnabled;
-            if (fmmBuildEl) fmmBuildEl.innerText = fmmActive ? `${webgpuPassTimings.fmmBuild.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
-            if (fmmM2lEl) fmmM2lEl.innerText = fmmActive ? `${webgpuPassTimings.fmmM2l.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
-            if (fmmL2pEl) fmmL2pEl.innerText = fmmActive ? `${webgpuPassTimings.fmmL2p.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
+            // Adaptive path uses CPU timing for build/m2l/l2p (the >6 passes
+            // don't map cleanly to 3 GPU timestamp slot pairs). The CPU
+            // measurement brackets only the dispatch loop (queue.submit), so
+            // label it "(CPU dispatch)" — sub-ms values there are submission
+            // overhead, not the pass's GPU execution cost.
+            const adaptiveActive = fmmActive && webgpuAdaptiveEnabled && useAdaptiveFmm;
+            const buildSuffix = adaptiveActive ? ' (CPU dispatch)' : (tsActive ? '' : ' (CPU)');
+            if (fmmBuildEl) fmmBuildEl.innerText = fmmActive ? `${webgpuPassTimings.fmmBuild.toFixed(3)} ms${buildSuffix}` : '—';
+            // M2L metric includes the l2l_down pass (CPU-timed, no GPU ts slot)
+            // so the reported far-field cost is complete, not just the M2L
+            // upward accumulation.  Label "(M2L+L2L)" when l2l_down is nonzero.
+            const m2lTotal = webgpuPassTimings.fmmM2l + (adaptiveActive ? 0 : webgpuL2lDownMs);
+            const m2lLabel = (!adaptiveActive && webgpuL2lDownMs > 0) ? ' (M2L+L2L)' : buildSuffix;
+            if (fmmM2lEl) fmmM2lEl.innerText = fmmActive ? `${m2lTotal.toFixed(3)} ms${m2lLabel}` : '—';
+            if (fmmL2pEl) fmmL2pEl.innerText = fmmActive ? `${webgpuPassTimings.fmmL2p.toFixed(3)} ms${buildSuffix}` : '—';
             if (mainComputeEl) mainComputeEl.innerText = fmmActive ? `${webgpuPassTimings.mainCompute.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
             if (renderPassEl) renderPassEl.innerText = activeBackend === 'WEBGPU' ? `${webgpuPassTimings.render.toFixed(3)} ms${tsActive ? '' : ' (CPU)'}` : '—';
             const totalGpuEl = document.getElementById('valTotalGpu');
@@ -3708,6 +4449,54 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
 
+            // P2P budget subsampling warning: when the max leaf particle
+            // count exceeds the WGSL p2pBudget (24/12/6 tiered by N), the
+            // near-field P2P pass silently subsamples neighbors and accuracy
+            // degrades.  Warn once so the user knows.
+            let maxLeafParticles = 0;
+            for (let l = 0; l < numLevels; l++) {
+                if (l !== depth) continue;
+                const side = 1 << l;
+                for (let idx = levelStart[l]; idx < levelStart[l] + side * side; idx++) {
+                    const c = nodeParticleRange[idx * 2 + 1];
+                    if (c > maxLeafParticles) maxLeafParticles = c;
+                }
+            }
+            const p2pBudgetN = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
+            if (maxLeafParticles > p2pBudgetN && !p2pBudgetWarned) {
+                p2pBudgetWarned = true;
+                console.warn(`p2pBudget subsampling: max leaf occupancy ${maxLeafParticles} > budget ${p2pBudgetN} (N=${N}, depth=${depth}); near-field P2P is subsampled — accuracy degrades silently. See docs/GPU_NOTES.md §5.4.`);
+            }
+
+            // Funnel-hash occupied-node directory: insert every node key
+            // (level<<20 | iy<<10 | ix) -> node index into a FunnelTable sized
+            // to totalNodes (all nodes are occupied in this regular quadtree).
+            // delta=1/16 keeps the probe bound short. The packed table (keys +
+            // values + geometry) is uploaded as adaptiveNodeHash buffers and
+            // probed in the adaptive WGSL l2p kernel when useAdaptiveNodeHash.
+            // CPU verification: every occupied node must be findable via probe;
+            // warn once on failure (not a throw — the legacy leafForParticle
+            // path is the fallback when useAdaptiveNodeHash == 0).
+            const nodeHash = new FunnelTable(totalNodes, 1.0 / 16.0);
+            let hashFailures = 0;
+            for (let l = 0; l < numLevels; l++) {
+                const side = 1 << l;
+                for (let iy = 0; iy < side; iy++) {
+                    for (let ix = 0; ix < side; ix++) {
+                        const idx = levelStart[l] + iy * side + ix;
+                        const key = (l << 20) | (iy << 10) | ix;
+                        const slot = nodeHash.insert(key >>> 0, idx);
+                        if (slot < 0) { hashFailures++; continue; }
+                        // Verify round-trip (cheap; every rebuild but warn-once).
+                        if (nodeHash.probe(key >>> 0) !== idx) { hashFailures++; }
+                    }
+                }
+            }
+            if (hashFailures > 0 && !adaptiveNodeHashWarned) {
+                adaptiveNodeHashWarned = true;
+                console.warn(`adaptiveNodeHash: ${hashFailures}/${totalNodes} nodes failed insert/probe (delta=1/16, capacity=${totalNodes}); falling back to leafForParticle when useAdaptiveNodeHash==0. The WGSL probe is authoritative; this JS verify is a build-time sanity check.`);
+            }
+
             return {
                 depth,
                 numLevels,
@@ -3724,6 +4513,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 listOffsets,
                 listCounts,
                 listData,
+                nodeHashKeys: nodeHash.keys,
+                nodeHashValues: nodeHash.values,
+                nodeHashGeom: nodeHash.geom.packed,
+                nodeHashGeomSize: nodeHash.geom.totalSize,
+                // Packed upload layout (geom | keys | values) matching the
+                // shader's single-binding nodeHash buffer.
+                nodeHashPacked: (() => {
+                    const g = nodeHash.geom.packed, k = nodeHash.keys, v = nodeHash.values;
+                    const buf = new Uint32Array(g.length + k.length + v.length);
+                    buf.set(g, 0); buf.set(k, g.length); buf.set(v, g.length + k.length);
+                    return buf;
+                })(),
             };
         }
 
@@ -3806,7 +4607,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                             // T6.4 funnel-hash geometry (read-only; ignored
                             // unless params.useFunnelHash == 1).
-                            { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
+                            { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                            // Sorted payload (read-only here; gather_sorted in
+                            // the FMM shader writes it). Coalesced P2P reads.
+                            { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
                         ] }) ] });
                         const renderBindLayout = webgpuDevice.createBindGroupLayout({ entries: [
                             { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
@@ -3824,7 +4628,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                             // Per-level parameter blocks (256-byte stride)
                             // selected at dispatch time via dynamic offset.
-                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 44 } },
+                            { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 48 } },
                             // T3 elastic-hash cell membership (storage: the
                             // build passes write them; consumers read via the
                             // cellStartOf/cellCountOf helpers).
@@ -3836,7 +4640,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             // counter (storage); ignored unless
                             // fmmParams.useFunnelHash == 1.
                             { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                            { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+                            { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+                            // Sorted payload (read_write: gather_sorted writes;
+                            // build_moments reads). Coalesced P2P reads.
+                            { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
                         ] });
                         const fmmPipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [fmmLayout] });
                         webgpuFmmBindLayout = fmmLayout;
@@ -3847,7 +4654,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         const fmmErrors = fmmInfo.messages.filter((message) => message.type === 'error');
                         if (fmmErrors.length > 0) throw new Error(`WGSL FMM compile failed: ${fmmErrors.map((message) => message.message).join(' | ')}`);
                         webgpuDevice.pushErrorScope('validation');
-                        for (const entryPoint of ['clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p']) {
+                        for (const entryPoint of ['clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'gather_sorted', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p']) {
                             webgpuFmmPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FMM ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
                         }
                         // T3 elastic-hash build passes share the FMM bind
@@ -3911,7 +4718,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             const md = adaptiveMetadata;
                             const nn = md.totalNodes;
 
-                            // Bind group layout: 15 bindings (0-14)
+                            // Bind group layout: 19 bindings (0-18). Bindings
+                            // 16-18 are the funnel-hash occupied-node directory
+                            // (keys, values, geometry) used by the adaptive l2p
+                            // kernel when params.useAdaptiveNodeHash == 1.
                             const adaptiveLayout = webgpuDevice.createBindGroupLayout({ entries: [
                                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                                 { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
@@ -3928,6 +4738,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                                 { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                                 { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                                 { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+                                // Funnel-hash occupied-node directory (read-only;
+                                // geom+keys+values packed into ONE buffer to stay
+                                // under the 16-storage-buffer per-stage limit).
+                                { binding: 16, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                             ]});
                             const adaptivePipelineLayout = webgpuDevice.createPipelineLayout({ bindGroupLayouts: [adaptiveLayout] });
 
@@ -3967,6 +4782,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuAdaptiveBuffers.nodeParent = webgpuDevice.createBuffer({ size: md.nodeParent.byteLength, usage: roStorage });
                             webgpuAdaptiveBuffers.nodeChildren = webgpuDevice.createBuffer({ size: md.nodeChildren.byteLength, usage: roStorage });
                             webgpuAdaptiveBuffers.nodeFlags = webgpuDevice.createBuffer({ size: md.nodeFlags.byteLength, usage: roStorage });
+                            // Funnel-hash occupied-node directory buffer (static,
+                            // uploaded once + on metadata rebuild). geom|keys|
+                            // values packed into ONE buffer (16-storage limit).
+                            webgpuAdaptiveBuffers.nodeHash = webgpuDevice.createBuffer({ size: md.nodeHashPacked.byteLength, usage: roStorage });
 
                             // Dynamic buffers (cleared and rewritten each frame)
                             webgpuAdaptiveBuffers.multipoles = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
@@ -3990,6 +4809,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeHash, 0, md.nodeHashPacked);
 
                             // Store layout for bind group creation later (after webgpuFmmField exists)
                             webgpuAdaptiveLayout = adaptiveLayout;
@@ -3998,6 +4818,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             console.error('Adaptive FMM init failed:', adaptiveErr);
                             webgpuAdaptiveEnabled = false;
                         }
+                        // Adaptive init has now settled (success or failure).
+                        // Apply any deferred 'adaptive' selection the user
+                        // made while init was still in flight.
+                        adaptiveInitSettled = true;
+                        applyPendingAdaptive();
 
                         // Render Pipeline
                         webgpuPipelineRender = webgpuDevice.createRenderPipeline({
@@ -4064,6 +4889,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             for (let i = 0; i < 3; i++) {
                                 webgpuQueryReadbackBufs[i] = webgpuDevice.createBuffer({
                                     size: 10 * 8,
+                                    label: 'tsReadback' + i,
                                     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
                                 });
                             }
@@ -4119,7 +4945,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             fmmLeafBits = bits;
 
             const fmmStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-            for (const b of [webgpuPosVelBufferA, webgpuPosVelBufferB, webgpuExtraBuffer, webgpuFmmField, webgpuFmmSortedIndex]) {
+            for (const b of [webgpuPosVelBufferA, webgpuPosVelBufferB, webgpuExtraBuffer, webgpuFmmField, webgpuFmmSortedIndex, webgpuSortedParticles]) {
                 if (b) b.destroy();
             }
             // COPY_SRC on the ping-pong state buffers: the adaptive metadata
@@ -4131,9 +4957,19 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // GPU->staging for comparison against a JS brute-force sum.
             webgpuFmmField = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC }); // shared with the adaptive path
             webgpuFmmSortedIndex = webgpuDevice.createBuffer({ size: cap * 4, usage: fmmStorage });
+            // Sorted payload: particle data re-ordered by cell (coalesced P2P).
+            // Same size/usage as the ping-pong pos/vel buffers (16 bytes/particle).
+            if (webgpuSortedParticles) webgpuSortedParticles.destroy();
+            webgpuSortedParticles = webgpuDevice.createBuffer({ size: cap * 16, usage: fmmStorage });
             // T4 f16-packed state buffer (1 u32 pos + 1 u32 vel per particle).
             if (webgpuQuantPosVel) webgpuQuantPosVel.destroy();
             webgpuQuantPosVel = webgpuDevice.createBuffer({ size: cap * 8, usage: fmmStorage });
+            // T-D7: per-particle charge buffer for the adaptive FMM (binding 15).
+            // Unit mass (1.0) matches the fixed-grid FMM's `a0 += 1.0` behavior.
+            if (webgpuChargesBuffer) webgpuChargesBuffer.destroy();
+            webgpuChargesBuffer = webgpuDevice.createBuffer({ size: cap * 4, usage: fmmStorage });
+            const chargesInit = new Float32Array(cap).fill(1.0);
+            webgpuDevice.queue.writeBuffer(webgpuChargesBuffer, 0, chargesInit);
 
             if (bitsChanged) {
                 for (const b of [webgpuFmmCellCount, webgpuFmmCellCursor, webgpuFmmCellStart, webgpuFmmMoments, webgpuFmmLocals, webgpuEhKeys, webgpuEhCount, webgpuEhStart, webgpuEhCursor]) {
@@ -4182,50 +5018,123 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuFunnelGeomU = funnelGeometry.packed;
             }
 
-            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T4 4-byte uniform holding the particle count for pack/unpack.
             if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T6.4 funnel probe-counter (1 atomic u32) + its MAP_READ staging
             // buffer. Allocated once; the funnel_clear pass zeroes the counter
             // each frame and a periodic readback feeds the TELEM assertion.
             if (!webgpuFunnelProbeCount) {
-                webgpuFunnelProbeCount = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+                webgpuFunnelProbeCount = webgpuDevice.createBuffer({ size: 4, label: 'funnelProbeCount', usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
             }
             if (!webgpuFunnelProbeReadback) {
-                webgpuFunnelProbeReadback = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                webgpuFunnelProbeReadback = webgpuDevice.createBuffer({ size: 4, label: 'funnelProbeRb', usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
             }
 
             updateWebGPUBufferBytes();
         }
 
+        let webgpuBufferBreakdown = '';
+        let webgpuBufferEntries = []; // {label, bytes, group, tip} for the breakdown panel
+        const BUFFER_GROUPS = ['Particle state', 'FMM grid', 'Hash tables', 'Adaptive tree', 'Params'];
         function updateWebGPUBufferBytes() {
             if (!particleCapacity) return;
             const leafCells = 1 << (2 * fmmLeafBits);
-            let bytes = particleCapacity * 16 * 4 + particleCapacity * 4; // posVel x2 + extras + field, sorted
-            bytes += leafCells * 4 * 3; // cell count/cursor/start
-            bytes += fmmTotalMomCells() * 3 * 16 + fmmTotalLocalCells() * 3 * 16;
-            bytes += 96; // sim uniform buffer
-            if (webgpuQuantPosVel) bytes += webgpuQuantPosVel.size; // T4 f16-packed state
-            if (webgpuQuantCountBuf) bytes += 4;
-            if (webgpuEhKeys) { // T3 elastic-hash table (4 arrays)
-                bytes += 4 * (2 * leafCells) * 4;
-            }
-            if (webgpuFunnelGeom) bytes += webgpuFunnelGeom.size; // T6.4 funnel geometry
-            if (webgpuFunnelProbeCount) bytes += 4; // T6.4 probe counter
-            if (webgpuFunnelProbeReadback) bytes += 4; // T6.4 probe counter staging
-            if (webgpuFmmParams) bytes += webgpuFmmParams.size; // per-level FMM blocks
-            if (webgpuAdaptiveParams) bytes += webgpuAdaptiveParams.size;
+            const parts = [];
+            const entries = [];
+            const part = (label, b, group, tip) => {
+                parts.push(`${label}: ${formatBytes(b)}`);
+                entries.push({ label, bytes: b, group, tip });
+                return b;
+            };
+            let bytes = 0;
+            bytes += part('posVel×2', particleCapacity * 16 * 2, 'Particle state',
+                'Ping-pong particle state: pos (x,y) + vel (vx,vy) at 16 B each, two buffers (A/B) so the GPU can read one while writing the other');
+            bytes += part('extras', particleCapacity * 16, 'Particle state',
+                'Per-particle extra attributes (prev velocity, group id, charge/mass slot), 16 B each');
+            bytes += part('field+sorted', particleCapacity * 4 * 2, 'Particle state',
+                'Per-particle force/field output (u32 fp32) + sorted particle index (u32)');
+            bytes += part('sortedPayload', particleCapacity * 16, 'Particle state',
+                'Particle payloads reordered by cell (counting-sort CSR) so the P2P kernel reads coalesced memory');
+            bytes += part('cellArrays', leafCells * 4 * 3, 'FMM grid',
+                'Fixed-grid cell lists: per-cell count, start and cursor (3×u32 per cell)');
+            bytes += part('moments', fmmTotalMomCells() * 3 * 16, 'FMM grid',
+                'Per-cell multipole moments (monopole/dipole/quadrupole, 3×vec4 per cell)');
+            bytes += part('locals', fmmTotalLocalCells() * 3 * 16, 'FMM grid',
+                'Per-cell local (far-field) expansion coefficients, 3×vec4 per cell');
+            bytes += part('uniform', 112, 'Params', 'Main simulation params uniform (dt, N, scenario, forces, ...)');
+            if (webgpuQuantPosVel) bytes += part('quantF16', webgpuQuantPosVel.size, 'Particle state',
+                'f16-quantized position/velocity state (quantized-packing bench axis)');
+            if (webgpuChargesBuffer) bytes += part('charges', webgpuChargesBuffer.size, 'Particle state',
+                'Per-particle charge/mass weights (T-D7 heterogeneous-particle axis)');
+            if (webgpuQuantCountBuf) bytes += part('quantCnt', 4, 'Params', 'u32 particle count for pack/unpack passes');
+            if (webgpuEhKeys) bytes += part('elasticHash', 4 * (2 * leafCells) * 4, 'Hash tables',
+                'Open-addressing hash table for cell membership (key + state, 2×u32 per cell)');
+            if (webgpuFunnelGeom) bytes += part('funnelGeom', webgpuFunnelGeom.size, 'Hash tables',
+                'Funnel (FCK) schedule geometry: alpha/beta/sub-array layout, offsets and hash salts');
+            if (webgpuFunnelProbeCount) bytes += part('funnelProbe', 4, 'Hash tables',
+                'GPU atomic counter of funnel-hash insert probes (mean probes vs probe_bound metric)');
+            if (webgpuFunnelProbeReadback) bytes += part('funnelRb', 4, 'Hash tables',
+                'MAP_READ staging for the periodic probe-counter readback');
+            if (webgpuFmmParams) bytes += part('fmmParams', webgpuFmmParams.size, 'Params', 'FMM params uniform (order p, flags, leaf bits, counts)');
+            if (webgpuAdaptiveParams) bytes += part('adaptParams', webgpuAdaptiveParams.size, 'Params', 'Adaptive FMM params uniform (depth, node counts, refresh flags)');
             if (adaptiveMetadata) {
                 const md = adaptiveMetadata;
-                bytes += md.totalNodes * 3 * 16 * 2; // multipoles + locals
-                bytes += md.leafForParticle.byteLength + md.particleIndices.byteLength +
+                const adaptDyn = md.totalNodes * 3 * 16 * 2;
+                const adaptMeta = md.leafForParticle.byteLength + md.particleIndices.byteLength +
                          md.nodeCenterSize.byteLength + md.nodeParticleRange.byteLength +
                          md.listOffsets.byteLength + md.listCounts.byteLength +
                          md.listData.byteLength + md.nodeParent.byteLength +
                          md.nodeChildren.byteLength + md.nodeFlags.byteLength;
+                const adaptHash = md.nodeHashPacked ? md.nodeHashPacked.byteLength : 0;
+                bytes += part('adaptDyn', adaptDyn, 'Adaptive tree',
+                    'Adaptive quadtree dynamic data: per-node multipole moments + local expansions (3×vec4 each)');
+                bytes += part('adaptMeta', adaptMeta, 'Adaptive tree',
+                    'Adaptive quadtree topology: leaf assignment per particle, particle order, node ranges, interaction lists, parents/children/flags');
+                if (adaptHash > 0) bytes += part('adaptHash', adaptHash, 'Adaptive tree',
+                    'Funnel-hash directory over occupied adaptive nodes, packed as geom | keys | values in one buffer');
             }
-            if (adaptiveStagingBuffer) bytes += adaptiveStagingSize;
+            if (adaptiveStagingBuffer) bytes += part('adaptStaging', adaptiveStagingSize, 'Adaptive tree',
+                'MAP_READ staging for the periodic live-position tree refresh (rebuild every 24 frames)');
             webgpuBufferBytes = bytes;
+            webgpuBufferBreakdown = parts.join(' · ');
+            webgpuBufferEntries = entries;
+        }
+
+        // Breakdown panel: grouped, one row per buffer (name | bytes |
+        // share-of-total bar), each row with a tooltip. Replaces the old
+        // single-cell dot-separated list that overflowed its metric row.
+        let bufferBreakdownExpanded = true;
+        function renderBufferBreakdownPanel() {
+            const panel = document.getElementById('gpuBufferDetailPanel');
+            const summary = document.getElementById('valGpuBufferDetailSummary');
+            if (!panel) return;
+            if (!webgpuBufferEntries.length || activeBackend !== 'WEBGPU') {
+                panel.style.display = 'none';
+                if (summary) summary.textContent = '';
+                return;
+            }
+            const total = webgpuBufferEntries.reduce((s, e) => s + e.bytes, 0);
+            let html = `<div class="bb-total"><span>Total</span><span>${formatBytes(total)} / ${webgpuBufferEntries.length} buffers</span></div>`;
+            let firstGroup = true;
+            for (const group of BUFFER_GROUPS) {
+                const rows = webgpuBufferEntries.filter((e) => e.group === group);
+                if (!rows.length) continue;
+                const subtotal = rows.reduce((s, e) => s + e.bytes, 0);
+                html += `<div class="bb-group${firstGroup ? ' bb-first' : ''}" title="${group} subtotal of the total GPU buffer allocation"><span>${group}</span><span>${formatBytes(subtotal)}</span></div>`;
+                firstGroup = false;
+                for (const e of rows) {
+                    const pct = Math.max(2, Math.round((e.bytes / total) * 100));
+                    html += `<div class="bb-row" title="${e.tip}">` +
+                        `<span class="bb-name">${e.label}</span>` +
+                        `<span class="bb-bytes">${formatBytes(e.bytes)}</span>` +
+                        `<span class="bb-bar"><i style="width:${Math.min(100, pct)}%"></i></span>` +
+                        `</div>`;
+                }
+            }
+            panel.innerHTML = html;
+            panel.style.display = bufferBreakdownExpanded ? '' : 'none';
+            if (summary) summary.textContent = bufferBreakdownExpanded ? '▾' : '▸';
         }
 
         function recreateWebGPUBindGroups() {
@@ -4248,6 +5157,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // the geometry buffer is not yet allocated (WebGPU requires
                 // every layout entry to be satisfied).
                 { binding: 11, resource: { buffer: webgpuFunnelGeom || webgpuUniformBuffer } },
+                // Sorted payload (read-only here; gather_sorted writes it).
+                { binding: 12, resource: { buffer: webgpuSortedParticles || webgpuUniformBuffer } },
             ];
             webgpuBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferA, webgpuPosVelBufferB) });
             webgpuBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuPipelineCompute.getBindGroupLayout(0), entries: computeEntries(webgpuPosVelBufferB, webgpuPosVelBufferA) });
@@ -4278,6 +5189,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // (storage). Placeholder buffers when not yet allocated.
                 { binding: 13, resource: { buffer: webgpuFunnelGeom || webgpuUniformBuffer } },
                 { binding: 14, resource: { buffer: webgpuFunnelProbeCount || webgpuUniformBuffer } },
+                // Sorted payload (read_write: gather_sorted writes it).
+                { binding: 15, resource: { buffer: webgpuSortedParticles || webgpuUniformBuffer } },
             ];
             webgpuFmmBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferA) });
             webgpuFmmBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuFmmBindLayout, entries: fmmEntries(webgpuPosVelBufferB) });
@@ -4322,6 +5235,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeParent } },
                     { binding: 13, resource: { buffer: webgpuAdaptiveBuffers.nodeChildren } },
                     { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.nodeFlags } },
+                    { binding: 15, resource: { buffer: webgpuChargesBuffer } },
+                    // Funnel-hash occupied-node directory (read-only, packed:
+                    // geom | keys | values in one buffer — see shader binding 16).
+                    { binding: 16, resource: { buffer: webgpuAdaptiveBuffers.nodeHash } },
                 ];
                 webgpuAdaptiveBindGroupA = webgpuDevice.createBindGroup({ layout: webgpuAdaptiveLayout, entries: adaptiveEntries(webgpuPosVelBufferA) });
                 webgpuAdaptiveBindGroupB = webgpuDevice.createBindGroup({ layout: webgpuAdaptiveLayout, entries: adaptiveEntries(webgpuPosVelBufferB) });
@@ -4343,6 +5260,19 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: md.particleIndices.byteLength, usage: roStorage });
                 recreateAdaptiveBindGroups();
             }
+            // The funnel-hash directory table size depends on totalNodes
+            // (capacity), which is stable across rebuilds at a fixed depth,
+            // but the packed geom|keys|values contents change every rebuild
+            // (positions move -> leaf assignment changes -> keys re-inserted).
+            // Recreate the buffer only if the table size changed (depth
+            // change); otherwise just re-upload the contents.
+            if (webgpuAdaptiveBuffers.nodeHash &&
+                webgpuAdaptiveBuffers.nodeHash.size !== md.nodeHashPacked.byteLength) {
+                webgpuAdaptiveBuffers.nodeHash.destroy();
+                const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+                webgpuAdaptiveBuffers.nodeHash = webgpuDevice.createBuffer({ size: md.nodeHashPacked.byteLength, usage: roStorage });
+                recreateAdaptiveBindGroups();
+            }
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParticleRange, 0, md.nodeParticleRange);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.leafForParticle, 0, md.leafForParticle);
@@ -4353,6 +5283,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeHash, 0, md.nodeHashPacked);
         }
 
         function rebuildAdaptiveMetadata(positions) {
@@ -4387,6 +5318,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 adaptiveStagingSize = needed;
                 adaptiveStagingBuffer = webgpuDevice.createBuffer({
                     size: adaptiveStagingSize,
+                    label: 'adaptiveStaging',
                     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
                 });
                 updateWebGPUBufferBytes();
@@ -4401,7 +5333,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             webgpuDevice.queue.submit([enc.finish()]);
             staging.mapAsync(GPUMapMode.READ).then(() => {
                 try {
-                    const live = new Float32Array(staging.getMappedRange().slice(0));
+                    // Zero-copy view over the mapped range: the rebuild below
+                    // is synchronous, so the mapping stays valid until the
+                    // finally block unmaps (avoids a 4*N*16 MB memcpy per
+                    // refresh; only x/y are read by buildAdaptiveMetadata).
+                    const live = new Float32Array(staging.getMappedRange());
                     rebuildAdaptiveMetadata(live);
                 } catch (err) {
                     console.error('Adaptive metadata refresh failed:', err);
@@ -4489,11 +5425,15 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (scenario !== 'galaxy') return;
             const dx = core2.x - core1.x;
             const dy = core2.y - core1.y;
-            const epsSq = 0.004;
+            // Same softened Plummer potential as the compute shader's analytic
+            // core (eps = 0.038). G = 0.00075 so G*m1*m2 = GM_core = 0.00075,
+            // matching the force a test particle feels from one core. See the
+            // derivation comment in generateParticles().
+            const epsSq = 0.038 * 0.038; // 0.001444
             const r_sq = dx * dx + dy * dy + epsSq;
             const inv_r = 1.0 / Math.sqrt(r_sq);
             const inv_r3 = inv_r * inv_r * inv_r;
-            const G = 0.0012; // Calibrated core-core attraction
+            const G = 0.00075;
 
             const f12x = dx * (G * core2.mass * inv_r3);
             const f12y = dy * (G * core2.mass * inv_r3);
@@ -4503,20 +5443,37 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             core2.vx -= f12x * dt * simSpeed;
             core2.vy -= f12y * dt * simSpeed;
 
+            // Soft repulsive core: prevents the two gravity centers from
+            // merging too close during pericenter passage, so disks survive
+            // several flybys. dx/dy point from core1 to core2, so core1 is
+            // pushed back (-d) and core2 forward (+d).
+            const sep = Math.sqrt(dx * dx + dy * dy);
+            const minSep = 0.12;
+            if (sep > 1e-4 && sep < minSep) {
+                const rep = (minSep - sep) / minSep;
+                const rx = dx / sep, ry = dy / sep;
+                const repK = 0.03;
+                core1.vx -= rx * rep * repK * dt * simSpeed;
+                core1.vy -= ry * rep * repK * dt * simSpeed;
+                core2.vx += rx * rep * repK * dt * simSpeed;
+                core2.vy += ry * rep * repK * dt * simSpeed;
+            }
+
             core1.x += core1.vx * dt * simSpeed;
             core1.y += core1.vy * dt * simSpeed;
             core2.x += core2.vx * dt * simSpeed;
             core2.y += core2.vy * dt * simSpeed;
 
-            // Gentle harmonic orbital anchor keeps the graceful flyby loop centered
-            const c1DistX = core1.x - 0.5;
-            const c1DistY = core1.y - 0.5;
-            core1.vx -= c1DistX * 0.008 * dt * simSpeed;
-            core1.vy -= c1DistY * 0.008 * dt * simSpeed;
-            const c2DistX = core2.x - 0.5;
-            const c2DistY = core2.y - 0.5;
-            core2.vx -= c2DistX * 0.008 * dt * simSpeed;
-            core2.vy -= c2DistY * 0.008 * dt * simSpeed;
+            // Very weak barycenter centering (not a harmonic anchor — just
+            // keeps the encounter on-screen by countering tiny numerical drift
+            // from the soft repulsion). 15x weaker than the old anchor.
+            const centerK = 0.001;
+            const bx = (core1.x + core2.x) * 0.5 - 0.5;
+            const by = (core1.y + core2.y) * 0.5 - 0.5;
+            core1.vx -= bx * centerK * dt * simSpeed;
+            core1.vy -= by * centerK * dt * simSpeed;
+            core2.vx -= bx * centerK * dt * simSpeed;
+            core2.vy -= by * centerK * dt * simSpeed;
         }
 
         // ====================================================================
@@ -4538,11 +5495,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             let items = [];
 
             if (colorMode === 0) {
-                title = `${sName} — Velocity Heatmap`;
+                title = `${sName} — Velocity Heatmap (normalized)`;
                 items = [
-                    { color: 'var(--accent-cyan)', label: 'Low Speed (< 0.03)' },
-                    { color: 'var(--accent-purple)', label: 'Cruising Speed (0.03 – 0.08)' },
-                    { color: 'var(--accent-pink)', label: 'High Speed (> 0.08)' }
+                    { color: 'var(--accent-cyan)', label: 'Low Speed (t < 0.33)' },
+                    { color: 'var(--accent-purple)', label: 'Cruising Speed (t 0.33 – 0.66)' },
+                    { color: 'var(--accent-pink)', label: 'High Speed (t 0.66 – 0.85)' },
+                    { color: 'var(--accent-orange)', label: 'Near Max Speed (t > 0.85)' }
                 ];
             } else if (colorMode === 1) {
                 title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
@@ -4579,11 +5537,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     ];
                 }
             } else if (colorMode === 3) {
-                title = `${sName} — 1€ Adaptive Filter`;
+                title = `${sName} — 1€ Adaptive Filter (Damping Activity)`;
                 items = [
-                    { color: 'var(--accent-green)', label: 'High Jitter Smoothing (Low-Speed Quiescence)' },
-                    { color: 'var(--accent-cyan)', label: 'Balanced Dynamic Cutoff (Cruising)' },
-                    { color: 'var(--accent-pink)', label: 'Rapid Evasion (Zero Phase-Lag Response)' }
+                    { color: 'var(--accent-cyan)', label: 'Cruising (low filter activity, stable velocity)' },
+                    { color: 'var(--accent-green)', label: 'Active Smoothing (1€ damping high, jitter suppressed)' },
+                    { color: 'var(--accent-pink)', label: 'High Normalized Speed (t > 0.8, rapid response)' }
                 ];
             }
 
@@ -4705,9 +5663,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             uintView[20] = useElasticHash ? 1 : 0; // T3
             uintView[21] = useQuantized ? 1 : 0;   // T4 (reserved in-shader; pack/unpack are separate passes)
             uintView[22] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
-            uintView[23] = 0; // _pad0
+            // cellListsReady: set when counting-sort cell lists were built this
+            // frame (boids uses them for true spatial neighbor traversal).
+            uintView[23] = (scenarioId === 1 && webgpuFmmPipelines.count_cells) ? 1 : 0;
+            // Sorted payload: only enable when cell lists WILL be built this
+            // frame (galaxy fixed-grid FMM or boids cell-list pass). Otherwise
+            // fmmSortedIndex/sortedParticles are stale and the main compute
+            // must use the legacy posVelIn[gid] path.
+            const cellListsThisFrame = (scenarioId === 1 && webgpuFmmPipelines.count_cells)
+                || (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm);
+            uintView[24] = (useSortedPayload && cellListsThisFrame) ? 1 : 0;
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 96);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 100);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -4749,6 +5716,43 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: beginIdx, endOfPassWriteIndex: endIdx } }
                 : {};
 
+            // Boids: build counting-sorted cell lists (the SAME count/scan/
+            // scatter passes galaxy uses) so the main compute shader's boids
+            // branch can traverse TRUE spatial neighbors via the 3x3 leaf
+            // neighborhood instead of random global samples. Multipole passes
+            // (build_moments / m2m / m2l / l2l / l2p) stay galaxy-only.
+            if (scenarioId === 1 && webgpuFmmPipelines.count_cells) {
+                const leafCells = 1 << (2 * fmmLeafBits);
+                // Minimal FMM params block: only numParticles + leafBits +
+                // levelCount are consumed by clear/count/scan/scatter.
+                const K = fmmLevelCount();
+                fmmParamU[0] = N; fmmParamU[1] = fmmOrder; fmmParamU[2] = fmmLeafBits; fmmParamU[3] = K;
+                fmmParamU[4] = 0; fmmParamU[5] = fmmLevelRes(0); fmmParamU[6] = 0; fmmParamU[7] = 0;
+                fmmParamU[8] = 0; fmmParamU[9] = 0;
+                fmmParamU[10] = useSortedPayload ? 1 : 0; // gather_sorted + sortedFmmParticles valid
+                webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData, 0, 64);
+                const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
+                const cellPass = commandEncoder.beginComputePass();
+                cellPass.setPipeline(webgpuFmmPipelines.clear_cells);
+                cellPass.setBindGroup(0, fmmGroup, [0]);
+                cellPass.dispatchWorkgroups(Math.ceil(leafCells / 256));
+                cellPass.setPipeline(webgpuFmmPipelines.count_cells);
+                cellPass.dispatchWorkgroups(Math.ceil(N / 256));
+                cellPass.setPipeline(webgpuFmmPipelines.scan_cells);
+                cellPass.dispatchWorkgroups(1);
+                cellPass.setPipeline(webgpuFmmPipelines.scatter_cells);
+                cellPass.dispatchWorkgroups(Math.ceil(N / 256));
+                // Sorted payload gather: re-order fmmPos by cell so the main
+                // compute boids P2P neighbor reads are coalesced. Dispatched
+                // right after scatter_cells; one thread per sorted slot.
+                if (useSortedPayload && webgpuFmmPipelines.gather_sorted) {
+                    cellPass.setPipeline(webgpuFmmPipelines.gather_sorted);
+                    cellPass.setBindGroup(0, fmmGroup, [0]);
+                    cellPass.dispatchWorkgroups(Math.ceil(N / 256));
+                }
+                cellPass.end();
+            }
+
             // Galaxy only: counting-sort cell lists, then the multi-level
             // uniform FMM (P2M -> M2M chain -> per-level M2L -> L2L chain -> L2P).
             if (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm) {
@@ -4765,6 +5769,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
                     fmmParamU[o + 8] = useElasticHash ? 1 : 0; // T3: route cell lookups through the hash
                     fmmParamU[o + 9] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
+                    fmmParamU[o + 10] = useSortedPayload ? 1 : 0; // gather_sorted + sortedFmmParticles valid
                     if (l >= 1) localBase += res * res;
                     momBase += res * res;
                 }
@@ -4810,6 +5815,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     runFmmInPass(fmmBuildPass, 'scan_cells', 1);
                     runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
                 }
+                // Sorted payload gather: re-order fmmPos by cell so build_moments
+                // and the main compute P2P neighbor reads are coalesced. Runs
+                // after whichever scatter variant produced sortedIndex, and
+                // before build_moments (which reads sortedFmmParticles when
+                // useSortedPayload == 1). Folded into the FMM Build pass timing.
+                if (useSortedPayload && webgpuFmmPipelines.gather_sorted) {
+                    runFmmInPass(fmmBuildPass, 'gather_sorted', Math.ceil(N / 256));
+                }
                 runFmmInPass(fmmBuildPass, 'build_moments', Math.ceil(leafCells / 64));
                 for (let l = 1; l <= K; l++) {
                     runFmmInPass(fmmBuildPass, 'm2m_up', Math.ceil((fmmLevelRes(l) ** 2) / 64), l);
@@ -4827,11 +5840,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // OWN pass: l2l_down ADDS into the level-(l-1) locals that the
                 // m2l dispatches in the previous pass wrote, and an add must
                 // never share a pass with its input writers.
+                // CPU-timed (no free GPU timestamp slot — all 10 are used by
+                // build/m2l/l2p/main/render) and added to the fmmM2l metric so
+                // the telemetry reports the full far-field cost including the
+                // downward pass, not just the M2L upward accumulation.
+                const cpuT0L2l = performance.now();
                 const l2lPass = commandEncoder.beginComputePass();
                 for (let l = K; l >= 2; l--) {
                     runFmmInPass(l2lPass, 'l2l_down', Math.ceil(((fmmLevelRes(l) * 2) ** 2) / 256), l);
                 }
                 l2lPass.end();
+                webgpuL2lDownMs = performance.now() - cpuT0L2l;
 
                 // Pass 3: FMM L2P (level-1 local expansion + leaf ring M2P),
                 // dispatched with the level-1 uniform block.
@@ -4848,6 +5867,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (FMM_DEBUG && !fmmDebugDone && fmmProbeFrames >= 40) {
                     fmmDebugDone = true;
                     scheduleFmmDebugDump(commandEncoder, N);
+                }
+                // One-shot field magnitude check (always on): reads a small
+                // sample of fmmField to verify the FMM is producing non-zero
+                // gravity. Logs to console + updates the Gravity Gp metric.
+                if (!fmmFieldCheckDone && fmmProbeFrames >= 40) {
+                    fmmFieldCheckDone = true;
+                    scheduleFmmFieldCheck(commandEncoder, N);
                 }
                 // T6.4 ?hashverify=1: one-shot readback of cellStart/cellCount
                 // (counting sort) vs ehStart/ehCount (funnel hash) to confirm
@@ -4873,7 +5899,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
 
             // Adaptive CGR88 FMM: full multi-level pipeline with M2M/L2L/M2L/P2L.
+            // CPU timing is used for build/m2l/l2p because the adaptive path
+            // has >6 passes but only 3 GPU timestamp slot pairs — the GPU
+            // timestamps can't cleanly map to the three telemetry groups. The
+            // readback callback checks webgpuQueryBufAdaptive and preserves
+            // these CPU values instead of overwriting with stale slot data.
             if (scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm) {
+                fmmProbeFrames++;
                 const md = adaptiveMetadata;
                 const nn = md.totalNodes;
                 const depth = md.depth;
@@ -4883,11 +5915,22 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // the common params plus levelBase = levelStart[l], selected at
                 // dispatch time via the bind group's dynamic offset. Block 0
                 // (levelBase 0) is shared by the clear/p2m/l2p whole-range passes.
+                // zeroNearP2P (index 5): set to 1 when the bench probe is about
+                // to read back the field, so the l2p shader skips List-1 P2P
+                // and the probe measures the multipole path only (Fix #5).
                 const aU = adaptiveParamU;
+                // zeroNearP2P is active on the frame whose field will be read
+                // back by the bench probe: when benchProbeResolve is pending
+                // and benchProbeFrames >= 1 (the next increment triggers the
+                // readback on this frame's field).
+                const zeroP2P = (benchProbeResolve && benchProbeFrames >= 1) ? 1 : 0;
                 for (let l = 0; l < md.numLevels; l++) {
                     const base = l * 64; // 256 bytes / 4 = 64 u32 per block
                     aU[base + 0] = N; aU[base + 1] = nn; aU[base + 2] = order; aU[base + 3] = md.numLevels;
                     aU[base + 4] = md.levelStart[l];
+                    aU[base + 5] = zeroP2P;
+                    aU[base + 6] = 0; // _pad1 (reserved)
+                    aU[base + 7] = useAdaptiveNodeHash ? 1 : 0; // useAdaptiveNodeHash
                 }
                 webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, adaptiveParamData);
 
@@ -4898,8 +5941,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     pass.dispatchWorkgroups(groups);
                 };
 
+                // CPU timing for the three telemetry groups.
+                const cpuT0Build = performance.now();
+
                 // Pass 1: Clear multipoles and locals (covers ALL nodes)
-                const clearPass = commandEncoder.beginComputePass(tsOpts(0, 1));
+                const clearPass = commandEncoder.beginComputePass();
                 runAdaptive(clearPass, 'clear', Math.ceil((nn * 3) / 256), 0);
                 clearPass.end();
 
@@ -4919,6 +5965,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     m2mPass.end();
                 }
 
+                webgpuPassTimings.fmmBuild = performance.now() - cpuT0Build;
+                const cpuT0M2l = performance.now();
+
                 // Pass 4: L2L + M2L downward pass (exact per-level ranges, so
                 // each node's locals are written exactly once per frame after
                 // the clear pass)
@@ -4934,10 +5983,20 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     m2lPass.end();
                 }
 
+                webgpuPassTimings.fmmM2l = performance.now() - cpuT0M2l;
+                const cpuT0L2p = performance.now();
+
                 // Pass 5: L2P at particles (includes List 3 M2P and List 1 P2P)
-                const l2pPass = commandEncoder.beginComputePass(tsOpts(4, 5));
+                const l2pPass = commandEncoder.beginComputePass();
                 runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256), 0);
                 l2pPass.end();
+
+                webgpuPassTimings.fmmL2p = performance.now() - cpuT0L2p;
+                // One-shot field magnitude check for adaptive path
+                if (!fmmFieldCheckDone && fmmProbeFrames >= 40) {
+                    fmmFieldCheckDone = true;
+                    scheduleFmmFieldCheck(commandEncoder, N);
+                }
                 // T4/T5 live-bench accuracy column (adaptive path): same
                 // far-field probe readback as the fixed-grid branch.
                 if (benchProbeResolve) {
@@ -5014,6 +6073,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     if (webgpuQueryBufState[idx] === 0) {
                         commandEncoder.copyBufferToBuffer(webgpuQueryResolveBuffer, 0, webgpuQueryReadbackBufs[idx], 0, 10 * 8);
                         webgpuQueryBufState[idx] = 1; // has data
+                        webgpuQueryBufAdaptive[idx] = !!(scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm);
                         webgpuQueryCopyIdx = (idx + 1) % 3;
                         copied = true;
                         break;
@@ -5024,15 +6084,34 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // T6.4: copy the funnel probe counter to its MAP_READ staging
             // buffer each frame the funnel path is active, so a periodic
             // readback can report mean insert probes vs probe_bound in TELEM.
+            // While a readback map is pending/mapped the buffer must NOT be
+            // referenced by any submit (that is a WebGPU validation error and
+            // drops the whole frame's command buffer — observed as periodic
+            // black flashes in funnel mode), so the copy is skipped until the
+            // previous readback has unmapped.
             if (useFunnelHash && webgpuFunnelPipelines.funnel_build
-                && webgpuFunnelProbeCount && webgpuFunnelProbeReadback) {
+                && webgpuFunnelProbeCount && webgpuFunnelProbeReadback
+                && !webgpuFunnelRbPending) {
                 commandEncoder.copyBufferToBuffer(webgpuFunnelProbeCount, 0, webgpuFunnelProbeReadback, 0, 4);
             }
 
             const gpuSubmitTime = performance.now();
+            // Validation-error guard: if this submit is dropped by a WebGPU
+            // validation error, the ping-pong flip below must be undone —
+            // otherwise the next frame would integrate positions from a
+            // buffer that was never written (garbage velocities/positions,
+            // visible as rectangle-scale corruption in adaptive mode whose
+            // metadata rebuild then amplifies it).
+            webgpuDevice.pushErrorScope('validation');
             webgpuDevice.queue.submit([commandEncoder.finish()]);
             diagState.submits++;
             webgpuPingPong = 1 - webgpuPingPong;
+            webgpuDevice.popErrorScope().then((submitErr) => {
+                if (submitErr) {
+                    console.error('Frame submit dropped (validation):', submitErr.message.slice(0, 200));
+                    webgpuPingPong = 1 - webgpuPingPong; // read the last good buffer next frame
+                }
+            });
 
             // Measure actual GPU completion time via onSubmittedWorkDone fence.
             // Polled every ~30 frames instead of every frame — the promise
@@ -5045,15 +6124,20 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // T6.4: read back the funnel probe counter alongside the
                 // fence poll (every ~30 frames). Mean insert probes =
                 // counter / N; compare to funnelGeometry.probeBound.
-                if (useFunnelHash && webgpuFunnelPipelines.funnel_build && webgpuFunnelProbeReadback) {
+                // Guarded by webgpuFunnelRbPending so the map never overlaps
+                // a submit that references the buffer (see copy above).
+                if (useFunnelHash && webgpuFunnelPipelines.funnel_build
+                    && webgpuFunnelProbeReadback && !webgpuFunnelRbPending) {
                     const rb = webgpuFunnelProbeReadback;
+                    webgpuFunnelRbPending = true;
                     rb.mapAsync(GPUMapMode.READ).then(() => {
                         try {
                             const v = new Uint32Array(rb.getMappedRange())[0];
                             funnelProbeCountVal = v;
                             rb.unmap();
                         } catch (_) { try { rb.unmap(); } catch (__) {} }
-                    }).catch(() => {});
+                        webgpuFunnelRbPending = false;
+                    }).catch(() => { webgpuFunnelRbPending = false; });
                 }
             }
 
@@ -5068,9 +6152,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             try {
                                 const data = new BigUint64Array(buf.getMappedRange());
                                 const nsToMs = (ns) => Number(ns) / 1e6;
-                                webgpuPassTimings.fmmBuild = nsToMs(data[1] - data[0]);
-                                webgpuPassTimings.fmmM2l = nsToMs(data[3] - data[2]);
-                                webgpuPassTimings.fmmL2p = nsToMs(data[5] - data[4]);
+                                // When the frame used the adaptive path, the
+                                // build/m2l/l2p GPU timestamp slots don't map
+                                // cleanly (the adaptive path has >6 passes but
+                                // only 3 ts slot pairs). Preserve the
+                                // CPU-measured values for those three and only
+                                // take mainCompute/render/totalGpu from GPU.
+                                const wasAdaptive = webgpuQueryBufAdaptive[bufIdx];
+                                if (!wasAdaptive) {
+                                    webgpuPassTimings.fmmBuild = nsToMs(data[1] - data[0]);
+                                    webgpuPassTimings.fmmM2l = nsToMs(data[3] - data[2]);
+                                    webgpuPassTimings.fmmL2p = nsToMs(data[5] - data[4]);
+                                }
                                 webgpuPassTimings.mainCompute = nsToMs(data[7] - data[6]);
                                 webgpuPassTimings.render = nsToMs(data[9] - data[8]);
                                 webgpuPassTimings.totalGpu = nsToMs(data[9] - data[0]);
@@ -5185,9 +6278,78 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         });
         canvas.addEventListener('touchend', () => { mouseX = -1; mouseY = -1; isMouseDown = false; });
 
+        // FMM mode/order are galaxy-only. In other scenarios the controls are
+        // visually disabled (greyed out + tooltip) and #valFmmMode shows a
+        // 'galaxy-only' note. Re-enabled when switching back to galaxy.
+        // Also disables the Near-Field Hash Mode select (galaxy-only).
+        function updateFmmControlsState() {
+            const modeEl = document.getElementById('selectFmmMode');
+            const orderEl = document.getElementById('selectFmmOrder');
+            const hashEl = document.getElementById('selectHashMode');
+            const valFmmModeEl = document.getElementById('valFmmMode');
+            const galaxyOnly = scenario !== 'galaxy';
+            if (modeEl) {
+                modeEl.disabled = galaxyOnly;
+                modeEl.title = galaxyOnly ? 'FMM is galaxy-only (self-gravity); other scenarios use analytic forces' : '';
+                modeEl.style.opacity = galaxyOnly ? '0.45' : '';
+                modeEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+            }
+            if (orderEl) {
+                orderEl.disabled = galaxyOnly;
+                orderEl.title = galaxyOnly ? 'FMM expansion order is galaxy-only' : '';
+                orderEl.style.opacity = galaxyOnly ? '0.45' : '';
+                orderEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+            }
+            if (hashEl) {
+                hashEl.disabled = galaxyOnly;
+                hashEl.title = galaxyOnly ? 'Near-field hash mode is galaxy-only' : '';
+                hashEl.style.opacity = galaxyOnly ? '0.45' : '';
+                hashEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+            }
+            if (valFmmModeEl) {
+                if (galaxyOnly) {
+                    valFmmModeEl.innerText = 'Galaxy-only';
+                } else {
+                    // Restore the active mode label when switching back to galaxy.
+                    valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)'
+                        : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (2-Level)' : 'Analytic (no FMM)');
+                }
+            }
+        }
+
+        // Apply a deferred 'adaptive' selection once the async adaptive
+        // pipeline init has settled. Called from both the success and failure
+        // paths of the adaptive init try/catch.
+        function applyPendingAdaptive() {
+            if (!pendingAdaptive) return;
+            pendingAdaptive = false;
+            if (webgpuAdaptiveEnabled) {
+                useAdaptiveFmm = true;
+                webgpuFmmEnabled = false;
+                const valFmmModeEl = document.getElementById('valFmmMode');
+                if (valFmmModeEl) valFmmModeEl.innerText = 'Adaptive CGR88 (Multi-Level)';
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>WebGPU Adaptive CGR88 FMM`;
+                }
+            } else {
+                // Init failed — fall back to fixed-grid and surface it.
+                useAdaptiveFmm = false;
+                webgpuFmmEnabled = Object.keys(webgpuFmmPipelines).length > 0;
+                const valFmmModeEl = document.getElementById('valFmmMode');
+                if (valFmmModeEl) valFmmModeEl.innerText = 'Adaptive unavailable — Fixed-Grid';
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback'}`;
+                }
+            }
+            if (scenario === 'galaxy') resetSimulation();
+            updateMemoryTelemetry();
+            updatePassTimingTelemetry();
+        }
+
         // Scenario Selector
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
+            updateFmmControlsState();
             resetSimulation();
         });
 
@@ -5226,33 +6388,151 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (valOrderEl) {
                     valOrderEl.innerText = labels[fmmOrder] || `p=${fmmOrder}`;
                 }
+                // FMM order only affects galaxy (self-gravity multipole
+                // accuracy). Re-seed particles because the analytic-core vs
+                // self-gravity force fields differ, then refresh telemetry.
+                if (scenario === 'galaxy') {
+                    resetSimulation();
+                    updateMemoryTelemetry();
+                    updatePassTimingTelemetry();
+                }
             });
         }
 
         const selectFmmModeEl = document.getElementById('selectFmmMode');
         if (selectFmmModeEl) {
             selectFmmModeEl.addEventListener('change', (e) => {
-                const useAdaptive = e.target.value === 'adaptive';
-                useAdaptiveFmm = useAdaptive && webgpuAdaptiveEnabled;
-                // When adaptive is selected but unavailable, keep fixed-grid
-                // (and never claim fixed-grid FMM if its pipelines failed to build)
-                webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
+                const modeVal = e.target.value;
+                const useAdaptive = modeVal === 'adaptive';
+                const useOff = modeVal === 'off';
+
+                if (useAdaptive && !webgpuAdaptiveEnabled && !adaptiveInitSettled) {
+                    // Race: adaptive pipeline init is still in flight. Defer
+                    // the selection — show 'initializing' label and apply once
+                    // init settles (applyPendingAdaptive in the init path).
+                    pendingAdaptive = true;
+                    useAdaptiveFmm = false;
+                    webgpuFmmEnabled = Object.keys(webgpuFmmPipelines).length > 0;
+                    const valFmmModeEl0 = document.getElementById('valFmmMode');
+                    if (valFmmModeEl0) valFmmModeEl0.innerText = 'Adaptive (initializing…)';
+                    if (activeBackend === 'WEBGPU') {
+                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>WebGPU (Adaptive init…)`;
+                    }
+                    return;
+                }
+
+                const wantAdaptive = useAdaptive && webgpuAdaptiveEnabled;
+                useAdaptiveFmm = wantAdaptive;
+                pendingAdaptive = false;
+                if (useOff) {
+                    // Pure analytic dual-core: no FMM far-field at all. This is
+                    // the O(N) naive baseline (analytic cores only, no multipole).
+                    webgpuFmmEnabled = false;
+                    useAdaptiveFmm = false;
+                } else {
+                    // When adaptive is selected but unavailable (init failed),
+                    // keep fixed-grid (and never claim fixed-grid FMM if its
+                    // pipelines failed to build)
+                    webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
+                }
                 const valFmmModeEl = document.getElementById('valFmmMode');
                 if (valFmmModeEl) {
-                    valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                    if (useAdaptive && !webgpuAdaptiveEnabled) {
+                        // Surface the fallback visibly instead of silently
+                        // staying fixed-grid.
+                        valFmmModeEl.innerText = 'Adaptive unavailable — Fixed-Grid';
+                    } else if (useOff) {
+                        valFmmModeEl.innerText = 'Analytic (no FMM)';
+                    } else {
+                        valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Uniform-Lattice FMM (2-Level)';
+                    }
                 }
                 // Update engine badge
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                    const badge = useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM'
+                        : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores');
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${badge}`;
+                }
+                // Re-seed particles (analytic-core vs self-gravity force fields
+                // differ) and refresh telemetry immediately.
+                if (scenario === 'galaxy') {
+                    resetSimulation();
                 }
                 updateMemoryTelemetry();
+                updatePassTimingTelemetry();
+            });
+        }
+
+        // Near-Field Hash Mode select: controls which spatial-hash backend
+        // the fixed-grid FMM uses for cell-list construction. 'none' = the
+        // validated counting-sort cell lists; 'openaddr' = open-addressing
+        // linear probe (useElasticHash); 'funnel' = FCK funnel schedule
+        // (useFunnelHash). Galaxy-only like the other FMM controls.
+        const selectHashModeEl = document.getElementById('selectHashMode');
+        if (selectHashModeEl) {
+            selectHashModeEl.addEventListener('change', (e) => {
+                const v = e.target.value;
+                useElasticHash = (v === 'openaddr') && !!webgpuEhPipelines.eh_build;
+                useFunnelHash = (v === 'funnel') && !!webgpuFunnelPipelines.funnel_build;
+                // If funnel was requested but unavailable, surface it in the label
+                const valHashEl = document.getElementById('valHashMode');
+                if (valHashEl) {
+                    if (v === 'funnel' && !useFunnelHash) {
+                        valHashEl.innerText = 'Funnel (unavailable)';
+                    } else if (v === 'openaddr' && !useElasticHash) {
+                        valHashEl.innerText = 'Open-Addr (unavailable)';
+                    } else {
+                        valHashEl.innerText = v === 'none' ? 'Counting-Sort' : (v === 'openaddr' ? 'Open-Addr' : 'Funnel');
+                    }
+                }
+                if (scenario === 'galaxy') {
+                    resetSimulation();
+                }
+                updateMemoryTelemetry();
+                updateFmmAxisTelemetry();
+            });
+        }
+
+        // Sorted payload checkbox: toggles the gather_sorted dispatch and the
+        // main compute's sorted-slot iteration (coalesced P2P reads). A/B via
+        // ?sortedPayload=0|1. Applies to both galaxy (FMM P2P) and boids
+        // (cell-list spatial neighbors) since both use the counting-sort
+        // sortedIndex ranges.
+        const chkSortedPayloadEl = document.getElementById('chkSortedPayload');
+        if (chkSortedPayloadEl) {
+            chkSortedPayloadEl.addEventListener('change', (e) => {
+                useSortedPayload = e.target.checked;
+            });
+        }
+
+        // Adaptive node hash checkbox: toggles the funnel-hash occupied-node
+        // directory in adaptive CGR88 mode (l2p resolves the target leaf via a
+        // funnel probe instead of the leafForParticle array). A/B via
+        // ?adaptiveHash=0|1. Only affects adaptive mode; ignored by the
+        // fixed-grid path.
+        const chkAdaptiveNodeHashEl = document.getElementById('chkAdaptiveNodeHash');
+        if (chkAdaptiveNodeHashEl) {
+            chkAdaptiveNodeHashEl.addEventListener('change', (e) => {
+                useAdaptiveNodeHash = e.target.checked;
+                updateFmmAxisTelemetry();
             });
         }
 
         // Presets
         const setPreset = (val, btn) => {
+            const requested = val;
             N = Math.min(maxRuntimeParticles, Math.max(1000, val));
-            if (val > N) console.warn(`Particle count clamped to device limit: ${val} -> ${N}`);
+            if (requested > N) {
+                console.warn(`Particle count clamped to device limit: ${requested} -> ${N}`);
+                // Visible qualification warning for the 5M preset: the device
+                // doesn't have enough VRAM (maxBufferSize / maxStorageBufferBindingSize)
+                // for 5M particles, so the count was silently clamped.  Alert
+                // the user so they know the 5M Extreme block won't appear.
+                if (requested >= 5_000_000) {
+                    const gpuLimitStr = webgpuBufferLimitBytes ? formatBytes(webgpuBufferLimitBytes) : 'unknown';
+                    console.warn(`5M profile NOT qualified on this device: maxRuntimeParticles=${maxRuntimeParticles.toLocaleString()}, GPU buffer limit=${gpuLimitStr}. Clamped to ${N.toLocaleString()}. The 5M Extreme telemetry block requires N >= 5,000,000.`);
+                }
+            }
             document.getElementById('valParticles').innerText = N.toLocaleString();
             const slider = document.getElementById('sliderParticles');
             if (N <= 250000) {
@@ -5383,7 +6663,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const labels = { 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' };
                 document.getElementById('valOrder').innerText = labels[fmmOrder] || `p=${fmmOrder}`;
             }
-            if (cfg.adaptive !== undefined) {
+            if (cfg.fmmOff !== undefined && cfg.fmmOff) {
+                // Analytic dual-core baseline: no FMM far-field at all.
+                const sel = document.getElementById('selectFmmMode');
+                sel.value = 'off';
+                useAdaptiveFmm = false;
+                webgpuFmmEnabled = false;
+                document.getElementById('valFmmMode').innerText = 'Analytic (no FMM)';
+                if (activeBackend === 'WEBGPU') {
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>WebGPU Analytic Cores`;
+                }
+                updateMemoryTelemetry();
+            } else if (cfg.adaptive !== undefined) {
                 const sel = document.getElementById('selectFmmMode');
                 sel.value = cfg.adaptive ? 'adaptive' : 'fixed';
                 // T6: renamed from the shadowing `useAdaptive` to avoid
@@ -5391,9 +6682,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const wantAdaptive = cfg.adaptive;
                 useAdaptiveFmm = wantAdaptive && webgpuAdaptiveEnabled;
                 webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
-                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Uniform-Lattice FMM (2-Level)';
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
                 }
                 updateMemoryTelemetry();
             }
@@ -5418,9 +6709,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 document.getElementById('selectFmmMode').value = prev.fmmModeSelectVal;
                 document.getElementById('selectFmmOrder').value = prev.orderSelectVal;
                 document.getElementById('valOrder').innerText = ({ 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' })[fmmOrder] || `p=${fmmOrder}`;
-                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Fixed-Grid (2-Level)';
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)'
+                    : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (2-Level)' : 'Analytic (no FMM)');
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
                 }
                 updateMemoryTelemetry();
             };
@@ -5468,6 +6760,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // and 1euro are deliberately NOT axes (T2).
             const variants = [
                 { axis: 'standard', label: 'standard (current settings)', cfg: {}, note: 'baseline for this GPU/scenario' },
+                { axis: '+analytic', label: '+analytic (no FMM, O(N) cores)', cfg: { fmmOff: true }, note: 'analytic dual-core baseline (no multipole far-field)' },
                 { axis: '+fmm', label: '+fmm fixed-grid multi-level', cfg: { adaptive: false }, note: 'standard far-field path' },
                 { axis: '+fmm p=0', label: '+fmm p=0 (monopole)', cfg: { fmmOrder: 0 }, note: 'cheapest far-field' },
                 { axis: '+fmm p=1', label: '+fmm p=1 (dipole)', cfg: { fmmOrder: 1 }, note: '' },
@@ -5640,11 +6933,38 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (HASH_VERIFY) {
                 useFunnelHash = true;
             }
+            // ?sortedPayload=0|1: A/B the coalesced-P2P gather. Default ON.
+            const spParam = qs.get('sortedPayload');
+            if (spParam !== null) {
+                useSortedPayload = spParam !== '0';
+                const chk = document.getElementById('chkSortedPayload');
+                if (chk) chk.checked = useSortedPayload;
+            }
+            // ?adaptiveHash=0|1: A/B the adaptive funnel-hash occupied-node
+            // directory. Default ON.
+            const ahParam = qs.get('adaptiveHash');
+            if (ahParam !== null) {
+                useAdaptiveNodeHash = ahParam !== '0';
+                const chk = document.getElementById('chkAdaptiveNodeHash');
+                if (chk) chk.checked = useAdaptiveNodeHash;
+            }
+            // Reflect the initial scenario in the FMM controls (disable them
+            // for non-galaxy scenarios loaded via ?scenario=).
+            updateFmmControlsState();
         }
         // One stable parseable console line per 1Hz telemetry refresh.
         function autoprintTelemetry(fps) {
             if (!AUTOPRINT) return;
             const get = (id) => { const el = document.getElementById(id); return el ? el.innerText : null; };
+            // Mirror the sidebar guard (index.html ~:3807/3813): the CPU-timed
+            // l2l_down pass only runs on the fixed-grid path, so in adaptive
+            // mode (or once the fixed-grid FMM has turned off) the cached
+            // webgpuL2lDownMs is stale and must NOT be folded into fmmM2lMs.
+            const telemFmmActive = activeBackend === 'WEBGPU'
+                && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm))
+                && scenario === 'galaxy';
+            const telemAdaptiveActive = telemFmmActive && webgpuAdaptiveEnabled && useAdaptiveFmm;
+            const telemL2lDownMs = telemAdaptiveActive ? 0 : webgpuL2lDownMs;
             const avg = extreme5mStepWindow.length > 0
                 ? extreme5mStepWindow.reduce((a, b) => a + b, 0) / extreme5mStepWindow.length
                 : null;
@@ -5657,7 +6977,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 cellOccupancy: get('valFmmHash'),
                 p2pNearField: get('valP2pBudget'),
                 fmmBuildMs: +webgpuPassTimings.fmmBuild.toFixed(4),
-                fmmM2lMs: +webgpuPassTimings.fmmM2l.toFixed(4),
+                fmmM2lMs: +(webgpuPassTimings.fmmM2l + telemL2lDownMs).toFixed(4),
+                fmmL2lDownMs: +telemL2lDownMs.toFixed(4),
                 fmmL2pMs: +webgpuPassTimings.fmmL2p.toFixed(4),
                 mainComputeMs: +webgpuPassTimings.mainCompute.toFixed(4),
                 renderMs: +webgpuPassTimings.render.toFixed(4),
@@ -5670,6 +6991,23 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     totalInsertProbes: funnelProbeCountVal,
                     meanInsertProbes: (funnelProbeCountVal != null && N > 0)
                         ? +(funnelProbeCountVal / N).toFixed(4) : null,
+                    // Probe-bound assertion: mean insert probes per particle
+                    // must be <= probeBound (alpha*beta + bAttempts +
+                    // 2*cBucketSlots).  A violation means the funnel schedule
+                    // guarantee is broken (overflow into the cuckoo region
+                    // without a bounded probe chain).  Reported as
+                    // probeBoundOk in TELEM so a hands-free run can grep for
+                    // violations; a violation is also console.warn'd once.
+                    probeBoundOk: (() => {
+                        if (funnelProbeCountVal == null || N <= 0) return null;
+                        const mean = funnelProbeCountVal / N;
+                        const ok = mean <= funnelGeometry.probeBound;
+                        if (!ok && !funnelProbeBoundWarned) {
+                            funnelProbeBoundWarned = true;
+                            console.warn(`TELEM probe-bound VIOLATION: mean insert probes ${mean.toFixed(4)} > probeBound ${funnelGeometry.probeBound} (N=${N}, alpha=${funnelGeometry.alpha}, beta=${funnelGeometry.beta})`);
+                        }
+                        return ok;
+                    })(),
                     alpha: funnelGeometry.alpha,
                     beta: funnelGeometry.beta,
                     tableSize: funnelGeometry.totalSize,
