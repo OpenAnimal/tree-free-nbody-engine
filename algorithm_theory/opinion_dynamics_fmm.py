@@ -26,9 +26,13 @@ to detect phase transitions from societal consensus to fragmented echo-chambers.
 """
 
 import time
-from itertools import product
+import os
+import sys
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class ContinuousOpinionDynamicsFMM:
@@ -68,6 +72,10 @@ class ContinuousOpinionDynamicsFMM:
     ) -> np.ndarray:
         """
         Computes velocity drift dx/dt for all N agents in O(N) time using spatial hashing.
+
+        X-A12: uses CellIndex (world mode, cell_size = eps) instead of the
+        hand-rolled dict grid with tuple keys.  Same cell size and 3^D ring-1
+        neighborhood, so the neighbor sets are identical.
         """
         opinions = np.asarray(opinions, dtype=np.float64)
         if opinions.ndim != 2 or opinions.shape[1] != self.dim:
@@ -78,42 +86,29 @@ class ContinuousOpinionDynamicsFMM:
         if n_agents == 0:
             return np.empty((0, self.dim), dtype=np.float64)
 
-        grid_coords = np.floor(opinions / self.cell_size).astype(np.int64)
-        cell_keys = [tuple(c) for c in grid_coords]
-        
-        buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, k in enumerate(cell_keys):
-            if k not in buckets:
-                buckets[k] = []
-            buckets[k].append(idx)
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
+        idx = CellIndex(dims=self.dim, cell_size=self.cell_size)
+        idx.build(opinions)
 
-        cell_arrays = {k: np.array(v, dtype=np.int64) for k, v in buckets.items()}
         drift = np.zeros_like(opinions)
 
-        neighbor_offsets = tuple(product((-1, 0, 1), repeat=self.dim))
-
         # Process each cell block
-        for target_k, target_indices in cell_arrays.items():
+        for cell_key, target_indices in idx.items():
+            target_indices = np.asarray(target_indices, dtype=np.int64)
             t_pos = opinions[target_indices]
-            
-            cand_src_list = []
-            for offset in neighbor_offsets:
-                src_k = tuple(coord + delta for coord, delta in zip(target_k, offset))
-                if src_k in cell_arrays:
-                    cand_src_list.append(cell_arrays[src_k])
 
-            if len(cand_src_list) == 0:
+            src_indices = idx.neighborhood_indices(cell_key, ring=1)
+            if len(src_indices) == 0:
                 continue
 
-            src_indices = np.concatenate(cand_src_list)
             s_pos = opinions[src_indices]
 
             diff = s_pos[None, :, :] - t_pos[:, None, :]
             dist = np.linalg.norm(diff, axis=-1)
-            
+
             mask = dist <= self.eps
             w = np.where(mask, self._eval_local_weight(dist), 0.0)
-            
+
             local_acc = np.sum(w[:, :, None] * diff, axis=1)
             weight_sum = np.sum(w, axis=1)
 
@@ -126,7 +121,7 @@ class ContinuousOpinionDynamicsFMM:
             diff_seeds = opinions[:, None, :] - seeds[None, :, :]
             dist_seeds = np.linalg.norm(diff_seeds, axis=-1)
             dist_safe = np.maximum(dist_seeds, 1e-6)
-            
+
             repulsion_mag = self.beta * np.exp(-dist_seeds / self.lambda_decay) / dist_safe
             seed_force = np.sum(repulsion_mag[:, :, None] * diff_seeds, axis=1)
             drift += seed_force
