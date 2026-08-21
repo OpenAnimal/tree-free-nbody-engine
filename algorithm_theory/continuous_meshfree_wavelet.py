@@ -21,8 +21,13 @@ in O(J * N) total operations instead of dense O(J * N^2) convolutions.
 """
 
 import time
+import os
+import sys
 from typing import Tuple, List, Optional, Dict
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 class ContinuousMeshfreeWavelet:
@@ -81,56 +86,41 @@ class ContinuousMeshfreeWavelet:
     ) -> np.ndarray:
         """
         Fast O(N) Wavelet convolution using vectorized spatial hash block partitioning.
+
+        X-A12: uses CellIndex (world mode, cell_size = cutoff_r) instead of the
+        hand-rolled dict grid with tuple keys.  Same cell size and 3^D ring-1
+        neighborhood, so the neighbor sets are identical.
         """
         cutoff_r = cutoff_radius_multiplier * scale
         cell_size = cutoff_r
-        
-        grid_coords = np.floor(self.points / cell_size).astype(np.int64)
-        
-        # Fast bucket mapping
-        cell_keys = [tuple(c) for c in grid_coords]
-        unique_keys = list(set(cell_keys))
-        key_to_indices = {k: [] for k in unique_keys}
-        for idx, k in enumerate(cell_keys):
-            key_to_indices[k].append(idx)
 
-        cell_blocks = {k: np.array(v, dtype=np.int64) for k, v in key_to_indices.items()}
-        
+        # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
+        idx = CellIndex(dims=self.dim, cell_size=cell_size)
+        idx.build(self.points)
+
         norm_factor = 1.0 / (scale ** (self.dim / 2.0))
         out_coeffs = np.zeros(self.n_points, dtype=np.float64)
 
-        # Offsets for 3^D neighbor cells
-        dxs = (-1, 0, 1)
-        dys = (-1, 0, 1)
-        dzs = (-1, 0, 1) if self.dim >= 3 else (0,)
-
-        for cell_k, idx_target in cell_blocks.items():
+        for cell_key, idx_target in idx.items():
+            idx_target = np.asarray(idx_target, dtype=np.int64)
             pts_t = self.points[idx_target]
-            
-            # Gather all source particles from 27 adjacent cells
-            cand_src_list = []
-            for dx in dxs:
-                for dy in dys:
-                    for dz in dzs:
-                        nbr_k = (cell_k[0] + dx, cell_k[1] + dy, cell_k[2] + dz) if self.dim >= 3 else (cell_k[0] + dx, cell_k[1] + dy)
-                        if nbr_k in cell_blocks:
-                            cand_src_list.append(cell_blocks[nbr_k])
 
-            if len(cand_src_list) == 0:
+            # Gather all source particles from 3^D adjacent cells (ring=1).
+            idx_src = idx.neighborhood_indices(cell_key, ring=1)
+            if len(idx_src) == 0:
                 continue
-                
-            idx_src = np.concatenate(cand_src_list)
+
             pts_s = self.points[idx_src]
             sig_s = signal[idx_src]
-            
+
             # Vectorized block distance
             diff = pts_t[:, None, :] - pts_s[None, :, :]
             dist = np.linalg.norm(diff, axis=-1)
-            
+
             mask = dist <= cutoff_r
             r_norm = dist / scale
             psi_vals = np.where(mask, norm_factor * self._eval_mother_wavelet(r_norm), 0.0)
-            
+
             out_coeffs[idx_target] = psi_vals @ sig_s
 
         return out_coeffs
