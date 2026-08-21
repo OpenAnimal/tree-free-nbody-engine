@@ -1,17 +1,36 @@
 """
 Multipole-Accelerated Gaussian Process Layer (`multipole_gaussian_process.py`)
 =============================================================================
-Linear-Time O(N) Gaussian Process Regression, Correct Preconditioned Conjugate
-Gradient (PCG) Predictive Variance, Sparse Variational GP (SVGP) Inducing Points,
-and Matheron Rule Pathwise Sampling for Neural Architectures.
+Matrix-Free Gaussian Process Regression via Preconditioned Conjugate Gradient
+(PCG), Predictive Variance via Per-Query PCG, Sparse Variational GP (SVGP)
+Inducing Points, and Matheron Rule Pathwise Sampling for Neural Architectures.
+
+Complexity caveats (read before citing):
+- The mean solve (fit + predict) is O(N * iters * nnz_per_point) where
+  nnz_per_point is the cutoff-truncated neighbor count.  This is
+  near-linear for fixed cutoff and iteration count, but NOT O(N) in the
+  FMM sense — there is no multipole hierarchy; the far field is truncated,
+  not approximated.
+- The predictive variance requires one PCG solve per test point:
+  O(N_test * iters * nnz).  This is the dominant cost when variance is
+  requested.
+- The SVGP path uses dense O(N * M^2) operations (K_nm, K_mm, Cholesky of
+  lambda_mat).  It is O(N * M^2), NOT O(N) — the "sparse" in SVGP refers
+  to the M << N inducing set, not to the matrix-free PCG machinery.
 
 Key Capabilities:
-1. Exact Million-Point Matrix-Free GP Regression:
-   - Evaluates (K + sigma_n^2 I)^-1 y in strictly O(N) time via Tree-Free spatial hashing & PCG.
-   - Computes exact predictive mean mu_* = K_* alpha.
-   - Computes correct predictive variance:
+1. Sparse-Truncated Matrix-Free GP Regression:
+   - Evaluates (K + sigma_n^2 I)^-1 y for the cutoff-truncated sparse kernel
+     (cutoff_multiplier * length_scale cutoff).  The RBF kernel at the
+     cutoff distance is exp(-(cutoff_mult)^2 / 2) * sigma_f2; for the
+     default cutoff_mult=4 this is ~3.4e-4 * sigma_f2, so the truncation
+     error is O(1e-4), NOT 1e-7.  Increase cutoff_multiplier for higher
+     accuracy at the cost of more neighbors.
+   - Computes predictive mean mu_* = K_* alpha.
+   - Computes predictive variance:
          sigma_*^2(x_*) = k(x_*, x_*) - k_*^T (K + sigma_n^2 I)^-1 k_*
-     via fast column-wise / batch PCG solving.
+     via one PCG solve per test point, with a constant Jacobi
+     preconditioner.
 2. Sparse Variational Gaussian Process (SVGP):
    - Supports M << N inducing points (Hensman et al. 2013).
    - Enables mini-batch stochastic gradient training for deep neural networks.
@@ -22,10 +41,15 @@ Key Capabilities:
 
 from __future__ import annotations
 import math
+import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, Callable
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.spatial_index import CellIndex
 
 
 @dataclass
@@ -50,12 +74,14 @@ class SVGPResult:
 
 class MultipoleGaussianProcessLayer:
     """
-    Tree-Free Fast Multipole Gaussian Process Neural Operator Layer.
-    
+    Matrix-Free Gaussian Process Neural Operator Layer.
+
     Provides:
-    - O(N) Matrix-Free Preconditioned Conjugate Gradient solving for exact GP regression.
-    - True predictive variance computed via dual-system PCG.
-    - Sparse Variational GP (SVGP) with variational distribution q(u) ~ N(m, S).
+    - Matrix-Free Preconditioned Conjugate Gradient solving for cutoff-truncated
+      GP regression (near-linear in N for fixed cutoff; NOT FMM-accelerated).
+    - Predictive variance via per-query PCG solve.
+    - Sparse Variational GP (SVGP) with variational distribution q(u) ~ N(m, S)
+      (dense O(N * M^2) operations; "sparse" refers to M << N inducing set).
     - Matheron's rule pathwise function sampling for continuous trajectory generation.
     """
     def __init__(
@@ -96,46 +122,29 @@ class MultipoleGaussianProcessLayer:
         targets: np.ndarray,
         sources: np.ndarray,
     ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Precomputes sparse spatial block kernel matrices in O(N) time."""
+        """Precomputes sparse spatial block kernel matrices in O(N) time.
+
+        X-A12: uses CellIndex (world mode, cell_size = r_cut) instead of
+        hand-rolled dict hashing with tuple keys. The CellIndex uses
+        Morton-interleaved integer keys and vectorized np.unique binning,
+        replacing the per-element Python loop + tuple(coord) dict lookups.
+        """
         dim = targets.shape[1]
         inv_2ell2 = 1.0 / (2.0 * (self.ell ** 2))
         r_cut_sq = self.r_cut ** 2
 
-        # Hash source points
-        src_grid = np.floor(sources / self.cell_size).astype(np.int64)
-        src_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, coord in enumerate(src_grid):
-            k = tuple(coord)
-            if k not in src_buckets:
-                src_buckets[k] = []
-            src_buckets[k].append(idx)
-        src_arrays = {k: np.array(v, dtype=np.int64) for k, v in src_buckets.items()}
+        src_index = CellIndex(dims=dim, cell_size=self.cell_size)
+        src_index.build(sources)
+        tgt_index = CellIndex(dims=dim, cell_size=self.cell_size)
+        tgt_index.build(targets)
 
-        # Hash target points
-        tgt_grid = np.floor(targets / self.cell_size).astype(np.int64)
-        tgt_buckets: Dict[Tuple[int, ...], List[int]] = {}
-        for idx, coord in enumerate(tgt_grid):
-            k = tuple(coord)
-            if k not in tgt_buckets:
-                tgt_buckets[k] = []
-            tgt_buckets[k].append(idx)
-        tgt_arrays = {k: np.array(v, dtype=np.int64) for k, v in tgt_buckets.items()}
-
-        from itertools import product
-        neighbor_offsets = tuple(product((-1, 0, 1), repeat=dim))
         blocks = []
-
-        for t_k, t_idx in tgt_arrays.items():
-            cand_src = []
-            for offset in neighbor_offsets:
-                s_k = tuple(c + delta for c, delta in zip(t_k, offset))
-                if s_k in src_arrays:
-                    cand_src.append(src_arrays[s_k])
-
-            if len(cand_src) == 0:
+        for tkey, t_idx in tgt_index.items():
+            t_idx = np.asarray(t_idx, dtype=np.int64)
+            s_idx_all = src_index.neighborhood_indices(tkey, ring=1)
+            if len(s_idx_all) == 0:
                 continue
 
-            s_idx_all = np.concatenate(cand_src)
             pts_t = targets[t_idx]
             pts_s = sources[s_idx_all]
 
@@ -253,16 +262,17 @@ class MultipoleGaussianProcessLayer:
 
         pcg_var_iters = 0
         if compute_variance:
+            # Pre-assemble per-test-point sparse k_* vectors in one pass over
+            # blocks (O(n_blocks * avg_block_size), not O(n_test * n_blocks)).
+            k_star_vectors = [np.zeros(self.n_train, dtype=np.float64)
+                              for _ in range(n_test)]
+            for t_idx, s_idx, k_mat in test_blocks:
+                for row_pos, global_i in enumerate(t_idx):
+                    k_star_vectors[global_i][s_idx] += k_mat[row_pos]
+
             # For each test query, compute k_*(x_*)^T (K + sigma_n^2 I)^-1 k_*(x_*)
-            # Assemble sparse k_* vectors per test point
             for i in range(n_test):
-                k_star_i = np.zeros(self.n_train, dtype=np.float64)
-                # Extract connections for target index i
-                for t_idx, s_idx, k_mat in test_blocks:
-                    match_pos = np.where(t_idx == i)[0]
-                    if len(match_pos) > 0:
-                        p = match_pos[0]
-                        k_star_i[s_idx] += k_mat[p]
+                k_star_i = k_star_vectors[i]
 
                 if np.linalg.norm(k_star_i) > 1e-12:
                     v_i, n_it = self._solve_pcg(self.A_op, k_star_i, self.pcg_tol, max_iter=30)
