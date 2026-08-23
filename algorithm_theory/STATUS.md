@@ -60,7 +60,7 @@ None of them make numerical correctness claims beyond what their tests verify.
 
 ## Test gate
 
-`python -X utf8 algorithm_theory/test_basic_datatypes_fmm.py` stays green.
+`python -X utf8 -m tests.algorithm_theory.test_basic_datatypes_fmm` stays green.
 
 ## Round-8 honesty pass (2026-08-20)
 
@@ -176,7 +176,7 @@ the round-6/7 audits had left in place. Summary of the substantive changes
   Yukawa kernel is not scale-invariant) and the result scaled back by 1/span.
   T-C8 was verified landed first (core/radial_taylor.py docstring: cells-per-
   side = depth, LINEAR; toy_2cell_check non-degenerate at 1.8e-13;
-  core/test_yukawa3d_fmm.py all PASS at p=8 rel-L2 2.7e-8). Accuracy jump:
+  tests/core/test_yukawa3d_fmm.py all PASS at p=8 rel-L2 2.7e-8). Accuracy jump:
   the historical order-1 tree-code sat at ~1% rel-L2 vs direct; the Taylor
   FMM delegation reaches 3.6e-8 rel-L2 vs direct at p=8 on a 2k-particle
   cloud (X-A9 acceptance: <=1e-6). The tree-code path is retained as the

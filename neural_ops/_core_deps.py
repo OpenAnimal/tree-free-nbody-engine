@@ -23,13 +23,14 @@ dependency-free fallbacks so every public API still works:
   are the exact quantity — only the asymptotic speedup is lost. Copy
   ``core/`` alongside for the fast path.
 
-``equivariant_field_layer``'s optional ``tayloryukawa`` kernel path and the
-``infinite_multipole_memory_network`` example use larger core/ engines with
-no compact exact fallback; they raise an informative ImportError when
-``core/`` is absent (their other kernel paths remain fully standalone).
+``equivariant_field_layer``'s optional ``tayloryukawa`` kernel path uses a
+larger core/ engine with no compact exact fallback; it raises an
+informative ImportError when ``core/`` is absent (the other kernel paths,
+including the ``infinite_multipole_memory_network`` example's dict-shard
+fallback, remain fully standalone).
 
 Parity of the fallbacks against the canonical implementations is pinned by
-``tests/neural_ops/test_vendored_parity.py``.
+``tests/neural_ops/test_dropin_standalone.py``.
 """
 
 import numpy as np

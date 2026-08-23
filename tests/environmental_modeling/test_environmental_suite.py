@@ -1,6 +1,6 @@
 """Round-7 Workstream G: test suite for all four environmental challenges.
 
-Run:  python -X utf8 -m environmental_modeling.test_environmental_suite
+Run:  python -X utf8 -m tests.environmental_modeling.test_environmental_suite
 """
 from __future__ import annotations
 import os

@@ -18,6 +18,7 @@
 // Prints one JSON line per config, a markdown table, and adaptive screenshots.
 
 const { chromium } = require('playwright');
+const fs = require('fs');
 
 const N = parseInt(process.argv[2] || '500000', 10);
 const ROUNDS = parseInt(process.argv[3] || '3', 10);
@@ -26,9 +27,17 @@ const WARMUP_MS = 5000;
 const MEASURE_MS = 5000;
 const BASE = `http://localhost:${PORT}/index.html`;
 // Full Chromium (NOT the headless-shell: it has no WebGPU adapter and the
-// run silently falls back to WebGL2). Override via CROSSBENCH_EXE.
-const EXE = process.env.CROSSBENCH_EXE
-    || 'C:\\Users\\Y\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe';
+// run silently falls back to WebGL2). Override via CROSSBENCH_EXE; if the
+// pinned path is absent (other machines), fall back to whatever full
+// chromium playwright has installed.
+const EXE_CANDIDATES = [
+    process.env.CROSSBENCH_EXE,
+    'C:\\Users\\Y\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
+    ...fs.readdirSync(process.env.LOCALAPPDATA + '/ms-playwright', { withFileTypes: true })
+        .filter((d) => d.isDirectory() && d.name.startsWith('chromium-') && !d.name.includes('headless'))
+        .map((d) => `${process.env.LOCALAPPDATA}/ms-playwright/${d.name}/chrome-win64/chrome.exe`),
+].filter(Boolean);
+const EXE = EXE_CANDIDATES.find((p) => fs.existsSync(p)) || undefined;
 
 const CONFIGS = [
     { label: 'fixed+counting',  url: '',                toggle: {} },

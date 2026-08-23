@@ -106,8 +106,8 @@ MD_FORBIDDEN = [
 # Markdown files exempt from the MD pass (relative to repo root, forward
 # slashes). Each entry is justified:
 #   - docs/INAPPLICABILITY.md: quotes the disavowed claims it refutes.
-#   - ROUND7_MASTER_PLAN.md: this plan file documents the claims it audits,
-#     including the forbidden phrases as named findings (R7-F22, R7-F26).
+#   - docs/review_history/*: the round-plan files document the claims they
+#     audit, including the forbidden phrases as named findings.
 #   - docs/GPU_NOTES.md: contains a historical "Round-X" narrative that
 #     quotes prior wording it then corrects (history sections).
 MD_ALLOWLIST = {

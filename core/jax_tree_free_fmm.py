@@ -14,7 +14,7 @@ Honest scope (Round-7 audit, finding F-06):
 - The legacy `jax_multi_level_probe_lookup` (2-slot-per-level probe, the
   pre-funnel scheme that `core/elastic_hash.py` disavows) has been removed.
   JAX with x64-disabled cannot express the 64-bit funnel mixer; the funnel
-  hash stays CPU/Zig/WGSL only (see `core/elastic_hash.py:543-559`).
+  hash stays CPU/Zig/WGSL only (see the `funnel_probe` docstring in `core/elastic_hash.py`).
 """
 
 from typing import Tuple, Optional, Dict, Any, Union

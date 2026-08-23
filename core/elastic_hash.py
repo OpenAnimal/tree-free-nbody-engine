@@ -686,11 +686,11 @@ class ElasticBatchingHashTable:
     placed in an earlier primary sub-array would otherwise be re-inserted
     as a duplicate once the cascade advances), so a worst-case insert
     inspects O(total capacity) slots -- correctness over speed; the
-    empirical probe counts in core/test_elastic_hash.py reflect this.
+    empirical probe counts in tests/core/test_elastic_hash.py reflect this.
     Unlike the paper (whose insertion is non-greedy, with a 2-D probe
     sequence mapped through an injection phi), this implementation is
     greedy -- the bound it certifies in practice is the empirical one
-    measured by core/test_elastic_hash.py, not Theorem 1.
+    measured by tests/core/test_elastic_hash.py, not Theorem 1.
 
     Keys must be non-negative integers (Morton keys, bucket ids, ...);
     values may be arbitrary Python objects.

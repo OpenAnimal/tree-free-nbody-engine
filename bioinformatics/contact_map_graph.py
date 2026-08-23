@@ -6,7 +6,7 @@ Constructs residue interaction networks (RINs) and contact graphs using 3D Morto
 from __future__ import annotations
 import numpy as np
 import time
-from typing import Tuple, Dict, List, Optional, Set
+from typing import Any, Tuple, Dict, List, Optional, Set
 try:
     from .pdb_loader import MolecularSystem
     from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d

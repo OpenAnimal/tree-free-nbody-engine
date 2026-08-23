@@ -139,7 +139,7 @@
 
 ```text
 algorithm_theory/
-├── __init__.py                          # Public package exports (all 28 modules)
+├── __init__.py                          # Public package exports (all 33 modules)
 ├── README.md                            # Comprehensive theory, formulations & benchmarks
 ├── benchmark_algorithm_theory.py        # Scalability & Verification Suite
 ├── algorithm_theory_benchmark.png       # Generated publication benchmark visualization

@@ -190,7 +190,7 @@ class ScreenedYukawaFMM:
 
         if depth is None:
             # Target ~9 particles per occupied cell (matches the depth=6,
-            # N=2000 configuration cross-validated in core/test_yukawa3d_fmm.py
+            # N=2000 configuration cross-validated in tests/core/test_yukawa3d_fmm.py
             # at 2.7e-8 rel-L2). cells_per_side ~ (N/9)^(1/3), capped to the
             # CellIndex 3D unit-mode limit of 1024 and to a practical build
             # budget (the M2L D_gamma tensors are O(n_gamma * K^2) in K<=

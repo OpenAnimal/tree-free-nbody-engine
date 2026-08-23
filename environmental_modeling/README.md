@@ -51,7 +51,7 @@ evaluation against a direct O(N²) reference and/or analytic anchors, with
 rel-L2 / percent-error acceptance thresholds. Run all via:
 
 ```
-python -X utf8 -m environmental_modeling.test_environmental_suite
+python -X utf8 -m tests.environmental_modeling.test_environmental_suite
 ```
 
 ## Honest scope & remaining approximations

@@ -7,7 +7,7 @@ and Isoelectric Point (pI) calculation accelerated by Tree-Free FMM.
 from __future__ import annotations
 import numpy as np
 import time
-from typing import Tuple, Dict, List, Optional
+from typing import Any, Tuple, Dict, List, Optional
 try:
     from .pdb_loader import MolecularSystem, RESIDUE_PROPERTIES
     from .core.fast_multipole_kernel import TreeFreeBioFMM, ScreenedKernelType, COULOMB_CONSTANT_KCAL

@@ -77,4 +77,4 @@ filterwarnings = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["core*", "apps*", "algorithm_theory*", "neural_ops*", "bioinformatics*", "physics_simulation*", "quantized_bitpacked_optimization*", "video_streaming_codecs*", "game_mechanics_spatial*", "graphics_rendering*"]
+include = ["core*", "apps*", "algorithm_theory*", "neural_ops*", "bioinformatics*", "physics_simulation*", "environmental_modeling*", "quantized_bitpacked_optimization*", "video_streaming_codecs*", "game_mechanics_spatial*", "graphics_rendering*"]

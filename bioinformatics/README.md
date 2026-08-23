@@ -65,7 +65,7 @@ To prevent the pervasive problem of **sequence and structural homology leakage**
 
 Run the complete 19-suite verification and benchmark suite:
 ```bash
-python bioinformatics/test_sota_modules.py
+python -X utf8 -m tests.bioinformatics.test_sota_modules
 ```
 
 > **Synthetic-data caveat (Round-7 honesty pass):** the cross-validation
