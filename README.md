@@ -6,7 +6,7 @@
 
 ### Octree-Free, Lock-Free $O(N)$ $N$-Body & Spatial Field Engine
 
-**Pointerless Spatial Computing & Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987) via **Optimal Non-Reordering Open Addressing** (Farach-Colton et al., 2025)
+**Pointerless Spatial Computing & Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987; Carrier, Greengard, & Rokhlin, 1988) via **Optimal Non-Reordering Open Addressing** (Farach-Colton, Krapivin, & Kuszmaul, 2025)
 
 <p align="left">
   <a href="https://raw.githack.com/OpenAnimal/tree-free-nbody-engine/main/index.html"><img src="https://img.shields.io/badge/Live_Demo-Launch_Simulation-blueviolet?style=for-the-badge&logo=webgl" alt="Launch Live WebGL Demo"></a>
@@ -20,9 +20,13 @@
 ---
 
 > 🔬 **Research Prototype & Exploratory Notice:**
-> While core algorithms include automated verification tests and empirical scaling benchmarks, these implementations are exploratory research prototypes and WILL contain bugs that have to be fixed over time.
+> While core algorithms include automated verification tests and empirical scaling benchmarks, these implementations are exploratory research prototypes. Hidden bugs and errors remain, and further review passes are required before they can be considered resolved. Although the examples are manifold, the principal design direction is provided and can serve as a reference for your own, and even more advanced, implementations.
 
-> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no guaranteed support. (I am poor as a church mouse and don't have time or resources for anything.)
+**The aim of this repository is to deliver order-of-magnitude performance gains over existing methods by combining two of the most powerful algorithms — performance that translates into practical scientific and engineering utility — through a codebase of minimal, self-contained, drop-in examples, validated against independent references.**
+
+
+> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no guaranteed support. (I am poor as a church mouse and don't have time or resources for anything.) If you have an idea for a method that you think would be a good fit for this engine, feel free to reach out.
+
 
 ---
 
@@ -50,7 +54,7 @@ Here is what this engine actually can do across some domains:
 
 ## Background
 
-The **Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987) — widely recognized as one of the top ten algorithms of the century — reduced $N$-body and potential field evaluations from quadratic $O(N^2)$ to linear $O(N)$. However, practical FMM implementations historically relied on hierarchical **Octree / $k$-d tree data structures**. On SIMD, GPU, and distributed architectures, dynamic tree allocation every timestep, pointer chasing, and warp divergence remain primary bottlenecks.
+The **Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987; extended to adaptive form by Carrier, Greengard, & Rokhlin, 1988) — widely recognized as one of the top ten algorithms of the century — reduced $N$-body and potential field evaluations from quadratic $O(N^2)$ to linear $O(N)$. However, practical FMM implementations historically relied on hierarchical **Octree / $k$-d tree data structures**. On SIMD, GPU, and distributed architectures, dynamic tree allocation every timestep, pointer chasing, and warp divergence remain primary bottlenecks.
 
 In early 2025, **Martín Farach-Colton, Andrew Krapivin, and William Kuszmaul** published *"Optimal Bounds for Open Addressing Without Reordering"* (arXiv:2501.02305 / IEEE FOCS 2024), breaking a **40-year-old theoretical barrier** (dating back to Andrew Yao's 1985 conjecture) by demonstrating that an open-addressed hash table achieves:
 
@@ -66,17 +70,17 @@ By synthesizing **Optimal Non-Reordering Elastic Open Addressing** with the **Fa
 * **Near-Dependency Free:** Designed as self-contained mathematical building blocks.
 
 ```text
-+-------------------------------------------------------------------------+
-|                  Dynamic Particle / Coordinate Stream                   |
-+-------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------+
+|                          Dynamic Particle / Coordinate Stream                           |
++-----------------------------------------------------------------------------------------+
                                     |
                                     v
-+-------------------------------------------------------------------------+
-|    TREE-FREE MULTIPOLE HASH TABLE (Farach-Colton / Kuszmaul Layout)     |
-|   - Multi-Level Geometrically Sized Sub-Arrays                          |
-|   - Strict Zero-Reordering (Lock-Free / CAS-Compatible)                 |
-|   - Bounded O(log 1/delta) Search Latency at High Load Factors          |
-+-------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------+
+|    TREE-FREE MULTIPOLE HASH TABLE (Farach-Colton, Krapivin, & Kuszmaul, 2025 Layout)    |
+|   - Multi-Level Geometrically Sized Sub-Arrays                                          |
+|   - Strict Zero-Reordering (Lock-Free / CAS-Compatible)                                 |
+|   - Bounded O(log 1/delta) Search Latency at High Load Factors                          |
++-----------------------------------------------------------------------------------------+
             |                                               |
             v (Near-Field: P2P Direct)                      v (Far-Field: M2L Multipole)
   O(1) 3x3 Neighborhood Hash Probes               Vectorized Cluster Matrix Broadcast
@@ -100,40 +104,40 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 
 ### Scaling / Asymptotic Crossover — Execution Latency by $N$
 
-> **Purpose of this table:** it is a *scaling* benchmark, not the variant protocol. It shows how each backend's latency grows with $N$ and where the $O(N)$ FMM crosses over the $O(N^2)$ baselines (Naive $\to$ NumPy $\to$ JAX $\to$ FMM). It does **not** report per-variant `rel L2` or the `+elastichash / +quantized` axes — those live in the [variant table below](#variant-protocol--what-each-influence-costs) and in [`BENCHMARKS.md`](BENCHMARKS.md). The "Speedup vs NumPy" column answers the crossover question, not the accuracy-cost question.
+> **Purpose of this table:** it is a *scaling* benchmark, not the variant protocol. It shows how each backend's latency grows with $N$ and where the $O(N + K^2)$ FMM crosses over the $O(N^2)$ baselines (Naive $\to$ NumPy $\to$ JAX $\to$ FMM). It does **not** report per-variant `rel L2` or the `+elastichash / +quantized` axes — those live in the [variant table below](#variant-protocol--what-each-influence-costs) and in [`BENCHMARKS.md`](BENCHMARKS.md). The "Speedup vs NumPy" column answers the crossover question, not the accuracy-cost question.
 
-| Particle Count ($N$) | Naive Python CPU$O(N^2)$ | Vectorized NumPy$O(N^2)$ | JAX JIT Compiled$O(N^2)$ | **Vectorized Tree-Free FMM** **$O(N)$** |  Speedup vs. NumPy Direct  |
+| Particle Count ($N$) | Naive Python CPU $O(N^2)$ | Vectorized NumPy $O(N^2)$ | JAX JIT Compiled $O(N^2)$ | **Flat Tree-Free FMM** $O(N + K^2)$ |  Speedup vs. NumPy Direct  |
 | :--------------------: | :------------------------: | :------------------------: | :------------------------: | :---------------------------------------: | :--------------------------: |
-|    **$N = 100$**    |         0.91 ms         |         0.35 ms         |   46.8 ms*(dispatch)*   |               **3.17 ms**               |        $0.11\times$        |
+|    **$N = 100$**    |         0.91 ms         |         0.35 ms         |   46.8 ms *(dispatch)*   |               **3.17 ms**               |        $0.11\times$        |
 |    **$N = 500$**    |         8.84 ms         |         13.5 ms         |         49.8 ms         |              **13.97 ms**              | $0.97\times$ *(crossover)* |
 |   **$N = 2,000$**   |         244.5 ms         |         157.9 ms         |         50.3 ms         |              **16.69 ms**              |      **$9.5\times$**      |
-|   **$N = 4,000$**   |         978.1 ms         |         593.5 ms         |         51.6 ms         |              **166.55 ms**              |      **$3.6\times$**      |
-|   **$N = 8,000$**   |        3,912.4 ms        |        2,361.0 ms        |         74.2 ms         |              **188.67 ms**              |      **$12.5\times$**      |
-|   **$N = 16,000$**   |       15,649.5 ms       |        9,444.0 ms        |         156.8 ms         |              **246.35 ms**              |      **$38.3\times$**      |
-|   **$N = 64,000$**   |   250,391.7 ms (250s)   |   151,104.7 ms (151s)   |        2,509.2 ms        |             **2,741.17 ms**             |      **$55.1\times$**      |
-|  **$N = 100,000$**  |   611,307.8 ms (611s)   |   368,908.0 ms (369s)   |        6,125.9 ms        |             **2,884.09 ms**             |     **$127.9\times$**     |
+|   **$N = 4,000$**   |         978.1 ms *(extrap.)* |         593.5 ms *(extrap.)* |         51.6 ms         |              **166.55 ms**              |      **$3.6\times$**      |
+|   **$N = 8,000$**   |        3,912.4 ms *(extrap.)* |        2,361.0 ms        |         74.2 ms         |              **188.67 ms**              |      **$12.5\times$**      |
+|   **$N = 16,000$**   |       15,649.5 ms *(extrap.)* |       9,444.0 ms *(extrap.)* |        156.8 ms         |              **246.35 ms**              |      **$38.3\times$**      |
+|   **$N = 64,000$**   |   250,391.7 ms *(extrap.)* |   151,104.7 ms *(extrap.)* |        2,509.2 ms *(extrap.)* |             **2,741.17 ms**             |      **$55.1\times$**      |
+|  **$N = 100,000$**  |   611,307.8 ms *(extrap.)* |   368,908.0 ms *(extrap.)* |   6,125.9 ms *(extrap.)* |             **2,884.09 ms**             |     **$127.9\times$**     |
 
-> ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (see `apps/benchmark_suite.py`). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` (vectorized dense binning); the elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engine `TreeFreeElasticAdaptiveFMM` and the GPU kernels.
+> ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (marked *(extrap.)* in the table). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` with `order=4` on a **uniform** distribution (lower accuracy and different occupancy than the variant protocol's `order=8` on a **clustered** distribution — see [`BENCHMARKS.md`](BENCHMARKS.md) §"Core FMM scaling" for the clustered-distribution scaling table where the FMM is NOT faster at $N{=}2000$). The flat scheme is $O(N + K^2)$ with $K$ occupied cells ($K \le 4^{\text{depth}}$), linear in $N$ for fixed depth with a depth-dependent constant — not asymptotically $O(N)$. The elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engine `TreeFreeElasticAdaptiveFMM` and the GPU kernels.
 
 ### Variant Protocol — What Each Influence Costs
 
-The repo-wide `VariantBenchmark` protocol (`core/benchmark_kit.py`) runs the same four axes — `standard` (exact/dense reference), `+elastichash` (elastic-hash `CellIndex` near-field / cluster path), `+fmm` (CGR88 / flat FMM, only where the 2D log kernel applies), `+quantized` (bit-packed variant where one exists) — on every domain folder and every `apps/` case study. Each row reports latency **and** the accuracy it cost (`rel L2` vs the exact reference, or `recall@k` for approximate retrieval / filter broadphases). The `+fmm` axis is omitted with reason where the app's kernel is not the 2D log kernel (3D Yukawa, Gaussian RBF, nearest-point proximity, high-dim cosine). The summary below is a representative slice; the full per-domain and per-app tables with honest "not faster at this scale" takeaways are in [`BENCHMARKS.md`](BENCHMARKS.md).
+The repo-wide `VariantBenchmark` protocol (`core/benchmark_kit.py`) runs the same four axes — `standard` (exact/dense reference), `+elastichash` (elastic-hash `CellIndex` near-field / cluster path), `+fmm` (Adaptive FMM / flat FMM, only where the 2D log kernel applies), `+quantized` (bit-packed variant where one exists) — on every domain folder and every `apps/` case study. Each row reports latency **and** the accuracy it cost (`rel L2` vs the exact reference, or `recall@k` for approximate retrieval / filter broadphases). The `+fmm` axis is omitted with reason where the app's kernel is not the 2D log kernel (3D Yukawa, Gaussian RBF, nearest-point proximity, high-dim cosine). The summary below is a representative slice; the full per-domain and per-app tables with honest "not faster at this scale" takeaways are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 | Domain / App | Kernel | Variant | Time (ms) | rel L2 / recall | Honest takeaway |
 | :--- | :--- | :--- | ---: | :--- | :--- |
-| Core FMM (2D log, $N{=}2000$) | 2D log potential | `standard` (exact direct) | 41.4 | – | $O(N^2)$ reference |
-| Core FMM | 2D log potential | `+fmm` (CGR88 adaptive) | 845.3 | 1.97e-7 | NOT faster than direct at $N{=}2000$ (Python tree traversal) |
-| Core FMM | 2D log potential | `+fmm` (flat vectorized) | 478.9 | 7.52e-7 | NOT faster than direct at $N{=}2000$ ($K^2$ M2L dominates) |
-| Core FMM | 2D log potential | `+quantized` (32-bit packed) | 40.7 | 3.89e-1 | parity in speed, 39% rel-L2 packed cost |
-| Physics broadphase | 3D AABB overlap | `+elastichash` (CellIndex ring-1) | 211.1 | no missed | **4.0× faster**, zero missed collisions |
-| Graphics AO | 3D inverse-square | `+quantized` (all-cluster) | 19.4 | 2.00e-2 | **5.3× faster**, 2e-2 rel-L2 cost |
-| Graphics AO | 3D inverse-square | `+elastichash` near/far | 894.7 | 8.27e-4 | NOT faster than exact at this scale |
-| Video splat | 3D Gaussian | `+elastichash` (cell-bucketed) | 8.95 | 3.19e-1 | lossy order-0 cluster-mean |
-| Game flocking | 2D boid rules | `+elastichash` (near+far) | 239.1 | 5.9% far residual | NOT faster at $N{=}1000$ (Python loop overhead) |
-| App 1 galaxy | 2D log gravity | `+fmm` (FastVectorizedFMM) | 18.2 | 2.39e-5 | parity with direct at $N{=}500$, sub-1e-4 accuracy |
-| App 5 protein | 3D Debye-Hückel | `+elastichash` (cluster $O(K^2)$) | 21.1 | 5.68e-1 | **15.8× faster**, 57% rel-L2 cluster cost |
-| App 8 manifold | 8D LSH k-NN | `+elastichash` (LSH k-NN graph) | 9.7 | recall@12 = 100% | **26.3× faster**, 100% edge recall |
-| App 9 vector DB | 128D LSH ANN | `+elastichash` (multi-probe) | 23.4 | recall@10 = 0.6% | **2.9× faster**, low recall (fine-grained LSH) |
+| Core FMM (2D log, $N{=}2000$) | 2D log potential | `standard` (exact direct) | 57.14 | – | $O(N^2)$ reference |
+| Core FMM | 2D log potential | `+fmm` (adaptive FMM) | 1057.39 | 1.974e-7 | NOT faster than direct at $N{=}2000$ (Python tree traversal) |
+| Core FMM | 2D log potential | `+fmm` (flat vectorized) | 710.61 | 7.522e-7 | NOT faster than direct at $N{=}2000$ ($K^2$ M2L dominates) |
+| Core FMM | 2D log potential | `+quantized` (32-bit packed) | 68.51 | 3.891e-1 | parity in speed, 39% rel-L2 packed cost |
+| Physics broadphase | 3D AABB overlap | `+elastichash` (CellIndex ring-1) | 211.06 | no missed | **4.0× faster**, zero missed collisions |
+| Graphics AO | 3D inverse-square | `+quantized` (all-cluster) | 19.41 | 2.001e-2 | **5.3× faster**, 2e-2 rel-L2 cost |
+| Graphics AO | 3D inverse-square | `+elastichash` near/far | 894.67 | 8.269e-4 | NOT faster than exact at this scale |
+| Video splat | 3D Gaussian | `+elastichash` (cell-bucketed) | 8.95 | 3.190e-1 | lossy order-0 cluster-mean |
+| Game flocking | 2D boid rules | `+elastichash` (near+far) | 239.08 | 5.9% far residual | NOT faster at $N{=}1000$ (Python loop overhead) |
+| App 1 galaxy | 2D log gravity | `+fmm` (FastVectorizedFMM) | 18.18 | 2.386e-5 | parity with direct at $N{=}500$, sub-1e-4 accuracy |
+| App 5 protein | 3D Debye-Hückel | `+elastichash` (per-atom dipole) | 147.96 | 2.002e-3 | **1.7× faster**, 2e-3 rel-L2 (Round-7 T-C2 per-atom dipole) |
+| App 8 manifold | 8D LSH k-NN | `+elastichash` (LSH k-NN graph) | 9.69 | recall@12 = 100% | **26.3× faster**, 100% edge recall |
+| App 9 vector DB | 128D LSH ANN | `+elastichash` (multi-probe) | 24.09 | recall@10 = 0.6% | **3.4× faster**, low recall (fine-grained LSH) |
 
 > ℹ️ **How to reproduce:** every domain folder and every `apps/appN_*` script has a paired `benchmark_variants.py` that runs through `core.benchmark_kit.VariantBenchmark`. Run any of them directly, e.g. `python -X utf8 core/benchmark_variants.py` or `python -X utf8 apps/app1_benchmark_variants.py`. The live WebGL/WebGPU demo (`index.html`) also prints a variant benchmark table below the visualization — a static reference table plus a live in-browser micro-bench that toggles the shader-exposed axes (FMM order, fixed/adaptive, 1€ filter, P2P radius) and measures real per-frame step latency for each.
 
@@ -143,12 +147,12 @@ The repo-wide `VariantBenchmark` protocol (`core/benchmark_kit.py`) runs the sam
 
 * **CPU (Vectorized NumPy):** SIMD matrix broadcasts for P2M/M2L expansions; zero compiler dependencies (`core/fast_vectorized_fmm.py`).
 * **Quantized & Bitpacked Engine:** $5.0\times$ cache compression via fixed-point integer bitfields, 64-bit Morton bitboards, and run-length cluster merging (`quantized_bitpacked_optimization/`) to trade even more performance for some precision.
-* **JAX JIT (CPU/GPU):** Differentiable end-to-end pipeline with `@jax.jit` complex multipoles and reverse-mode AD (`core/jax_tree_free_fmm.py`).
-* **NVIDIA CUDA:** Native kernel with `atomicCAS` lock-free insertions and fused `__shared__` memory tiles (`core/cuda_kernels/tree_free_fmm_kernel.cu`).
+* **JAX JIT (CPU/GPU):** Differentiable adaptive FMM operator primitives (P2M/M2M/M2L/L2L/L2P) + autodiff-verified dense O(N²) reference, and an assembled flat-scheme 2D log-kernel FMM pipeline (`jax_flat_fmm_evaluate`, Round-7 task T-D4). Multi-level upward/downward assembly remains future work (`core/jax_tree_free_fmm.py`).
+* **NVIDIA CUDA:** Native kernel with generic `atomicCAS` open-addressing insert (not the funnel hash schedule — see `core/elastic_hash.py` for that) and fused `__shared__` memory tiles (`core/cuda_kernels/tree_free_fmm_kernel.cu`).
 * **AMD ROCm / HIP:** Native AMD Radeon kernel with lock-free atomics and warp shuffle reductions (`core/hip_kernels/tree_free_fmm_kernel.hip`).
 * **OpenAI Triton:** Block-tiled GPU kernel for PyTorch with fused SRAM potential evaluations (`core/cuda_kernels/triton_tree_free_fmm.py`).
 * **OpenCL (Cross-Platform):** Vendor-neutral compute backend for AMD, Intel, and Apple GPUs (`core/opencl_kernels/tree_free_fmm_opencl.cl`).
-* **WebGPU / WebGL 2.0:** In-browser WGSL compute shaders and GPU-instanced rendering up to 5M+ particles (`index.html`, `core/webgpu_kernels/`).
+* **WebGPU / WebGL 2.0:** In-browser WGSL compute shaders and GPU-instanced rendering up to 5M+ particles (`index.html`, `core/webgpu_kernels/`). The near field is sampled (budget 24/12/6 per adjacent leaf, id-decorrelated, reweighted so the estimate stays unbiased) — see `docs/GPU_NOTES.md` §5.4 and the cross-benchmarks in §7-8. The adaptive tree metadata is rebuilt in a Web Worker (no main-thread hitch), and the three near-field hash backends (counting sort / open addressing / funnel hash) run at equal speed via a per-frame range-materialization pass. The demo runs vsync-locked by default; `?uncapped=1` switches to the steps/sec benchmark mode.
 * **Zig Native:** Crossplatform, dependency-free near-instant-compilation C-ABI library for high-throughput CPU execution (`core/zig_backend.py`, `native/zig/`).
 
 ---
@@ -242,7 +246,7 @@ The `apps/` directory provides ten complete, runnable domain demonstrations. Eac
 ### Application 7: High-Dimensional Continuous Graph & Memory Partitioning
 
 * **Script:** [`apps/app7_highdim_memory.py`](apps/app7_highdim_memory.py)
-* **Description:** Partitions 64-dimensional dense embedding vectors using Hyperplane Locality-Sensitive Hashing (LSH) into the non-reordering table at $3.8\times 10^6\text{ vectors/sec}$ with 0.029 ms query latency.
+* **Description:** Partitions 64-dimensional dense embedding vectors using Hyperplane Locality-Sensitive Hashing (LSH) into the non-reordering table at $3.8\times 10^6\text{ vectors/sec}$ with 0.029 ms query latency (fast-config ingestion throughput and single-bucket lookup). **Caveat — this is the speed-only config:** on the audited retrieval workload (N=5000, d=64, cosine top-5 over 50 queries) the single-bucket LSH candidate set is NOT faster than brute exact top-5 — it measures 12.19 ms (0.5x, i.e. slower) at only 36.8% recall@5, because the O(1) bucket lookup returns too few candidates for high recall without multi-probe. See [`BENCHMARKS.md`](BENCHMARKS.md) (App 7) for the measured recall/speed trade-off; the headline number above is the ingestion+lookup latency, not end-to-end top-k accuracy.
 
 <p align="center">
   <img src="assets/app7_highdim_embeddings.png" width="95%" alt="High-Dim Embeddings">
@@ -338,14 +342,15 @@ pip install -e ".[all]"
 
 ## Theoretical References
 
-1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, & Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
 2. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
-3. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths.** Duan, Cheng, Mao, Yin, Ren (2025). *ACM STOC 2025 Best Paper* / [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
-4. **More Asymmetry Yields Faster Matrix Multiplication.** Alman, Duan, Williams, Xu, Xu, Zhou (2024). [arXiv:2404.16349](https://arxiv.org/abs/2404.16349).
-5. **Nearly-Linear Time Algorithms for Graph Laplacians.** Spielman, Teng (2011). *SIAM J. Comput.* 40(4), 981–1025.
-6. **Approximate Distance Oracles.** Thorup, Zwick (2005). *Journal of the ACM*, 52(1), 1–24.
-7. **1€ Filter: A Simple Speed-Based Low-Pass Filter for Noisy Input in Interactive Systems.** Casiez, Roussel, Vogel (2012). *ACM CHI Conference on Human Factors in Computing Systems*.
-8. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH 2020)*.
+3. **A Fast Adaptive Multipole Algorithm for Particle Simulations.** Carrier, Greengard, Rokhlin (1988). *SIAM Journal on Scientific and Statistical Computing*, 9(4), 669–686.
+4. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths.** Duan, Cheng, Mao, Yin, Ren (2025). *ACM STOC 2025 Best Paper* / [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
+5. **More Asymmetry Yields Faster Matrix Multiplication.** Alman, Duan, Williams, Xu, Xu, Zhou (2024). [arXiv:2404.16349](https://arxiv.org/abs/2404.16349).
+6. **Nearly-Linear Time Algorithms for Graph Laplacians.** Spielman, Teng (2011). *SIAM J. Comput.* 40(4), 981–1025.
+7. **Approximate Distance Oracles.** Thorup, Zwick (2005). *Journal of the ACM*, 52(1), 1–24.
+8. **1€ Filter: A Simple Speed-Based Low-Pass Filter for Noisy Input in Interactive Systems.** Casiez, Roussel, Vogel (2012). *ACM CHI Conference on Human Factors in Computing Systems*.
+9. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH 2020)*.
 
 ---
 

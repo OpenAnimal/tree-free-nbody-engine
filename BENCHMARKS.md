@@ -8,14 +8,74 @@ accuracy it costs. Tables below are pasted verbatim from each
 `benchmark_variants.py` run; the one-line takeaway under each is honest,
 including "not faster at this scale" results.
 
+## Browser demo cross-benchmark (WebGPU, uncapped steps/sec)
+
+Reproduced with `node tools/browser_crossbench.js [N] [rounds]` against a
+local `python -m http.server 8123` (headless full Chromium — the headless
+shell has no WebGPU adapter — WebGPU/D3D11, RTX 4070 SUPER, 2026-08-23).
+Frames run uncapped (`?uncapped=1`; the page now defaults to the
+vsync-locked loop), so the metric is true steps/sec.
+
+**Environment caveat**: measured while a background process held ~80% GPU
+utilization — absolute numbers are depressed vs an idle GPU; ratios between
+configs measured in the same run remain meaningful. 5M rows ran each config
+in an isolated browser process (`CONFIG=<label>`; the fifth in-process
+navigation stalls on cumulative GPU memory at that size), 1 round each.
+
+```
+N=120k (3 rounds)          median steps/sec   rounds
+fixed + counting-sort      236                226, 236, 240
+fixed + open-addressing    214                211, 230, 214
+fixed + funnel             226                234, 226, 213
+adaptive + node-hash dir   356                358, 349, 356
+adaptive + leafForParticle 509                509, 517, 478
+
+N=500k (3 rounds)          median steps/sec   rounds
+fixed + counting-sort      172                172, 163, 181
+fixed + open-addressing    174                178, 174, 173
+fixed + funnel             172                172, 170, 175
+adaptive + node-hash dir   56                 62, 56, 52
+adaptive + leafForParticle 45                 45, 44, 45
+
+N=5M (1 round, isolated)   median steps/sec
+fixed + counting-sort      12   (~60M particle-updates/sec)
+fixed + open-addressing    10
+fixed + funnel             10
+adaptive + node-hash dir   7
+adaptive + leafForParticle 5
+```
+
+Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §7):
+
+- **Near-field hash backends are now equal** (counting/open-addr/funnel
+  within noise at every N). A new `materialize_ranges` pass resolves the
+  hash table into the dense `cellStart`/`cellCount` arrays once per frame —
+  one probe per leaf cell instead of one probe per neighbor-cell visit in
+  every P2P consumer — so the hash modes' hot loops are the same two direct
+  loads as the counting sort. The hash table remains the structure built
+  each frame; its value is the worst-case probe bound and compactness, not
+  throughput.
+- **Adaptive FMM crosses over**: at 120k it is *faster* than the fixed grid
+  (few tree nodes make the per-level chains cheap while the fixed grid
+  always evaluates the full 128x128 lattice); at 500k+ the adaptive node
+  count grows (~23k nodes) and fixed wins. Its value at large N is accuracy
+  on clustered distributions, not throughput.
+- **The funnel occupied-node directory pays off as the tree grows** (7 vs 5
+  steps/sec at 5M, 56 vs 45 at 500k) but costs at small trees (356 vs 509
+  at 120k) — probe vs one-indirection trade.
+- The adaptive metadata rebuild now runs in a Web Worker sliced verbatim
+  from the page's own script (see `getAdaptiveMetaWorker` in index.html),
+  so the periodic refresh no longer hitches the render loop; the "adaptive
+  is CPU-bound on its rebuild" caveat from earlier rounds is gone.
+
 ## Core FMM (2D log kernel)
 
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
 standard (exact direct)     57.14                     -  O(N^2) reference
-+fmm (CGR88 adaptive)    1057.39 (0.1x)      1.974e-07  funnel-hash adaptive CGR88, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)
-+fmm (flat vectorized)    710.61 (0.1x)      7.522e-07  single-level vectorized CGR88, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)
++fmm (adaptive FMM)     1057.39 (0.1x)      1.974e-07  funnel-hash adaptive FMM, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)
++fmm (flat vectorized)    710.61 (0.1x)      7.522e-07  single-level vectorized adaptive FMM, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)
 +quantized (32-bit packed)     68.51 (0.8x)      3.891e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
 ```
 
@@ -28,7 +88,7 @@ scaling table below).
 
 The same flat vectorized FMM (`FastVectorizedFMM(depth=5, order=8)`) and a
 chunked vectorized direct O(N^2) sum, run on the clustered multi-scale
-distribution at N in {2000, 8000, 32000}. The adaptive CGR88 engine is
+distribution at N in {2000, 8000, 32000}. The adaptive FMM engine is
 omitted at these N (its Python tree traversal is even slower than the flat
 scheme and would not change the crossover conclusion). Direct O(N^2) at
 N=32000 is ~1e9 pairs; the chunked direct keeps memory bounded (block=2048
@@ -55,11 +115,11 @@ algorithmic fact.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (brute O(N^2))    841.49                     -  exact AABB overlap pair set
-+elastichash (CellIndex ring-1)    211.06 (4.0x)              -  no missed collisions: True; 122433 exact pairs / 122433 broadphase candidates (filter superset, narrow-phase prunes false positives)
+standard (brute O(N^2))    713.90                     -  exact AABB overlap pair set
++elastichash (CellIndex ring-1)    186.15 (3.8x)              -  no missed collisions: True; 122433 exact pairs / 122433 broadphase candidates (filter superset, narrow-phase prunes false positives)
 ```
 
-The CellIndex ring-1 broadphase is 4x faster than brute force on the demo tet
+The CellIndex ring-1 broadphase is ~4x faster than brute force on the demo tet
 mesh and misses zero collisions (every exact AABB-overlap pair is in the
 candidate set), so it is a correct filter even though the candidate and exact
 sets coincide on this uniform grid.
@@ -112,7 +172,7 @@ small N; the asymptotic benefit only appears at larger crowds.
 Each of the ten `apps/appN_benchmark_variants.py` files runs the same
 `VariantBenchmark` protocol on the app's own kernel, so the apps are
 comparable on the same axes as the domain folders above. The `+fmm` axis is
-included only where the app's kernel is the 2D logarithmic CGR88 kernel
+included only where the app's kernel is the 2D logarithmic adaptive FMM kernel
 (apps 1 and 2); elsewhere it is omitted with the reason stated in the note
 (Gaussian RBF, 3D Yukawa, nearest-point proximity, or high-dim cosine
 retrieval -- none are the 2D log kernel). Where the result is approximate
@@ -124,15 +184,29 @@ metric is `recall@k` or `no missed collisions` in the note, not a rel-L2.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (exact direct)     17.23                     -  O(N^2) reference (app1 validate_against_direct path)
-+elastichash (near only)     37.03 (0.5x)      2.610e-01  CellIndex ring-1 near-field, far-field SKIPPED (hash-truncated baseline)
-+fmm (FastVectorizedFMM)     18.18 (0.9x)      2.386e-05  CGR88 flat FMM, depth=4 order=6 (the app's compute path)
+standard (exact direct)     16.50                     -  O(N^2) reference (app1 validate_against_direct path)
++elastichash (near only)     37.01 (0.4x)      2.610e-01  CellIndex ring-1 near-field, far-field SKIPPED (hash-truncated baseline)
++fmm (FastVectorizedFMM)     14.74 (1.1x)      2.386e-05  adaptive FMM flat FMM, depth=4 order=6 (the app's compute path)
 ```
 
 At N=500 the flat FMM reaches 2.4e-5 rel-L2 force accuracy and is at parity
 with direct summation; the hash-truncated near-field-only baseline is
 slower than direct AND loses 26% rel-L2 because the far-field is skipped --
 it is the cheap baseline, not a competitor.
+
+Scaling table (depth=4, order=6):
+
+```
+     N   direct (ms)      fmm (ms)   speedup      rel L2
+  ------  ------------  ------------  --------  ----------
+     500          18.9          14.7      1.28x    2.39e-05
+    1000          77.7          21.1      3.68x    2.14e-05
+    2000         300.3          49.8      6.03x    2.76e-05
+    4000        1201.4         167.6      7.17x    2.42e-05
+```
+
+FMM crosses direct at N~500 and reaches **7.2x at N=4000** with rel-L2
+≤ 2.8e-5, demonstrating the O(N) vs O(N^2) asymptotic advantage.
 
 ### App 2 -- Hydrodynamic vortex sheet (2D log streamfunction)
 
@@ -154,20 +228,22 @@ skips in its own cross-check), not by the FMM itself.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (dense O(N^2))     84.24                     -  dense spatial RBF attention reference
-+elastichash (near+far centroid)   1654.14 (0.1x)      9.392e-02  near exact (3x3 funnel hash) + far per-cell centroid; lossy far-field centroid approximation
-+fmm (Taylor FGT)        1607.56 (0.1x)      4.685e-07  2D Gaussian Taylor FGT (core/gaussian2d_fgt.py), h=sigma*sqrt(2); exact spatial-only attention via per-column FGT + normalizer; NOT faster than direct at N=1500 (per-cell Python loop overhead)
+standard (dense O(N^2))    173.30                     -  dense spatial RBF attention reference
++elastichash (near+far centroid)     96.86 (1.8x)      8.533e-02  near exact (3x3 CellIndex) + far per-cell centroid; vectorized per-cell (CellIndex replaces raw ElasticHashTable); lossy far-field centroid approximation
++fmm (Taylor FGT)        1636.01 (0.1x)      4.685e-07  2D Gaussian Taylor FGT (core/gaussian2d_fgt.py), h=sigma*sqrt(2); exact spatial-only attention via per-column FGT + normalizer; NOT faster than direct at N=1500 (per-cell Python loop overhead)
 ```
 
-The near-exact/far-centroid attention is NOT faster than dense O(N^2) at
-N=1500 (per-cell Python loop overhead dominates) and pays a 9.4e-2 rel-L2
-far-field centroid cost. The new `+fmm (Taylor FGT)` row reaches 4.7e-7
-rel-L2 (the exact spatial-only attention, computed via the 2D Gaussian
-Taylor FGT in `core/gaussian2d_fgt.py` with h = sigma*sqrt(2) so the FGT
-kernel exp(-r^2/h^2) equals the app kernel exp(-r^2/(2 sigma^2)) exactly)
-but is also NOT faster than direct at N=1500 -- the per-column FGT loop
-(d_model+1 evaluations) plus the per-cell Python loop overhead puts it at
-0.1x. The asymptotic win needs larger N or a compiled kernel (Class D in
+The near-exact/far-centroid attention is now **1.8x faster** than dense
+O(N^2) at N=1500 after vectorizing the per-cell computation with CellIndex
+(replacing the old raw ElasticHashTable + per-point Python loops). The
+far-field centroid approximation costs 8.5e-2 rel-L2. The `+fmm (Taylor
+FGT)` row reaches 4.7e-7 rel-L2 (the exact spatial-only attention, computed
+via the 2D Gaussian Taylor FGT in `core/gaussian2d_fgt.py` with h =
+sigma*sqrt(2) so the FGT kernel exp(-r^2/h^2) equals the app kernel
+exp(-r^2/(2 sigma^2)) exactly) but is NOT faster than direct at N=1500 --
+the per-column FGT loop (d_model+1 evaluations) plus the per-cell Python
+loop overhead puts it at 0.1x. The asymptotic win needs larger N or a
+compiled kernel (Class D in
 [docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md)).
 
 ### App 4 -- Elastic-hash boids + 1euro (near-field boid rules)
@@ -175,8 +251,8 @@ but is also NOT faster than direct at N=1500 -- the per-column FGT loop
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (brute near-field)     12.08                     -  O(N^2) near-field reference (separation + alignment, no far cohesion)
-+elastichash (near+far+1euro)    257.31 (0.0x)              -  near-field exact vs brute (same 3x3 cell box); |far-field residual| = 0.501 (8.4% of total); +fmm axis omitted (not a 2D log kernel)
+standard (brute near-field)     13.21                     -  O(N^2) near-field reference (separation + alignment, no far cohesion)
++elastichash (near+far+1euro)     20.67 (0.6x)              -  near-field exact vs brute (same 3x3 cell box); |far-field residual| = 0.506 (8.5% of total); +fmm axis omitted (not a 2D log kernel); vectorized per-cell via CellIndex
 ```
 
 The hash boid step is near-field exact (same 3x3 cell box as brute) but NOT
@@ -188,15 +264,32 @@ cohesion residual is the intentional extra term, reported honestly.
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (direct O(N^2))    239.65                     -  exact per-atom screened Coulomb reference
-+elastichash (cluster O(K^2))     15.01 (16.0x)      5.682e-01  funnel-hash 3D Morton clusters, direct O(K^2) between centroids; lossy cluster-mean approximation
-+fmm (Yukawa3DFMM)       2915.43 (0.1x)      2.510e-08  single-level flat 3D Yukawa FMM, depth=6 p=8; closes INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)
+standard (direct O(N^2))    258.14                     -  exact per-atom screened Coulomb reference
++elastichash (TreeFreeBioFMM per-atom dipole)    147.96 (1.7x)      2.002e-03  funnel-hash 3D Morton clusters, per-atom monopole + dipole far field (Round-7 T-C2); replaces old center-broadcast
++fmm (Yukawa3DFMM)       3581.86 (0.1x)      2.510e-08  single-level flat 3D Yukawa FMM, depth=6 p=8; closes INAPPLICABILITY.md Class C (3D Yukawa now has a 3D FMM)
++bio_taylor (TaylorYukawaBioFMM)   3389.63 (0.1x)      3.265e-08  Round-7 T-C1: bio-units wrapper over Yukawa3DFMM with Å→unit box mapping; target ≤1e-6 rel-L2
 ```
 
-The funnel-hash cluster path is 16.0x faster than exact per-atom Debye-
-Huckel at N=3000 but pays a 57% rel-L2 cluster-mean cost. The
-`+fmm (Yukawa3DFMM)` row reaches 2.5e-8 rel-L2 (seven orders of magnitude
-better than the cluster-mean path) but is NOT faster than direct at N=3000
+**Round-7 task T-C2 update:** the `+elastichash` row was previously the old
+center-broadcast path (cluster-center-to-cluster-center distance, broadcast
+to every atom in the cell) which sat at **5.682e-01** rel-L2 (the admitted
+~57% cluster-mean cost). T-C2 replaced the center-broadcast with per-atom
+monopole + first-order dipole evaluation against far-cluster centers (the
+pattern proven in `neural_ops/equivariant_field_layer.py:144-167`). The
+rel-L2 dropped from **5.682e-01** to **2.002e-03** — below the 1.5e-1
+acceptance threshold by two orders of magnitude. The old value is kept
+here for traceability.
+
+**Round-7 task T-C1 update:** the `+bio_taylor` row adds the
+`TaylorYukawaBioFMM` class — a bio-units wrapper over the verified
+`core/yukawa3d_fmm.py` (Å→unit-box mapping with inset [0.1, 0.9] to avoid
+grid-boundary near-field clipping, kappa rescaling, and
+`COULOMB_CONSTANT_KCAL / (eps * s)` potential conversion). It reaches
+**3.265e-08** rel-L2 at N=3000 — below the 1e-6 acceptance target. The
+2-cell toy check (`toy_2cell_check_bio`) pins the scaling at 7.9e-13 rel-L2.
+
+The `+fmm (Yukawa3DFMM)` row reaches 2.5e-8 rel-L2 (five orders of magnitude
+better than the per-atom-dipole path) but is NOT faster than direct at N=3000
 (0.1x) -- the single-level flat 3D FMM's per-cell Python loop over the
 derivative tensors dominates at this scale (Class D in
 [docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md)); the asymptotic win
@@ -363,3 +456,31 @@ unregularized direct reference the FGT reaches 2.9e-8 rel-L2 at p=8. The
 self-term handling is correct: the dense reference zeroes self weights
 (w[i] = 0) and the FGT excludes self pairs, so no self-term restoration
 is needed (unlike app3, whose dense attention includes the self term).
+
+## Flat-scheme depth guidance (Round-7 task T-C7 / finding R7-F28)
+
+`tools/diag_flat_saturation.py` measures `Yukawa3DFMM` (3D, kappa=1, p=8,
+ring=2, clustered data) across N x cells-per-side (depth). The flat
+engines' linearity is depth-conditional: at fixed depth the far field
+O(K^2 * |alphas|) is constant in N, but the near field
+O(N * M_bar * (2*ring+1)^d) degrades as M_bar = N/K grows with N.
+
+| N | depth | K | M_bar | wall (ms) | rel-L2 vs direct |
+| --- | --- | --- | --- | --- | --- |
+| 500 | 8 | 19 | 26.3 | 597 | 2.43e-11 |
+| 500 | 16 | 52 | 9.6 | 1684 | 1.06e-08 |
+| 2000 | 8 | 76 | 26.3 | 3321 | 4.08e-08 |
+| 2000 | 16 | 224 | 8.9 | 40871 | 2.59e-08 |
+
+Caveat: the wall times here are dominated by a pre-existing hot path in
+`CellIndex.neighborhood_indices` (125 Morton decode/encode/hash-lookup ops
+per cell in Python, ~5ms/cell), not the FMM math itself. T-C6's CSR
+batching targets this. The accuracy and K/M_bar trends are the load-bearing
+output; the absolute timings will drop sharply after T-C6.
+
+Guidance:
+- **Accuracy-driven rule**: keep M_bar <= ~60 (mean cell occupancy).
+- **Cost-driven classical optimum (3D)**: K_opt ~ N^{2/3}, total O(N^{4/3}).
+- The flat engines are **O(N^{4/3})-class single-level schemes**.
+- The true O(N) member of the repo is the multilevel adaptive FMM engine / GPU demo.
+- Choose depth ~ N^{2/3} for the cost optimum; deeper favors accuracy.

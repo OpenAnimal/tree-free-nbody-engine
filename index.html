@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
     <title>Tree-Free N-Body Engine (High-Performance GPU-Accelerated Simulation)</title>
     <style>
         :root {
@@ -450,7 +451,7 @@
     <div id="sidebar">
         <div>
             <h1>Tree-Free N-Body <span id="gpuBadge" class="badge badge-gpu">GPU COMPUTE</span></h1>
-            <p class="subtitle">Tree-Free FMM &mdash; Counting-Sorted Cell Lists + CGR88 Multipoles</p>
+            <p class="subtitle">Tree-Free FMM &mdash; Counting-Sorted Cell Lists + Adaptive Multipoles</p>
         </div>
 
         <div id="hwAccelWarning">
@@ -504,28 +505,67 @@
             <input type="range" id="sliderRadius" min="0.01" max="0.08" step="0.005" value="0.035">
         </div>
 
+        <!--
+          =====================================================================
+          TWO INDEPENDENT AXES (do not conflate):
+          ---------------------------------------------------------------------
+          1) NEAR-FIELD membership backend  (#selectHashMode)
+             How each particle finds local neighbors (cell lists).
+             SHARED across galaxy / boids / vortex / sph whenever spatial
+             P2P is used. Backends: counting-sort CSR | open-addr | funnel.
+             This is NOT a multipole / gravity thing.
+
+          2) FAR-FIELD model                 (#selectFarField)
+             How (if at all) long-range many-body forces are approximated.
+             Chosen PER FORCE MODEL, not "galaxy-only by law":
+               none      — scenario analytic only (draft cores, shear, walls)
+               gravity   — FMM multipoles (log/1-r self-gravity). Requires
+                           a long-range all-pairs kernel. Demo target: galaxy.
+               centroids — order-0 cell mass/momentum (barycenter + mean vel).
+                           Correct far field for flocking (app4), NOT log-gravity
+                           multipoles. Demo target: boids.
+               biot      — reserved: particle-particle Biot-Savart multipoles
+                           for vortex (different kernel than gravity).
+
+             SPH density/pressure are compact-support => usually farField=none
+             + near-field cell lists only. Gravity multipoles on SPH would mean
+             "SPH + self-gravity", a different product.
+
+          FMM Mode / Expansion Order are SUB-CONTROLS of farField=gravity.
+          =====================================================================
+        -->
         <div class="control-group">
-            <div class="control-label">FMM Expansion Order: <span id="valOrder">p=2 (Quadrupole CGR88)</span></div>
-            <select id="selectFmmOrder">
-                <option value="0">p = 0 (Monopole O(N))</option>
-                <option value="1">p = 1 (Dipole O(N))</option>
-                <option value="2" selected>p = 2 (Quadrupole CGR88 O(N))</option>
-                <option value="4">p = 4 (Hexadecapole CGR88 O(N))</option>
+            <div class="control-label">Far-Field Model: <span id="valFarField">Gravity FMM</span></div>
+            <select id="selectFarField" title="Long-range force approximation (independent of near-field hash). none=analytic only. gravity=FMM multipoles for all-pairs self-gravity (galaxy). centroids=order-0 cell barycenters/mean-vel for flocking (boids) — not gravity multipoles. biot=reserved Biot-Savart FMM for vortex.">
+                <option value="none">None (analytic / local only)</option>
+                <option value="gravity" selected>Gravity FMM (adaptive multipoles)</option>
+                <option value="centroids">Boid cell-centroids (order-0)</option>
+                <option value="biot" disabled>Biot-Savart FMM (reserved)</option>
             </select>
         </div>
 
         <div class="control-group">
-            <div class="control-label">FMM Mode: <span id="valFmmMode">Uniform-Lattice FMM (2-Level)</span></div>
-            <select id="selectFmmMode">
+            <div class="control-label">FMM Expansion Order: <span id="valOrder">p=2 (Quadrupole)</span></div>
+            <select id="selectFmmOrder" title="Gravity far-field only: multipole truncation order p. Irrelevant for centroids/none.">
+                <option value="0">p = 0 (Monopole O(N))</option>
+                <option value="1">p = 1 (Dipole O(N))</option>
+                <option value="2" selected>p = 2 (Quadrupole, O(N))</option>
+                <option value="4">p = 4 (Hexadecapole, O(N))</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">Gravity FMM Mode: <span id="valFmmMode">Uniform-Lattice FMM (Multi-Level)</span></div>
+            <select id="selectFmmMode" title="Gravity far-field only: fixed-grid vs adaptive-quadtree multilevel vs analytic dual-core (no multipoles).">
                 <option value="off">None (Analytic Dual-Core, direct)</option>
-                <option value="fixed" selected>Uniform-Lattice FMM (2-Level)</option>
-                <option value="adaptive">Adaptive CGR88 (Multi-Level)</option>
+                <option value="fixed" selected>Uniform-Lattice FMM (Multi-Level)</option>
+                <option value="adaptive">Adaptive FMM (Multi-Level)</option>
             </select>
         </div>
 
         <div class="control-group">
             <div class="control-label">Near-Field Hash Mode: <span id="valHashMode">Counting-Sort</span></div>
-            <select id="selectHashMode" title="How the near-field kernel finds each particle's cell list. Counting-Sort (default): dense CSR cell lists, no probing. Open-Addressing: linear-probe hash over occupied cells. Funnel (FCK = Farach-Colton/Krapivin/Kuszmaul, 2025): funnel-hashing schedule — alpha slabs of beta-slot sub-arrays plus two-choice overflow buckets, probe-bounded lookups.">
+            <select id="selectHashMode" title="NEAR-FIELD only (shared): how the kernel finds each particle's cell list for local P2P (galaxy near gravity, boids sep/align, vortex viscosity, SPH kernels). Independent of far-field multipoles. Counting-Sort=dense CSR. Open-Addressing=linear probe. Funnel=FCK 2025 schedule.">
                 <option value="none" selected>None (Counting-Sort Cell Lists)</option>
                 <option value="openaddr">Open-Addressing (Linear Probe)</option>
                 <option value="funnel">Funnel Hash (FCK Schedule)</option>
@@ -533,17 +573,13 @@
         </div>
 
         <div class="control-group">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" id="chkSortedPayload" checked>
-                <span>Sorted payload (coalesced P2P)</span>
-            </label>
-        </div>
-
-        <div class="control-group">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" id="chkAdaptiveNodeHash" checked>
-                <span>Adaptive node hash (funnel)</span>
-            </label>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.72rem;color:var(--text-dim);margin-bottom:3px;">
+                <span>Implementation details</span>
+                <button id="btnCopyImpl" type="button" title="Copy implementation details to clipboard" style="font-size:0.65rem;padding:2px 8px;border-radius:4px;background-color:var(--bg-main);color:var(--text-dim);border:1px solid var(--bg-border);cursor:pointer;">Copy</button>
+            </div>
+            <div id="implDetailsLabel" style="color:var(--text-dim);font-size:0.72rem;font-family:monospace;line-height:1.35;white-space:pre-wrap;word-break:break-word;background:var(--bg-main);border:1px solid var(--bg-border);border-radius:6px;padding:6px 8px;user-select:text;cursor:text;max-height:140px;overflow-y:auto;">
+                loading pipeline state...
+            </div>
         </div>
 
         <div class="section-title">Controls & Filtering</div>
@@ -552,13 +588,14 @@
             <button id="btnColorMode">Color: Velocity Heatmap</button>
             <button id="btnMouseMode">Mouse: Attract</button>
             <button id="btnReset">Reset Particles</button>
+            <button id="btnFrameCap">Frame Cap: VSync</button>
         </div>
 
         <div class="section-title">Hardware Telemetry</div>
         <div class="metrics-card">
             <div class="metric-row"><span>Compute Backend:</span> <span id="engineBadge" class="metric-val" style="color:var(--accent-cyan)"><span id="gpu-status-indicator"></span>Detecting...</span></div>
             <div class="metric-row"><span>GPU Hardware:</span> <span id="gpuName" class="metric-val" style="color:var(--accent-green)">Probing GPU...</span></div>
-            <div class="metric-row"><span>Realtime FPS:</span> <span id="valFPS" class="metric-val">60</span></div>
+            <div class="metric-row"><span id="lblFPS" title="Rendered frames per second, locked to your display refresh rate. Switch Frame Cap to Uncapped for the steps/sec benchmark signal.">Rendered FPS (vsync):</span> <span id="valFPS" class="metric-val">60</span></div>
             <div class="metric-row"><span>Active Particles:</span> <span id="valActiveParticles" class="metric-val">120,000</span></div>
             <div class="metric-row"><span>Step Latency:</span> <span id="valComputeTime" class="metric-val">0.3 ms</span></div>
             <div class="metric-row"><span>Throughput:</span> <span id="valThroughput" class="metric-val">12.0M parts/sec</span></div>
@@ -606,20 +643,21 @@
             =================================================================
             CORE-ALGORITHM MAPPING (GPU path -> Python core module)
             =================================================================
-            uniform-lattice FMM + counting sort  ->  GPU analogue of
-                core/spatial_index.py CellIndex (uniform grid cell lists)
-                + core/cgr88_adaptive_fmm.py CGR88 multipoles
-                + core/gaussian2d_fgt.py (fast Gauss transform primitives)
-            adaptive CGR88 FMM                  ->  GPU port of
-                core/webgpu_kernels/adaptive_cgr88.wgsl
-                + core/cgr88_adaptive_fmm.py (multi-level tree build)
-            funnel hash                         ->  port of
-                core/elastic_hash.py (FCK funnel schedule:
-                alpha slabs of beta-slot sub-arrays + overflow)
-            open-addressing hash                ->  standard open addressing
-                (hashU32 + linear probe; NOT the funnel schedule)
-            quantized (f16 pack)                ->  f16 pack of
-                core quantization variants (lossy state round-trip)
+            NEAR-FIELD (shared; #selectHashMode):
+            counting-sort cell lists            ->  core/spatial_index.py CellIndex
+            funnel hash                         ->  core/elastic_hash.py (FCK)
+            open-addressing hash                ->  hashU32 + linear probe
+            sorted payload                      ->  coalesced CSR payload gather
+
+            FAR-FIELD (per force model; #selectFarField):
+            gravity adaptive FMM multipoles    ->  core/adaptive_fmm.py
+                                                    + adaptive_fmm.wgsl (galaxy)
+            boid cell-centroids (order-0)       ->  apps/app4_fmm_boids_1euro.py
+                                                    far-field barycenters (NOT multipoles)
+            biot-savart multipoles              ->  reserved (vortex P2P induction)
+            none                                ->  analytic scenario forces only
+
+            quantized (f16 pack)                ->  f16 pack of core quant variants
             =================================================================
         -->
         <div id="bench-panel" class="collapsed">
@@ -645,7 +683,7 @@
                         <thead><tr><th>Domain / app</th><th>Variant</th><th class="num">Time (ms)</th><th class="num">rel L2 / recall</th><th>Note</th></tr></thead>
                         <tbody>
                             <tr><td>Core FMM (2D log)</td><td>standard (exact direct)</td><td class="num">57.14</td><td class="num">&ndash;</td><td>O(N^2) reference</td></tr>
-                            <tr><td>Core FMM (2D log)</td><td>+fmm (CGR88 adaptive)</td><td class="num">1057.39</td><td class="num">1.974e-7</td><td>NOT faster than direct at N=2000</td></tr>
+                            <tr><td>Core FMM (2D log)</td><td>+fmm (adaptive FMM)</td><td class="num">1057.39</td><td class="num">1.974e-7</td><td>NOT faster than direct at N=2000</td></tr>
                             <tr><td>Core FMM (2D log)</td><td>+fmm (flat vectorized)</td><td class="num">710.61</td><td class="num">7.522e-7</td><td>NOT faster than direct at N=2000</td></tr>
                             <tr><td>Core FMM (2D log)</td><td>+quantized (32-bit packed)</td><td class="num">68.51</td><td class="num">3.891e-1</td><td>lossy packed cost</td></tr>
                             <tr><td>Physics broadphase</td><td>standard (brute O(N^2))</td><td class="num">841.49</td><td class="num">&ndash;</td><td>exact AABB overlap pair set</td></tr>
@@ -693,7 +731,7 @@
         let use1Euro = true;
         let simSpeed = 1.0;
         let p2pRadius = 0.035;
-        let fmmOrder = 2; // 0: Monopole, 1: Dipole, 2: Quadrupole CGR88, 4: Hexadecapole
+        let fmmOrder = 2; // 0: Monopole, 1: Dipole, 2: Quadrupole adaptive FMM, 4: Hexadecapole
         let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
         let mouseX = -1, mouseY = -1, isMouseDown = false;
 
@@ -874,6 +912,14 @@
             state: f32,
         };
 
+        // farFieldModel (independent of near-field hash):
+        //   0 = none       — analytic / local forces only
+        //   1 = gravity    — adaptive FMM multipoles in fmmField (all-pairs self-gravity)
+        //   2 = centroids  — order-0 cell barycenter + mean vel in fmmField.xyzw
+        //   3 = biot       — reserved (Biot-Savart multipoles; not implemented)
+        // Gravity multipoles are NOT "scenario=galaxy magic"; they require a
+        // long-range kernel. Boids want centroids, not log-gravity. SPH is
+        // compact-support => usually none. See HTML comment on #selectFarField.
         struct SimParams {
             dt: f32,
             simTime: f32,
@@ -891,15 +937,16 @@
             g1y: f32,
             g2x: f32,
             g2y: f32,
-            fmmEnabled: u32,
+            fmmEnabled: u32,       // 1 => gravity multipole path wrote fmmField
             adaptiveMode: u32,
             leafBits: u32,
             p2pListCap: u32,
             useElasticHash: u32, // T3: 1 => P2P cell lookups probe the open-addr hash
             useQuantized: u32,   // T4: reserved (pack/unpack run as separate passes)
             useFunnelHash: u32,  // T6.4: 1 => P2P cell lookups probe the funnel hash
-            cellListsReady: u32, // 1 => counting-sort cell lists are valid this frame (boids spatial neighbors)
+            cellListsReady: u32, // 1 => near-field cell lists valid this frame (any hash backend)
             useSortedPayload: u32, // 1 => sortedParticles is valid; main compute iterates over sorted slots
+            farFieldModel: u32,  // 0 none | 1 gravity | 2 centroids | 3 biot(reserved)
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -963,17 +1010,17 @@
             }
             return slot;
         }
-        fn cellStartOf(cell: u32) -> u32 {
-            if (params.useFunnelHash == 1u) { return ehStart[funnelProbe(cell)]; }
-            if (params.useElasticHash == 1u) { return ehStart[ehProbe(cell)]; }
-            return cellStart[cell];
+        // Dense direct lookup. The FMM pipeline's materialize_ranges pass
+        // resolves the elastic/funnel table into cellStart/cellCount ONCE
+        // per frame (one probe per leaf cell) after the hash build, so
+        // these per-particle P2P loops — which visit 9 neighbor cells each
+        // — read two direct u32 loads instead of paying the divergent
+        // probe chain per neighbor. The counting-sort backend writes the
+        // same arrays via its own scan pass, so all backends land here.
+        fn cellRangeOf(cell: u32) -> vec2<u32> {
+            return vec2<u32>(cellStart[cell], cellCount[cell]);
         }
-        fn cellCountOf(cell: u32) -> u32 {
-            if (params.useFunnelHash == 1u) { return ehCount[funnelProbe(cell)]; }
-            if (params.useElasticHash == 1u) { return ehCount[ehProbe(cell)]; }
-            return cellCount[cell];
-        }
-        // T6.4 funnel-hash probe (Farach-Colton/Krapivin/Kuszmaul Section 3):
+        // T6.4 funnel-hash probe (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3):
         // descend alpha slabs in order, scanning one beta-slot sub-array per
         // slab exhaustively; then overflow B (uniform probing, bAttempts) and
         // C (two-choice buckets, cBucketSlots). Bounded by funnelProbeBound()
@@ -1165,8 +1212,9 @@
                     let nx = i32(cx) + ox; let ny = i32(cy) + oy;
                     if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
                         let neighborCell = u32(ny) * side + u32(nx);
-                        let start = cellStartOf(neighborCell);
-                        let count = cellCountOf(neighborCell);
+                        let cellRange = cellRangeOf(neighborCell);
+                        let start = cellRange.x;
+                        let count = cellRange.y;
                         let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
                         let strideF = f32(stride);
                         var s: u32 = gid % stride;
@@ -1200,19 +1248,39 @@
                 }
 
             } else if (params.scenario == 1u) {
-                // Boids Swarm: Global Far-Field Murmuration Vortex Draft
-                let draftX = (0.5 - py) * 0.04;
-                let draftY = (px - 0.5) * 0.04;
-                fx += draftX;
-                fy += draftY;
-
-                // Sub-swarm center pull
-                var subCx = 0.35; var subCy = 0.45;
-                if (grp > 1.5) { subCx = 0.50; subCy = 0.30; }
-                else if (grp > 0.5) { subCx = 0.65; subCy = 0.55; }
-                fx += (subCx - px) * 0.035;
-                fy += (subCy - py) * 0.035;
-                farMultipoleIntensity += 0.5;
+                // Boids: local flocking is in the P2P block below. Far field is
+                // model-selected (NOT gravity multipoles):
+                //   centroids (2) — cell order-0 barycenters + mean velocity
+                //                   (matches apps/app4_fmm_boids_1euro.py)
+                //   none (0)      — cheap analytic draft + sub-swarm attractors
+                // Gravity FMM (1) is intentionally ignored here: log-potential
+                // multipoles are the wrong kernel for Reynolds flocking.
+                if (params.farFieldModel == 2u && params.cellListsReady == 1u) {
+                    // fmmField[pid] = (bary_x, bary_y, mean_vx, mean_vy) written
+                    // by boid_centroid_eval over non-adjacent leaf cells.
+                    let far = fmmField[origId];
+                    // Cohesion toward distant cell barycenters (unit-ish scale).
+                    let toB = far.xy - vec2(px, py);
+                    let dB = length(toB) + 1e-3;
+                    fx += (toB.x / dB) * 0.028;
+                    fy += (toB.y / dB) * 0.028;
+                    // Soft alignment to distant mean velocity.
+                    fx += (far.z - vx) * 0.012;
+                    fy += (far.w - vy) * 0.012;
+                    farMultipoleIntensity = clamp(length(toB) * 2.0, 0.0, 1.0);
+                } else {
+                    // Analytic draft + fixed sub-swarm centers (legacy path).
+                    let draftX = (0.5 - py) * 0.04;
+                    let draftY = (px - 0.5) * 0.04;
+                    fx += draftX;
+                    fy += draftY;
+                    var subCx = 0.35; var subCy = 0.45;
+                    if (grp > 1.5) { subCx = 0.50; subCy = 0.30; }
+                    else if (grp > 0.5) { subCx = 0.65; subCy = 0.55; }
+                    fx += (subCx - px) * 0.035;
+                    fy += (subCy - py) * 0.035;
+                    farMultipoleIntensity += 0.5;
+                }
 
             } else if (params.scenario == 2u) {
                 // Hydrodynamic Volumetric Vortex Field (Kelvin-Helmholtz Biot-Savart Roll-Up)
@@ -1292,8 +1360,8 @@
 
             // 2. MULTI-LEVEL P2P NEIGHBOR INTERACTIONS (Boids / SPH / Vortex only)
             if (params.scenario == 1u) {
-                // Boids: TRUE spatial neighbors via the counting-sorted cell
-                // lists (built for scenario 1 in runWebGPUFrame). Traverse the
+                // Boids: TRUE spatial neighbors via the shared near-field cell
+                // lists (counting-sort / open-addr / funnel). Traverse the
                 // 3x3 leaf neighborhood with a per-list sample cap so work
                 // stays bounded. Falls back to the old random global sampling
                 // when the cell-list build passes are unavailable on this
@@ -1312,8 +1380,9 @@
                         let nx = i32(cx) + ox; let ny = i32(cy) + oy;
                         if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
                             let neighborCell = u32(ny) * side + u32(nx);
-                            let start = cellStartOf(neighborCell);
-                            let count = cellCountOf(neighborCell);
+                            let cellRange = cellRangeOf(neighborCell);
+                            let start = cellRange.x;
+                            let count = cellRange.y;
                             let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
                             var s: u32 = gid % stride;
                             loop {
@@ -1384,58 +1453,123 @@
                     }
                 }
             } else if (params.scenario == 2u || params.scenario == 3u) {
-                // Vortex / SPH: random-sample neighbor loop. Interaction radii
-                // scale with p2pRadius so the slider visibly changes behavior.
-                // Reads posVelIn[other_idx] for arbitrary other_idx (not
-                // cell-local), so it stays on posVelIn per the design; the
-                // self-skip and sample-start phase use origId so behavior is
-                // stable across the sort re-ordering.
-                let sample_start = (origId * 37u) % n;
-                let sample_count = select(16u, 32u, n < 250000u);
-                for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
-                    let other_idx = (sample_start + s) % n;
-                    if (other_idx != origId) {
-                        let other = posVelIn[other_idx];
-                        let diffX = px - other.pos.x;
-                        let diffY = py - other.pos.y;
-                        let r2 = diffX * diffX + diffY * diffY + 1e-4;
+                // Vortex / SPH: true spatial neighbors via the shared near-field
+                // cell lists (counting-sort / open-addr / funnel) when
+                // cellListsReady == 1. Same interaction radii as the legacy
+                // random-sample path. Falls back to global sampling when the
+                // cell-list build is unavailable on this device.
+                let vScale = params.p2pRadius / 0.035;
+                let vSupp = 0.055 * vScale;
+                let vSupp2 = vSupp * vSupp;
+                let vCore2 = 0.0008 * vScale * vScale;
+                let h = clamp(params.p2pRadius * 1.7, 0.03, 0.09);
+                let h2 = h * h;
 
-                        if (params.scenario == 2u) {
-                            // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing.
-                            // Cutoffs scale proportionally to p2pRadius/0.035.
-                            let vScale = params.p2pRadius / 0.035;
-                            let vSupp = 0.055 * vScale;
-                            let vSupp2 = vSupp * vSupp;
-                            let vCore2 = 0.0008 * vScale * vScale;
-                            if (r2 < vSupp2) {
-                                let r = sqrt(r2);
-                                let q = max(0.0, 1.0 - r / vSupp);
-                                fx += (other.vel.x - vx) * q * 0.040;
-                                fy += (other.vel.y - vy) * q * 0.040;
-                                // Dispersion pressure preventing 1D thin curve clumping
-                                if (r2 < vCore2) {
-                                    let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * 0.018;
-                                    fy += diffY * inv_r * 0.018;
+                if (params.cellListsReady == 1u) {
+                    let side = 1u << params.leafBits;
+                    let leaf = leafIndex(vec2(px, py));
+                    let cx = leaf % side; let cy = leaf / side;
+                    let P2P_LIST_CAP = max(16u, params.p2pListCap);
+                    for (var oy: i32 = -1; oy <= 1; oy++) { for (var ox: i32 = -1; ox <= 1; ox++) {
+                        let nx = i32(cx) + ox; let ny = i32(cy) + oy;
+                        if (nx >= 0 && nx < i32(side) && ny >= 0 && ny < i32(side)) {
+                            let neighborCell = u32(ny) * side + u32(nx);
+                            let cellRange = cellRangeOf(neighborCell);
+                            let start = cellRange.x;
+                            let count = cellRange.y;
+                            let stride = max(1u, (count + P2P_LIST_CAP - 1u) / P2P_LIST_CAP);
+                            var s: u32 = gid % stride;
+                            loop {
+                                if (s >= count) { break; }
+                                let candidate = fmmSortedIndex[start + s];
+                                if (candidate != origId) {
+                                    var qpos: vec2<f32>; var qvel: vec2<f32>;
+                                    if (params.useSortedPayload == 1u) {
+                                        qpos = sortedParticles[start + s].pos;
+                                        qvel = sortedParticles[start + s].vel;
+                                    } else {
+                                        qpos = posVelIn[candidate].pos;
+                                        qvel = posVelIn[candidate].vel;
+                                    }
+                                    let diffX = px - qpos.x;
+                                    let diffY = py - qpos.y;
+                                    let r2 = diffX * diffX + diffY * diffY + 1e-4;
+
+                                    if (params.scenario == 2u) {
+                                        // Vortex Blob Viscous Diffusion & Cross-Stream Momentum Mixing.
+                                        if (r2 < vSupp2) {
+                                            let r = sqrt(r2);
+                                            let q = max(0.0, 1.0 - r / vSupp);
+                                            fx += (qvel.x - vx) * q * 0.040;
+                                            fy += (qvel.y - vy) * q * 0.040;
+                                            if (r2 < vCore2) {
+                                                let inv_r = inverseSqrt(r2);
+                                                fx += diffX * inv_r * 0.018;
+                                                fy += diffY * inv_r * 0.018;
+                                            }
+                                            nearP2PIntensity += q * 0.4;
+                                        }
+                                    } else {
+                                        // SPH Fluid Incompressibility & Active Lateral Pressure Expansion.
+                                        if (r2 < h2) {
+                                            let r = sqrt(r2);
+                                            if (r < h) {
+                                                let q = 1.0 - r / h;
+                                                let rep = q * q * 2.8;
+                                                let inv_r = 1.0 / max(r, 1e-4);
+                                                fx += diffX * inv_r * rep;
+                                                fy += diffY * inv_r * rep;
+                                                fx += (qvel.x - vx) * q * 0.020;
+                                                fy += (qvel.y - vy) * q * 0.020;
+                                                nearP2PIntensity += q * 0.6;
+                                            }
+                                        }
+                                    }
                                 }
-                                nearP2PIntensity += q * 0.4;
+                                s = s + stride;
                             }
-                        } else if (params.scenario == 3u) {
-                            // SPH Fluid Incompressibility & Active Lateral Pressure Expansion.
-                            // Kernel support h scales with p2pRadius (clamped).
-                            let h = clamp(params.p2pRadius * 1.7, 0.03, 0.09);
-                            let h2 = h * h;
-                            if (r2 < h2) {
-                                let r = sqrt(r2);
-                                if (r < h) {
-                                    let q = 1.0 - r / h;
-                                    let rep = q * q * 2.8;
-                                    let inv_r = 1.0 / max(r, 1e-4);
-                                    fx += diffX * inv_r * rep;
-                                    fy += diffY * inv_r * rep;
-                                    fx += (other.vel.x - vx) * q * 0.020;
-                                    fy += (other.vel.y - vy) * q * 0.020;
-                                    nearP2PIntensity += q * 0.6;
+                        }
+                    } }
+                } else {
+                    // Fallback: random global sampling (cell-list passes
+                    // unavailable). Self-skip / sample phase use origId so
+                    // behavior is stable across sort re-ordering.
+                    let sample_start = (origId * 37u) % n;
+                    let sample_count = select(16u, 32u, n < 250000u);
+                    for (var s: u32 = 0u; s < sample_count; s = s + 1u) {
+                        let other_idx = (sample_start + s) % n;
+                        if (other_idx != origId) {
+                            let other = posVelIn[other_idx];
+                            let diffX = px - other.pos.x;
+                            let diffY = py - other.pos.y;
+                            let r2 = diffX * diffX + diffY * diffY + 1e-4;
+
+                            if (params.scenario == 2u) {
+                                if (r2 < vSupp2) {
+                                    let r = sqrt(r2);
+                                    let q = max(0.0, 1.0 - r / vSupp);
+                                    fx += (other.vel.x - vx) * q * 0.040;
+                                    fy += (other.vel.y - vy) * q * 0.040;
+                                    if (r2 < vCore2) {
+                                        let inv_r = inverseSqrt(r2);
+                                        fx += diffX * inv_r * 0.018;
+                                        fy += diffY * inv_r * 0.018;
+                                    }
+                                    nearP2PIntensity += q * 0.4;
+                                }
+                            } else if (params.scenario == 3u) {
+                                if (r2 < h2) {
+                                    let r = sqrt(r2);
+                                    if (r < h) {
+                                        let q = 1.0 - r / h;
+                                        let rep = q * q * 2.8;
+                                        let inv_r = 1.0 / max(r, 1e-4);
+                                        fx += diffX * inv_r * rep;
+                                        fy += diffY * inv_r * rep;
+                                        fx += (other.vel.x - vx) * q * 0.020;
+                                        fy += (other.vel.y - vy) * q * 0.020;
+                                        nearP2PIntensity += q * 0.6;
+                                    }
                                 }
                             }
                         }
@@ -1497,8 +1631,9 @@
         }
         `;
 
-        // Galaxy-only fixed-depth cell-list FMM (multi-level CGR88 over a
-        // uniform lattice). The WebGL path remains the non-FMM fallback for
+        // Galaxy-only fixed-depth cell-list FMM (multi-level over a UNIFORM
+        // lattice: P2M at leaves, M2M upward, per-level M2L rings, L2P —
+        // the UI's "Uniform-Lattice FMM (Multi-Level)"). The WebGL path remains the non-FMM fallback for
         // all scenarios.
         //
         // Cell lists are COUNTING-SORTED every frame in three passes:
@@ -1612,15 +1747,12 @@
         // are direct-indexed; otherwise the same data is recovered via the
         // open-addr or funnel hash probe. The flag is uniform per dispatch,
         // so every thread takes the same branch (no divergence).
-        fn cellStartOf(cell: u32) -> u32 {
-            if (fmmParams.useFunnelHash == 1u) { return ehStart[funnelProbe(cell)]; }
-            if (fmmParams.useElasticHash == 1u) { return ehStart[ehProbe(cell)]; }
-            return cellStart[cell];
-        }
-        fn cellCountOf(cell: u32) -> u32 {
-            if (fmmParams.useFunnelHash == 1u) { return atomicLoad(&ehCount[funnelProbe(cell)]); }
-            if (fmmParams.useElasticHash == 1u) { return atomicLoad(&ehCount[ehProbe(cell)]); }
-            return atomicLoad(&cellCount[cell]);
+        // Dense direct lookup — materialize_ranges (hash backends) or
+        // scan_cells (counting sort) keep cellStart/cellCount valid every
+        // frame, so no probe chain in any consumer (see the compute
+        // shader's cellRangeOf note).
+        fn cellRangeOf(cell: u32) -> vec2<u32> {
+            return vec2<u32>(cellStart[cell], atomicLoad(&cellCount[cell]));
         }
         // T6.4 funnel-hash geometry accessors (mirror the compute shader).
         fn fgAlpha() -> u32 { return funnelGeom[0u]; }
@@ -1866,7 +1998,7 @@
             sortedIndex[off] = id.x;
         }
         // ---- T6.4 funnel-hash build passes (replace eh_* when
-        // useFunnelHash == 1). Realizes the Farach-Colton/Krapivin/Kuszmaul
+        // useFunnelHash == 1). Realizes the Farach-Colton, Krapivin, & Kuszmaul (2025)
         // funnel schedule (paper Section 3): alpha slabs of beta-slot
         // sub-arrays + a two-part overflow region (B uniform probing, C
         // two-choice buckets). Produces the SAME sortedIndex contiguous
@@ -2016,6 +2148,132 @@
             let off = atomicAdd(&ehCursor[slot], 1u);
             sortedIndex[off] = id.x;
         }
+
+        // Materialize the hash-resolved (start, count) of every leaf cell
+        // into the DENSE cellStart/cellCount arrays — ONE table probe per
+        // leaf cell per frame (~16k at leafBits 7) instead of one probe per
+        // neighbor-cell visit in every consumer (~9 per particle per frame).
+        // After this pass all consumers direct-index the dense arrays, so
+        // the elastic/funnel near-field loops cost the same loads as the
+        // counting sort; the hash table remains the authoritative structure
+        // built each frame. Only dispatched when a hash backend ran (the
+        // counting sort's scan_cells writes the same arrays itself).
+        @compute @workgroup_size(256)
+        fn materialize_ranges(@builtin(global_invocation_id) id: vec3<u32>) {
+            let leafCells = 1u << (2u * fmmParams.leafBits);
+            if (id.x >= leafCells) { return; }
+            let cell = id.x;
+            if (fmmParams.useFunnelHash == 1u) {
+                let s = funnelProbe(cell);
+                cellStart[cell] = ehStart[s];
+                atomicStore(&cellCount[cell], atomicLoad(&ehCount[s]));
+            } else if (fmmParams.useElasticHash == 1u) {
+                let s = ehProbe(cell);
+                cellStart[cell] = ehStart[s];
+                atomicStore(&cellCount[cell], atomicLoad(&ehCount[s]));
+            }
+        }
+
+        // =====================================================================
+        // BOID CELL-CENTROID FAR FIELD (farFieldModel = centroids)
+        // ---------------------------------------------------------------------
+        // NOT gravity multipoles. Flocking far-field is order-0 statistics of
+        // distant cells: barycenter + mean velocity (see
+        // apps/app4_fmm_boids_1euro.py). Log-potential adaptive FMM (build_moments /
+        // m2m / m2l / l2p) is the wrong kernel for Reynolds rules.
+        //
+        // Layout in fmmMoments leaf rows (3 vec4 / cell, only slots 0-1 used):
+        //   moments[c*3+0] = (count, sum_x, sum_y, 0)
+        //   moments[c*3+1] = (sum_vx, sum_vy, 0, 0)
+        // boid_centroid_eval then writes per-particle:
+        //   fmmField[p] = (mean_bary_x, mean_bary_y, mean_vel_x, mean_vel_y)
+        // over leaf cells outside the 3x3 near neighborhood (Chebyshev > 1).
+        // =====================================================================
+        @compute @workgroup_size(64)
+        fn build_boid_centroids(@builtin(global_invocation_id) id: vec3<u32>) {
+            let leafCells = 1u << (2u * fmmParams.leafBits);
+            if (id.x >= leafCells) { return; }
+            let cell = id.x;
+            let cellRange0 = cellRangeOf(cell);
+            let start = cellRange0.x;
+            let cnt = cellRange0.y;
+            var sumP = vec2<f32>(0.0);
+            var sumV = vec2<f32>(0.0);
+            var nF = 0.0;
+            for (var s: u32 = 0u; s < cnt; s = s + 1u) {
+                var ppos: vec2<f32>; var pvel: vec2<f32>;
+                if (fmmParams.useSortedPayload == 1u) {
+                    ppos = sortedFmmParticles[start + s].pos;
+                    pvel = sortedFmmParticles[start + s].vel;
+                } else {
+                    let p = sortedIndex[start + s];
+                    ppos = fmmPos[p].pos;
+                    pvel = fmmPos[p].vel;
+                }
+                sumP += ppos;
+                sumV += pvel;
+                nF += 1.0;
+            }
+            fmmMoments[cell * 3u] = vec4<f32>(nF, sumP.x, sumP.y, 0.0);
+            fmmMoments[cell * 3u + 1u] = vec4<f32>(sumV.x, sumV.y, 0.0, 0.0);
+            fmmMoments[cell * 3u + 2u] = vec4<f32>(0.0);
+        }
+        @compute @workgroup_size(256)
+        fn boid_centroid_eval(@builtin(global_invocation_id) id: vec3<u32>) {
+            if (id.x >= fmmParams.numParticles) { return; }
+            let pid = id.x;
+            // Self position (payload may be sorted; field always indexed by orig id).
+            var ppos: vec2<f32>;
+            if (fmmParams.useSortedPayload == 1u) {
+                // sortedFmmParticles is ordered by cell slot; recover orig pos
+                // from fmmPos[pid] which stays in particle-id order.
+                ppos = fmmPos[pid].pos;
+            } else {
+                ppos = fmmPos[pid].pos;
+            }
+            let side = leafSide();
+            let myLeaf = leafIndex(ppos);
+            let mx = i32(myLeaf % side);
+            let my = i32(myLeaf / side);
+            var baryAcc = vec2<f32>(0.0);
+            var velAcc = vec2<f32>(0.0);
+            var wSum = 0.0;
+            // Stride-sample distant cells so work stays O(N) even at fine grids.
+            // Cap ~64 far cells visited; phase by pid so particles diversify.
+            let leafCells = side * side;
+            let stride = max(1u, leafCells / 64u);
+            var c: u32 = pid % stride;
+            loop {
+                if (c >= leafCells) { break; }
+                let cx = i32(c % side);
+                let cy = i32(c / side);
+                let dx = abs(cx - mx);
+                let dy = abs(cy - my);
+                // Skip own 3x3 near neighborhood (handled by P2P).
+                if (dx > 1 || dy > 1) {
+                    let m0 = fmmMoments[c * 3u];
+                    let nF = m0.x;
+                    if (nF > 0.5) {
+                        let bary = vec2<f32>(m0.y, m0.z) / nF;
+                        let m1 = fmmMoments[c * 3u + 1u];
+                        let mvel = vec2<f32>(m1.x, m1.y) / nF;
+                        // Soft weight: closer far cells matter more (1/r).
+                        let d = length(bary - ppos) + 0.02;
+                        let w = nF / d;
+                        baryAcc += bary * w;
+                        velAcc += mvel * w;
+                        wSum += w;
+                    }
+                }
+                c = c + stride;
+            }
+            if (wSum > 1e-6) {
+                fmmField[pid] = vec4<f32>(baryAcc.x / wSum, baryAcc.y / wSum, velAcc.x / wSum, velAcc.y / wSum);
+            } else {
+                fmmField[pid] = vec4<f32>(ppos.x, ppos.y, 0.0, 0.0);
+            }
+        }
+
         fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
             let den = max(dot(b, b), 1e-20);
             return vec2<f32>((a.x*b.x+a.y*b.y)/den, (a.y*b.x-a.x*b.y)/den);
@@ -2056,8 +2314,9 @@
             let side = leafSide();
             let cx = cell % side; let cy = cell / side;
             let center = vec2<f32>((f32(cx) + 0.5) / f32(side), (f32(cy) + 0.5) / f32(side));
-            let start = cellStartOf(cell);
-            let cnt = cellCountOf(cell);
+            let cellRange0 = cellRangeOf(cell);
+            let start = cellRange0.x;
+            let cnt = cellRange0.y;
             var a0 = 0.0; var a1 = vec2<f32>(0.0); var a2 = vec2<f32>(0.0); var a3 = vec2<f32>(0.0); var a4 = vec2<f32>(0.0);
             for (var s: u32 = 0u; s < cnt; s = s + 1u) {
                 let p = sortedIndex[start + s];
@@ -2089,8 +2348,8 @@
             //   B_0 = A_0
             //   B_k = -A_0 * delta^k / k + sum_{j=1..k} A_j * C(k-1,j-1) * delta^(k-j)
             // (the j=0 term carries the -delta^k/k factor; the j>=1 binomial
-            // path below is the standard CGR88 translation, cross-checked
-            // against core/cgr88_adaptive_fmm.py m2m).
+            // path below is the standard adaptive FMM translation, cross-checked
+            // against core/adaptive_fmm.py m2m).
             let res = fmmParams.levelRes;
             let cells = res * res;
             if (id.x >= cells) { return; }
@@ -2369,7 +2628,7 @@
         `;
 
         const wgslAdaptiveFmmSource = `
-// Flat adaptive CGR88 WebGPU kernel — full pipeline with M2M, L2L, M2L, P2L.
+// Flat adaptive FMM WebGPU kernel (adaptive FMM formulation) — full pipeline with M2M, L2L, M2L, P2L.
 struct Particle { pos: vec2<f32>, vel: vec2<f32> };
 // levelBase is the flat node offset of the level being dispatched. Nodes are
 // laid out with levelStart[l] = sum_{i<l} 4^i, so a dispatch of levelCount[l]
@@ -2379,11 +2638,17 @@ struct FmmParams {
     numParticles: u32,
     nodeCount: u32,
     expansionOrder: u32,
-    levelCount: u32,
+    levelCount: u32,   // total level count (used by resolveLeafNode via block 0)
     levelBase: u32,
     zeroNearP2P: u32,  // probe flag: 1 = skip List-1 P2P (measure multipole path only)
-    _pad1: u32,
+    dispatchCount: u32, // active threads for THIS per-level dispatch (m2m/l2l/m2l):
+                       // id.x >= dispatchCount must return. Without this guard a
+                       // ceil(count/64) dispatch spills surplus threads into the
+                       // NEXT level's nodes; l2l/m2l accumulate read-modify-write,
+                       // so spilled nodes get their locals doubled — measured 2.00x
+                       // on a level-2 node by tests/core/test_adaptive_wgsl_numeric.py.
     useAdaptiveNodeHash: u32, // 1 => l2p resolves the target leaf via a funnel probe of nodeHashKeys
+    p2pBudgetOverride: u32, // 0 = auto tier (24/12/6 by N); >0 = ?p2pbudget= override
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -2536,18 +2801,29 @@ fn adaptiveNodeProbe(key: u32) -> u32 {
     return INVALID;
 }
 // Resolve the target leaf node for a particle position via the funnel
-// directory. Derives the leaf cell from pos at the deepest level
-// (levelCount - 1), packs the node key (level<<20 | iy<<10 | ix) -- matching
-// the JS buildAdaptiveMetadata encoding -- and probes the directory. Returns
-// the node index or INVALID if the probe misses (should not happen for a
-// particle inside [0,1)^2; falls back to leafForParticle at the call site).
+// directory. Derives the deepest-level cell from pos, packs the node key
+// (level<<20 | iy<<10 | ix) -- matching the JS buildAdaptiveMetadata encoding
+// -- and probes the directory. With the occupancy-adaptive quadtree the
+// containing leaf may live at ANY level, so on a miss the cell is halved and
+// the parent level re-probed. The deepest existing node on the chain is the
+// containing leaf (if it were internal, its containing child would exist).
+// Returns the node index or INVALID if even the root probe misses (should
+// not happen for a particle inside [0,1)^2; falls back to leafForParticle
+// at the call site).
 fn resolveLeafNode(pos: vec2<f32>) -> u32 {
-    let leafLevel = params.levelCount - 1u;
-    let side = 1u << leafLevel;
-    let ix = min(u32(clamp(pos.x, 0.0, 0.999999) * f32(side)), side - 1u);
-    let iy = min(u32(clamp(pos.y, 0.0, 0.999999) * f32(side)), side - 1u);
-    let key = (leafLevel << 20u) | (iy << 10u) | ix;
-    return adaptiveNodeProbe(key);
+    var lvl = params.levelCount - 1u;
+    var ix = min(u32(clamp(pos.x, 0.0, 0.999999) * f32(1u << lvl)), (1u << lvl) - 1u);
+    var iy = min(u32(clamp(pos.y, 0.0, 0.999999) * f32(1u << lvl)), (1u << lvl) - 1u);
+    loop {
+        let key = (lvl << 20u) | (iy << 10u) | ix;
+        let n = adaptiveNodeProbe(key);
+        if (n != INVALID) { return n; }
+        if (lvl == 0u) { break; }
+        lvl = lvl - 1u;
+        ix = ix >> 1u;
+        iy = iy >> 1u;
+    }
+    return INVALID;
 }
 
 @compute @workgroup_size(256)
@@ -2565,14 +2841,27 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
     let range = nodeParticleRange[node];
     let center = nodeCenterSize[node].xy;
     var coeff = array<vec2<f32>, 5>(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0));
-    for (var n = 0u; n < range.y; n = n + 1u) {
-        let particle = particleIndices[range.x + n];
-        let dz = particles[particle].pos - center;
-        var power = vec2<f32>(1.0, 0.0);
-        coeff[0].x += charges[particle];  // T-D7: use per-particle charge
-        for (var k = 1u; k <= 4u; k = k + 1u) {
-            power = cmul(power, dz);
-            if (k <= params.expansionOrder) { coeff[k] -= power / f32(k); }
+    if (range.y > 0u) {
+        // Bound the serial per-leaf loop: a saturated max-depth cell (all
+        // particles collapsing onto the center of mass) can hold thousands
+        // of particles, and this kernel runs one thread per leaf. Stride-
+        // sample with a node-rotated offset and reweight by range.y/cnt so
+        // the moments stay unbiased in expectation (same scheme as the
+        // List-1 P2P budget below).
+        let cnt = min(range.y, 512u);
+        let skip = (node * 2654435761u) % range.y;
+        let w = f32(range.y) / f32(cnt);
+        for (var n = 0u; n < cnt; n = n + 1u) {
+            let particle = particleIndices[range.x + ((skip + n) % range.y)];
+            let dz = particles[particle].pos - center;
+            var power = vec2<f32>(1.0, 0.0);
+            coeff[0].x += charges[particle] * w;  // T-D7: use per-particle charge
+            for (var k = 1u; k <= 4u; k = k + 1u) {
+                power = cmul(power, dz);
+                // P18-2: apply per-particle charge to higher-order multipole terms
+                // (was missing after T-D7 only fixed k=0).
+                if (k <= params.expansionOrder) { coeff[k] -= charges[particle] * w * power / f32(k); }
+            }
         }
     }
     for (var k = 0u; k <= 4u; k = k + 1u) { writec(&multipoles, node, k, coeff[k]); }
@@ -2582,6 +2871,11 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
 fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
     // Upward pass, dispatched per level: node = levelBase + id.x so the
     // workgroup range covers exactly this level's nodes.
+    // dispatchCount guard: ceil(count/64) workgroups launch surplus threads
+    // whose levelBase + id.x lands in the NEXT level's nodes. m2m is a pure
+    // write so the double-run was only wasted work, but the same spill in
+    // l2l/m2l doubles local expansions (correctness).
+    if (id.x >= params.dispatchCount) { return; }
     let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     if (isTerminal(node)) { return; }
@@ -2617,6 +2911,10 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(64)
 fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
     // Downward pass, dispatched per level with exact level ranges.
+    // dispatchCount guard (see m2m): without it, surplus threads of the
+    // ceil(count/64) dispatch spill into the next level's nodes and their
+    // existing+acc double-accumulation doubles those locals.
+    if (id.x >= params.dispatchCount) { return; }
     let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
     let parent = nodeParent[node];
@@ -2644,7 +2942,11 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
 fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
     // M2L, dispatched per level with exact level ranges. Each node is
     // processed exactly once per frame (locals were cleared by the clear
-    // pass), so the existing + accumulate semantics are correct.
+    // pass, and the dispatchCount guard below stops surplus ceil(count/64)
+    // threads from spilling into the next level's nodes, which previously
+    // double-accumulated their locals), so the existing + accumulate
+    // semantics are correct.
+    if (id.x >= params.dispatchCount) { return; }
     let targetNode = params.levelBase + id.x;
     if (targetNode >= params.nodeCount) { return; }
     let targetCenter = nodeCenterSize[targetNode].xy;
@@ -2691,18 +2993,29 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var q = 0u; q < l4Count; q = q + 1u) {
         let sourceNode = listData[l4Offset + q];
         let range = nodeParticleRange[sourceNode];
-        for (var n = 0u; n < range.y; n = n + 1u) {
-            let pIdx = particleIndices[range.x + n];
+        if (range.y == 0u) { continue; }
+        // Bound the serial P2L loop: a saturated max-depth leaf can hold
+        // thousands of particles and this kernel runs one thread per target
+        // node — unbounded, that is a collapse-triggered stall. Stride-sample
+        // with a (target, source)-rotated offset and reweight by range.y/cnt.
+        let cnt = min(range.y, 128u);
+        let skip = (targetNode * 2654435761u + q * 40503u) % range.y;
+        let w = f32(range.y) / f32(cnt);
+        for (var n = 0u; n < cnt; n = n + 1u) {
+            let pIdx = particleIndices[range.x + ((skip + n) % range.y)];
             let d = targetCenter - particles[pIdx].pos;
+            // P18-3: apply per-particle charge to P2L (List 4) translation
+            // (was missing, inconsistent with core/adaptive_fmm.py:149).
+            let qj = charges[pIdx] * w;
             let existing0 = readc(&locals, targetNode, 0u);
-            writec(&locals, targetNode, 0u, existing0 + clog(d));
+            writec(&locals, targetNode, 0u, existing0 + qj * clog(d));
             for (var l = 1u; l <= 4u; l = l + 1u) {
                 if (l > params.expansionOrder) { break; }
                 let sign = select(1.0, -1.0, (l & 1u) == 0u);
                 var dp = vec2<f32>(1.0, 0.0);
                 for (var n2 = 0u; n2 < l; n2 = n2 + 1u) { dp = cmul(dp, d); }
                 let existing = readc(&locals, targetNode, l);
-                writec(&locals, targetNode, l, existing + cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
+                writec(&locals, targetNode, l, existing + qj * cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
             }
         }
     }
@@ -2782,19 +3095,37 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 var p2pBudget = 24u;
                 if (params.numParticles > 500000u) { p2pBudget = 12u; }
                 if (params.numParticles > 2000000u) { p2pBudget = 6u; }
-                for (var q = 0u; q < list1Count; q = q + 1u) {
-                    let src = listData[list1Offset + q];
+                if (params.p2pBudgetOverride > 0u) { p2pBudget = params.p2pBudgetOverride; }
+                // Cap the adjacent-leaf enumeration too: at mixed refinement
+                // a coarse leaf bordering depth-10 refinement has ~3*2^(10-l)
+                // List-1 entries and EVERY particle of the coarse leaf walked
+                // all of them — the collapse stall. Stride-sample the leaf
+                // list with a particle-rotated offset and reweight by
+                // list1Count/nl (unbiased, same scheme as the inner budget).
+                let nl = min(list1Count, 32u);
+                let leafSkip = (particle * 40503u) % list1Count;
+                let leafWeight = f32(list1Count) / f32(nl);
+                for (var q = 0u; q < nl; q = q + 1u) {
+                    let src = listData[list1Offset + ((leafSkip + q) % list1Count)];
                     let range = nodeParticleRange[src];
                     if (range.y == 0u) { continue; }
                     let cnt = min(range.y, p2pBudget);
                     let skip = (particle * 2654435761u + src * 40503u) % range.y;
+                    // Unbiased subsample (R9 artifact fix): each sampled
+                    // neighbor stands for range.y/cnt leaf mates, so a dense
+                    // leaf contributes the correct TOTAL force in expectation
+                    // — same reweighting as the fixed-grid stride P2P above.
+                    // Without it, budgeted leaves under-count the near field
+                    // by occupancy/budget: a leaf-aligned bias that renders as
+                    // square artifacts drifting with each tree rebuild.
+                    let sampleWeight = f32(range.y) / f32(cnt);
                     for (var n = 0u; n < cnt; n = n + 1u) {
                         let j = particleIndices[range.x + ((skip + n) % range.y)];
                         if (j == particle) { continue; }
                         let d = particles[particle].pos - particles[j].pos;
                         let r2 = dot(d, d) + 0.00004;
                         let inv2 = inverseSqrt(r2);
-                        let qj = charges[j];
+                        let qj = charges[j] * sampleWeight * leafWeight;
                         // Near-field log-potential + force with per-particle charge.
                         potential += qj * 0.5 * log(r2);
                         p2pForce -= d * (qj * inv2 * inv2);
@@ -3338,7 +3669,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             return x;
         }
         // FunnelTable: a minimal JS port of the WGSL funnel schedule
-        // (Farach-Colton/Krapivin/Kuszmaul Section 3) used for the adaptive
+        // (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3) used for the adaptive
         // occupied-node directory. The WGSL port in the adaptive shader is the
         // AUTHORITATIVE one; this JS class exists only to BUILD the table on
         // CPU during adaptiveMetadata construction. Layout math mirrors
@@ -3493,7 +3824,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let extreme5mPeakStep = 0;
         let extreme5mStepWindow = []; // rolling 60-frame stepMs samples
 
-        // Adaptive CGR88 FMM state
+        // Adaptive FMM state
         let webgpuAdaptiveEnabled = false;
         // Race fix: the adaptive pipeline builds asynchronously inside
         // initEngine(). If the user selects 'adaptive' before init settles,
@@ -3508,11 +3839,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let webgpuAdaptiveBuffers = {};
         let webgpuAdaptiveLayout = null;
         let adaptiveMetadata = null;       // JS metadata object
-        let adaptiveDepth = 4;             // Regular quadtree depth for browser path (16x16 leaves)
+        let adaptiveDepth = 4;             // Max quadtree depth; sized from N at build time (computeAdaptiveDepth)
         let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
-        let useAdaptiveNodeHash = true;    // funnel-hash occupied-node directory for adaptive mode (A/B via ?adaptiveHash=0)
+        let useAdaptiveNodeHash = true;    // funnel-hash occupied-node directory for adaptive mode (A/B via ?adaptiveHash=0). Default ON: interleaved-median A/B at 500k measures ~18% MORE steps/sec than the 2 MB leafForParticle array (110 vs 93; the compact directory is cache-resident).
         let adaptiveNodeHashWarned = false; // one-shot warn flag for FunnelTable verify failure
         let p2pBudgetWarned = false;       // one-shot warn flag for P2P subsampling (see buildAdaptiveMetadata)
+        // ?p2pbudget=N — override the adaptive near-field sampling budget
+        // (auto tier: 24 below 500k, 12 below 2M, 6 above). 0 = auto.
+        let p2pBudgetOverride = 0;
         // Benchmark axis flags (default off => validated counting-sort / f32
         // paths; toggled only by the live bench panel to measure the
         // +openaddr-hash / +quantized_bitpacked axes). See T3/T4.
@@ -3541,6 +3875,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let funnelProbeBoundWarned = false; // one-shot warn flag for TELEM probe-bound violation
         let useFunnelHash = false;         // T6.4 bench axis: route cell membership through the funnel hash
         let useSortedPayload = true;       // sorted-payload gather for coalesced P2P reads (A/B via ?sortedPayload=0)
+        // Far-field model (independent of near-field hash). See HTML comment on
+        // #selectFarField. Codes match WGSL params.farFieldModel.
+        //   'none' | 'gravity' | 'centroids' | 'biot'(reserved)
+        let farFieldModel = 'gravity';
+        const FAR_FIELD_CODE = { none: 0, gravity: 1, centroids: 2, biot: 3 };
         const HASH_VERIFY = new URLSearchParams(location.search).get('hashverify') === '1';
         let hashVerifyDone = false;
         let webgpuQuantPipelines = {};     // pack_state / unpack_state
@@ -3559,7 +3898,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         let simTime = 0;
         let lastFpsTime = performance.now();
+        let lastFpsDisplayTime = performance.now();
         let frameCount = 0;
+        // Restart the FPS measurement window (called on reset / mode change so
+        // the sidebar converges on the NEW method within ~250 ms instead of
+        // showing a stale, diluted 1 s window after the switch).
+        function resetFpsWindow() {
+            frameCount = 0;
+            lastFpsTime = performance.now();
+            lastFpsDisplayTime = lastFpsTime;
+        }
 
         // Hidden diagnostic channel: surfaces JS/device errors and frame-pipeline
         // health to the DOM (readable even when the console is unavailable).
@@ -3619,19 +3967,37 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (activeBackend === 'WEBGPU' && webgpuAdaptiveEnabled && useAdaptiveFmm && scenario === 'galaxy') {
                     const md = adaptiveMetadata;
                     fmmHash.innerText = md ? `${md.totalNodes} nodes / depth ${md.depth}` : 'Adaptive';
-                } else if (activeBackend === 'WEBGPU' && webgpuFmmEnabled && scenario === 'galaxy') {
+                } else if (activeBackend === 'WEBGPU' && (
+                    (scenario === 'galaxy' && webgpuFmmEnabled && !useAdaptiveFmm) ||
+                    scenario === 'boids' || scenario === 'vortex' || scenario === 'sph'
+                ) && cellListsAvailable()) {
                     const side = 1 << fmmLeafBits;
                     const occ = N / (side * side);
-                    fmmHash.innerText = `avg ${occ.toFixed(1)} / cell (${side}×${side} grid)`;
+                    const backend = useFunnelHash ? 'funnel' : (useElasticHash ? 'openaddr' : 'count');
+                    fmmHash.innerText = `avg ${occ.toFixed(1)} / cell (${side}×${side}, ${backend})`;
                 } else {
                     fmmHash.innerText = 'Inactive';
                 }
             }
             if (p2pBudget) {
                 if (activeBackend === 'WEBGPU' && webgpuAdaptiveEnabled && useAdaptiveFmm && scenario === 'galaxy') {
-                    const budget = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
-                    p2pBudget.innerText = `List-1 sampled ${budget}/leaf`;
-                } else if (activeBackend === 'WEBGPU' && scenario === 'galaxy') {
+                    const budget = p2pBudgetOverride > 0 ? p2pBudgetOverride
+                        : (N > 2000000 ? 6 : (N > 500000 ? 12 : 24));
+                    const md = adaptiveMetadata;
+                    if (md && md.maxLeafParticles > budget) {
+                        // Report the true sampling FRACTION of the densest
+                        // leaf, not just the per-leaf budget: the budget
+                        // number alone hides how much of a collapsed core is
+                        // being stride-substituted.
+                        const frac = ((budget / Math.max(1, md.maxLeafParticles)) * 100).toFixed(0);
+                        p2pBudget.innerText = `sampled ${budget}/leaf (${frac}% of densest)`;
+                    } else {
+                        p2pBudget.innerText = `List-1 exact (${budget}/leaf cap)`;
+                    }
+                } else if (activeBackend === 'WEBGPU' && (
+                    (scenario === 'galaxy' && webgpuFmmEnabled) ||
+                    scenario === 'boids' || scenario === 'vortex' || scenario === 'sph'
+                )) {
                     p2pBudget.innerText = 'Full ×9 cell lists';
                 } else {
                     p2pBudget.innerText = 'Scenario dependent';
@@ -3655,27 +4021,48 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             updateFmmAxisTelemetry();
         }
 
-        // Sidebar "FMM Axis" metric-row: shows the currently active live FMM
-        // configuration (mode, order, hash, quantization) so the main view
-        // reflects the axis state. Updated whenever telemetry refreshes and
-        // after any FMM state change (mode/order handlers, applyBenchConfig).
+        // Sidebar axis row: near-field hash + far-field model (independent).
+        // Gravity multipole sub-state only shown when farFieldModel==gravity.
         function updateFmmAxisTelemetry() {
             const el = document.getElementById('valFmmAxis');
             if (!el) return;
-            if (scenario !== 'galaxy') {
-                el.innerText = 'galaxy-only';
-                return;
-            }
+            // Plain-language pipeline summary for the "Implementation
+            // details" label (ASCII only: no euro/x/arrow glyphs, so it
+            // cannot mojibake under a mis-served charset).
+            const implEl = document.getElementById('implDetailsLabel');
+            const hashName = useFunnelHash ? 'funnel hash'
+                : (useElasticHash ? 'open addressing' : 'counting sort');
+            const budget = p2pBudgetOverride > 0 ? p2pBudgetOverride
+                : (N > 2000000 ? 6 : (N > 500000 ? 12 : 24));
+            let impl = `near-field neighbor lists: ${hashName}. `;
             if (activeBackend !== 'WEBGPU') {
                 el.innerText = 'WebGL (no FMM)';
+                if (implEl) implEl.innerText = impl + 'far field: WebGL2 fallback (no GPU multipoles).';
                 return;
             }
-            const mode = useAdaptiveFmm ? 'adaptive' : (webgpuFmmEnabled ? 'fixed' : 'off');
-            const hash = useFunnelHash ? 'funnel' : (useElasticHash ? 'openaddr' : 'off');
-            const quant = useQuantized ? 'on' : 'off';
-            // Adaptive node-hash state: only meaningful in adaptive mode.
-            const ahash = (useAdaptiveFmm && useAdaptiveNodeHash) ? 'on' : 'off';
-            el.innerText = `${mode} p=${fmmOrder} / hash=${hash} / ahash=${ahash} / quant=${quant}`;
+            const hash = useFunnelHash ? 'funnel' : (useElasticHash ? 'openaddr' : 'count');
+            if (farFieldModel === 'gravity' && scenario === 'galaxy') {
+                const mode = useAdaptiveFmm ? 'adaptive' : (webgpuFmmEnabled ? 'fixed' : 'off');
+                const quant = useQuantized ? 'on' : 'off';
+                const ahash = (useAdaptiveFmm && useAdaptiveNodeHash) ? 'on' : 'off';
+                el.innerText = `ff=gravity ${mode} p=${fmmOrder} / nf=${hash} / ahash=${ahash} / q=${quant}`;
+                if (implEl) {
+                    const mdInfo = (useAdaptiveFmm && adaptiveMetadata)
+                        ? `quadtree depth ${adaptiveMetadata.depth}, ${adaptiveMetadata.totalNodes} nodes, near-field samples up to ${budget}/leaf${adaptiveMetadata.maxLeafParticles > budget ? ` (densest leaf has ${adaptiveMetadata.maxLeafParticles} - subsampled, reweighted)` : ''}. `
+                        : '';
+                    impl += `far field: ${useAdaptiveFmm ? 'adaptive quadtree FMM, multipole order p=' + fmmOrder : (webgpuFmmEnabled ? 'fixed-grid FMM' : 'analytic dual-core (no multipoles)')}. ${mdInfo}`;
+                    implEl.innerText = impl;
+                }
+            } else if (farFieldModel === 'centroids') {
+                el.innerText = `ff=centroids / nf=${hash}`;
+                if (implEl) implEl.innerText = impl + 'far field: boid cell-centroid barycenters (order-0 multipoles).';
+            } else if (farFieldModel === 'biot') {
+                el.innerText = `ff=biot(reserved) / nf=${hash}`;
+                if (implEl) implEl.innerText = impl + 'far field: analytic vortex cores (Biot-Savart FMM reserved).';
+            } else {
+                el.innerText = `ff=none / nf=${hash}`;
+                if (implEl) implEl.innerText = impl + 'far field: analytic/local only (compact support).';
+            }
         }
 
         // ?probe=1 — one-shot far-field validation: after the copies are
@@ -4238,7 +4625,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (rowAvg) rowAvg.style.display = show ? '' : 'none';
             if (!show) return;
             if (valActive) valActive.innerText = activeBackend === 'WEBGPU' ? 'ACTIVE (WebGPU)' : 'ACTIVE (fallback)';
-            // Mirror the WGSL l2p p2pBudget ladder (adaptive_cgr88.wgsl).
+            // Mirror the WGSL l2p p2pBudget ladder (adaptive_fmm.wgsl).
             let budget = 24;
             if (N > 500000) budget = 12;
             if (N > 2000000) budget = 6;
@@ -4274,174 +4661,434 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         }
 
         // =====================================================================
-        // Regular Quadtree Metadata Builder for Adaptive CGR88 FMM
+        // Adaptive Quadtree Metadata Builder for the Adaptive FMM pipeline.
         // =====================================================================
-        // Builds a full regular quadtree of `depth` levels over [0,1]^2 and
-        // computes CGR88 interaction Lists 1 (adjacent leaves) and 2 (same-level
-        // well-separated).  Lists 3 and 4 are empty for a regular grid.
+        // Builds an OCCUPANCY-ADAPTIVE quadtree over [0,1)^2: cells subdivide
+        // while they hold more than `leafTarget` particles, up to `depth`
+        // levels. This is the JS port of core/adaptive_fmm.py
+        // (AdaptiveQuadTree::_build_adaptive_fmm_interaction_lists) — the validated
+        // Python reference — with Lists 1 (adjacent leaves, P2P), 2 (children
+        // of colleagues of the parent that are separated, M2L), 3/4 (dual
+        // M2P / P2L lists for mixed refinement levels). The earlier version
+        // built a full REGULAR quadtree (all leaves at one depth): the
+        // far-field then had uniform cell granularity, which showed up as
+        // uniform square artifacts in the velocity heatmap and starved the
+        // near-field P2P budget (every dense leaf held thousands of
+        // particles against a 6–24 neighbor sampling budget).
+        //
+        // Node layout stays level-contiguous (levelStart/levelCount), so the
+        // per-level m2m/l2l/m2l dispatches with levelBase dynamic offsets are
+        // unchanged. Empty children of split nodes are NOT materialized
+        // (they contribute zero charge; the Python reference creates them,
+        // which only adds idle nodes).
+        //
         // Returns flat typed arrays ready for WebGPU storage buffer upload.
 
-        function buildAdaptiveMetadata(depth, positions) {
+        // Max quadtree depth from the particle count: deep enough that a
+        // uniform grid at that depth would give ~leafTarget particles per
+        // cell, clamped to [4, 10] (the node-key packing (l<<20|iy<<10|ix)
+        // supports 10-bit cell indices).
+        function computeAdaptiveDepth(n, leafTarget) {
+            return Math.min(10, Math.max(4, Math.ceil(Math.log2(Math.sqrt(Math.max(1, n) / leafTarget)))));
+        }
+        // Leaf occupancy target scales with N so the per-24-frame JS rebuild
+        // stays interactive at 5M particles (leaf count ~ N/leafTarget).
+        function computeAdaptiveLeafTarget(n) {
+            if (n > 2000000) return 64;
+            if (n > 500000) return 32;
+            return 16;
+        }
+
+        // Integer dyadic-cell adjacency: cells touch (boundary contact
+        // counts) iff their closed intervals overlap inclusively on both
+        // axes. Matches AdaptiveQuadTree._are_adjacent on dyadic cells.
+        function cellsTouch(la, ax, ay, lb, bx, by) {
+            // Normalize to the finer level.
+            let ax0, ax1, ay0, ay1, bx0, bx1, by0, by1;
+            if (la >= lb) {
+                const s = 1 << (la - lb);
+                ax0 = ax; ax1 = ax + 1; ay0 = ay; ay1 = ay + 1;
+                bx0 = bx * s; bx1 = (bx + 1) * s; by0 = by * s; by1 = (by + 1) * s;
+            } else {
+                const s = 1 << (lb - la);
+                ax0 = ax * s; ax1 = (ax + 1) * s; ay0 = ay * s; ay1 = (ay + 1) * s;
+                bx0 = bx; bx1 = bx + 1; by0 = by; by1 = by + 1;
+            }
+            return ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1;
+        }
+
+        // posStride: element stride between particles in `positions` (4 for
+        // the live posVel layout x,y,vx,vy; 2 for the compacted x,y-only
+        // snapshot the refresh worker transfers). Defaults to 4 so callers
+        // passing the raw posVel view (and the Node meta emitter harness)
+        // are unchanged.
+        function buildAdaptiveMetadata(depth, positions, posStride = 4) {
             const pos = positions || initialPositions;
-            const numLevels = depth + 1;
-            const levelStart = new Uint32Array(numLevels);
-            const levelCount = new Uint32Array(numLevels);
-            let totalNodes = 0;
-            for (let l = 0; l < numLevels; l++) {
-                levelStart[l] = totalNodes;
-                levelCount[l] = (1 << (2 * l));
-                totalNodes += levelCount[l];
+            const stride = posStride | 0 || 4;
+            const D = Math.max(1, Math.min(10, depth | 0));
+            const leafTarget = computeAdaptiveLeafTarget(N);
+            const numLevels = D + 1;
+            const leafSide = 1 << D;
+
+            // ---- 1) Occupancy histogram at the deepest level -------------
+            const cellCounts = new Uint32Array(leafSide * leafSide);
+            for (let i = 0; i < N; i++) {
+                const px = Math.min(0.999999, Math.max(0.0, pos[i * stride]));
+                const py = Math.min(0.999999, Math.max(0.0, pos[i * stride + 1]));
+                const ix = Math.min(leafSide - 1, (px * leafSide) | 0);
+                const iy = Math.min(leafSide - 1, (py * leafSide) | 0);
+                cellCounts[iy * leafSide + ix]++;
             }
 
-            const INVALID = 0xFFFFFFFF;
+            // ---- 2) Subtree-count pyramid + exists/split flags -----------
+            // exists(l,cell) = l==0 or (parent exists && parent splits)
+            // split(l,cell) = counts > leafTarget && l < D
+            // A node's particles = its cell count (empty children skipped).
+            const counts = new Array(numLevels);
+            const exists = new Array(numLevels);
+            counts[D] = cellCounts;
+            exists[D] = new Uint8Array(leafSide * leafSide);
+            for (let l = D - 1; l >= 0; l--) {
+                const side = 1 << l;
+                const cPrev = counts[l + 1];
+                const c = new Uint32Array(side * side);
+                for (let cy = 0; cy < side; cy++) {
+                    for (let cx = 0; cx < side; cx++) {
+                        const p = cy * side + cx;
+                        const q = (2 * cy) * (2 * side) + 2 * cx;
+                        c[p] = cPrev[q] + cPrev[q + 1] + cPrev[q + 2 * side] + cPrev[q + 2 * side + 1];
+                    }
+                }
+                counts[l] = c;
+                exists[l] = new Uint8Array(side * side);
+            }
+            const splitsAt = (l, cell) => counts[l][cell] > leafTarget && l < D;
+            exists[0][0] = 1;
+            for (let l = 1; l <= D; l++) {
+                const side = 1 << l;
+                const ex = exists[l], exPrev = exists[l - 1], cPrev = counts[l - 1];
+                for (let cy = 0; cy < side; cy++) {
+                    for (let cx = 0; cx < side; cx++) {
+                        const p = cy * side + cx;
+                        const pp = (cy >> 1) * (side >> 1) + (cx >> 1);
+                        if (exPrev[pp] && splitsAt(l - 1, pp) && counts[l][p] > 0) ex[p] = 1;
+                    }
+                }
+            }
+
+            // ---- 3) Level-contiguous node numbering ----------------------
+            const levelStart = new Uint32Array(numLevels);
+            const levelCount = new Uint32Array(numLevels);
+            const nodeOf = new Array(numLevels); // per-level cell -> nodeIdx+1
+            let totalNodes = 0;
+            for (let l = 0; l < numLevels; l++) {
+                const side = 1 << l;
+                const map = new Uint32Array(side * side);
+                const ex = exists[l];
+                levelStart[l] = totalNodes;
+                let c = 0;
+                for (let p = 0; p < side * side; p++) {
+                    if (ex[p]) { map[p] = ++c; }
+                }
+                levelCount[l] = c;
+                totalNodes += c;
+                nodeOf[l] = map;
+            }
+            const nodeCount = totalNodes;
 
             // Node data arrays
-            const nodeCenterSize = new Float32Array(totalNodes * 4); // cx, cy, width, depth
-            const nodeParent = new Uint32Array(totalNodes);
-            const nodeChildren = new Uint32Array(totalNodes * 4);
-            const nodeFlags = new Uint32Array(totalNodes);
-            const nodeParticleRange = new Uint32Array(totalNodes * 2); // offset, count
-            const leafForParticle = new Uint32Array(N);
+            const INVALID = 0xFFFFFFFF;
+            const nodeCenterSize = new Float32Array(nodeCount * 4); // cx, cy, width, depth
+            const nodeParent = new Uint32Array(nodeCount);
+            const nodeChildren = new Uint32Array(nodeCount * 4);
+            const nodeFlags = new Uint32Array(nodeCount);
+            const nodeCell = new Uint32Array(nodeCount * 2);        // ix, iy at node level (list walks)
+            const nodeParticleRange = new Uint32Array(nodeCount * 2); // offset, count
+            const nodeIsLeaf = new Uint8Array(nodeCount);
+            const leafIds = [];
 
             nodeParent.fill(INVALID);
             nodeChildren.fill(INVALID);
 
-            // Build node geometry
             for (let l = 0; l < numLevels; l++) {
-                const side = 1 << l;           // cells per axis at this level
+                const side = 1 << l;
                 const cellSize = 1.0 / side;
+                const map = nodeOf[l];
                 for (let iy = 0; iy < side; iy++) {
                     for (let ix = 0; ix < side; ix++) {
-                        const idx = levelStart[l] + iy * side + ix;
-                        const cx = (ix + 0.5) * cellSize;
-                        const cy = (iy + 0.5) * cellSize;
-                        nodeCenterSize[idx * 4] = cx;
-                        nodeCenterSize[idx * 4 + 1] = cy;
+                        const cell = iy * side + ix;
+                        const nm = map[cell];
+                        if (!nm) continue;
+                        const idx = levelStart[l] + nm - 1;
+                        nodeCenterSize[idx * 4] = (ix + 0.5) * cellSize;
+                        nodeCenterSize[idx * 4 + 1] = (iy + 0.5) * cellSize;
                         nodeCenterSize[idx * 4 + 2] = cellSize;
                         nodeCenterSize[idx * 4 + 3] = l;
+                        nodeCell[idx * 2] = ix;
+                        nodeCell[idx * 2 + 1] = iy;
                         if (l > 0) {
                             const pix = ix >> 1, piy = iy >> 1;
-                            const parentIdx = levelStart[l - 1] + piy * (1 << (l - 1)) + pix;
+                            const parentIdx = levelStart[l - 1] + nodeOf[l - 1][piy * (side >> 1) + pix] - 1;
                             nodeParent[idx] = parentIdx;
                             const childSlot = ((iy & 1) << 1) | (ix & 1);
                             nodeChildren[parentIdx * 4 + childSlot] = idx;
                         }
-                        if (l === depth) {
+                        if (!splitsAt(l, cell)) {
                             nodeFlags[idx] = 1; // terminal
+                            nodeIsLeaf[idx] = 1;
+                            leafIds.push(idx);
                         }
                     }
                 }
             }
 
-            // Assign particles to leaf cells and build particle_indices
-            const leafSide = 1 << depth;
-            const bucketHeads = new Int32Array(leafSide * leafSide).fill(-1);
-            const bucketNext = new Int32Array(N).fill(-1);
-            const particleIndices = new Uint32Array(N);
-
-            for (let i = 0; i < N; i++) {
-                const px = Math.min(0.999999, Math.max(0.0, pos[i * 4]));
-                const py = Math.min(0.999999, Math.max(0.0, pos[i * 4 + 1]));
-                const ix = Math.min(leafSide - 1, Math.floor(px * leafSide));
-                const iy = Math.min(leafSide - 1, Math.floor(py * leafSide));
-                const cellIdx = iy * leafSide + ix;
-                bucketNext[i] = bucketHeads[cellIdx];
-                bucketHeads[cellIdx] = i;
-            }
-
-            // Flatten particle indices grouped by leaf cell
-            let flatOffset = 0;
-            for (let l = 0; l < numLevels; l++) {
-                const side = 1 << l;
-                for (let iy = 0; iy < side; iy++) {
-                    for (let ix = 0; ix < side; ix++) {
-                        const idx = levelStart[l] + iy * side + ix;
-                        if (l === depth) {
-                            const cellIdx = iy * leafSide + ix;
-                            let count = 0;
-                            let p = bucketHeads[cellIdx];
-                            while (p >= 0) {
-                                particleIndices[flatOffset + count] = p;
-                                leafForParticle[p] = idx;
-                                count++;
-                                p = bucketNext[p];
-                            }
-                            nodeParticleRange[idx * 2] = flatOffset;
-                            nodeParticleRange[idx * 2 + 1] = count;
-                            flatOffset += count;
+            // ---- 4) Particle assignment + counting sort by leaf ---------
+            // leafForCell: level-D cell -> leaf node index (top-down fill).
+            const leafForCell = new Uint32Array(leafSide * leafSide).fill(INVALID);
+            {
+                const stackL = [0], stackX = [0], stackY = [0];
+                while (stackL.length) {
+                    const l = stackL.pop(), cx = stackX.pop(), cy = stackY.pop();
+                    const idx = levelStart[l] + nodeOf[l][cy * (1 << l) + cx] - 1;
+                    if (nodeIsLeaf[idx]) {
+                        // Fill every deepest-level cell under this leaf.
+                        const s = 1 << (D - l);
+                        const x0 = cx * s, y0 = cy * s;
+                        for (let fy = 0; fy < s; fy++) {
+                            const row = (y0 + fy) * leafSide;
+                            leafForCell.fill(idx, row + x0, row + x0 + s);
                         }
-                    }
-                }
-            }
-
-            // Build interaction lists
-            // List 1 (P2P): adjacent leaves (including self) — only at leaf level
-            // List 2 (M2L): children of parent's colleagues that are not adjacent — at levels 1..depth
-            // List 3 (M2P): empty for regular grid
-            // List 4 (P2L): empty for regular grid
-
-            const MAX_LIST = 64;
-            const listOffsets = new Uint32Array(totalNodes * 4);
-            const listCounts = new Uint32Array(totalNodes * 4);
-            const listDataArrays = [[], [], [], []]; // 4 lists
-            let listCursor = 0;
-
-            for (let l = 0; l < numLevels; l++) {
-                const side = 1 << l;
-                for (let iy = 0; iy < side; iy++) {
-                    for (let ix = 0; ix < side; ix++) {
-                        const idx = levelStart[l] + iy * side + ix;
-
-                        // List 1: adjacent leaves (only at deepest level)
-                        if (l === depth) {
-                            listOffsets[idx * 4] = listCursor;
-                            let cnt = 0;
-                            for (let dy = -1; dy <= 1; dy++) {
-                                for (let dx = -1; dx <= 1; dx++) {
-                                    const nx = ix + dx, ny = iy + dy;
-                                    if (nx < 0 || nx >= side || ny < 0 || ny >= side) continue;
-                                    const nidx = levelStart[l] + ny * side + nx;
-                                    listDataArrays[0].push(nidx);
-                                    listCursor++;
-                                    cnt++;
+                    } else {
+                        for (let dy = 0; dy < 2; dy++) {
+                            for (let dx = 0; dx < 2; dx++) {
+                                const nx = 2 * cx + dx, ny = 2 * cy + dy;
+                                if (nodeOf[l + 1][ny * (1 << (l + 1)) + nx]) {
+                                    stackL.push(l + 1); stackX.push(nx); stackY.push(ny);
                                 }
                             }
-                            listCounts[idx * 4] = cnt;
                         }
+                    }
+                }
+            }
 
-                        // List 2: children of parent's colleagues not adjacent to this node
-                        if (l >= 1) {
-                            listOffsets[idx * 4 + 1] = listCursor;
-                            const pix = ix >> 1, piy = iy >> 1;
-                            const pside = 1 << (l - 1);
-                            let cnt = 0;
-                            for (let pdy = -1; pdy <= 1; pdy++) {
-                                for (let pdx = -1; pdx <= 1; pdx++) {
-                                    const pnx = pix + pdx, pny = piy + pdy;
-                                    if (pnx < 0 || pnx >= pside || pny < 0 || pny >= pside) continue;
-                                    // For each child of this parent colleague
-                                    for (let cdy = 0; cdy < 2; cdy++) {
-                                        for (let cdx = 0; cdx < 2; cdx++) {
-                                            const cnx = (pnx << 1) + cdx;
-                                            const cny = (pny << 1) + cdy;
-                                            // Skip if adjacent to (ix, iy)
-                                            if (Math.abs(cnx - ix) <= 1 && Math.abs(cny - iy) <= 1) continue;
-                                            const cidx = levelStart[l] + cny * side + cnx;
-                                            listDataArrays[1].push(cidx);
-                                            listCursor++;
-                                            cnt++;
-                                        }
+            const leafForParticle = new Uint32Array(N);
+            const particleIndices = new Uint32Array(N);
+            {
+                // Count per leaf, prefix-sum, scatter (counting sort).
+                const leafOcc = new Uint32Array(nodeCount);
+                for (let i = 0; i < N; i++) {
+                    const px = Math.min(0.999999, Math.max(0.0, pos[i * stride]));
+                    const py = Math.min(0.999999, Math.max(0.0, pos[i * stride + 1]));
+                    const ix = Math.min(leafSide - 1, (px * leafSide) | 0);
+                    const iy = Math.min(leafSide - 1, (py * leafSide) | 0);
+                    const leaf = leafForCell[iy * leafSide + ix];
+                    leafForParticle[i] = leaf;
+                    leafOcc[leaf]++;
+                }
+                const cursor = new Uint32Array(nodeCount);
+                let acc = 0;
+                for (let n = 0; n < nodeCount; n++) {
+                    cursor[n] = acc;
+                    nodeParticleRange[n * 2] = acc;
+                    nodeParticleRange[n * 2 + 1] = leafOcc[n];
+                    acc += leafOcc[n];
+                }
+                for (let i = 0; i < N; i++) {
+                    const leaf = leafForParticle[i];
+                    particleIndices[cursor[leaf]++] = i;
+                }
+            }
+
+            // ---- 5) adaptive FMM interaction lists (port of the Python ref) ----
+            // List 1 (P2P): for each leaf, all adjacent leaves (incl. self).
+            // Found by walking the 3x3 colleagues of the leaf and of each
+            // ancestor, descending only through cells adjacent to the leaf.
+            // List 2 (M2L): for each node with a parent, the parent's
+            // colleagues' children that are NOT adjacent to the node.
+            // List 3/4 (dual): for each leaf, descend colleagues' subtrees:
+            // a node adjacent to the leaf is recursed into; the first
+            // non-adjacent node becomes an M2P source for the leaf (List 3)
+            // and the leaf becomes a P2L source for that node (List 4).
+            // Offsets are per-list (list l's entries are contiguous in the
+            // flattened array in list order 0..3). A shared cursor across
+            // lists — as an earlier revision had — records offsets that land
+            // in the wrong region of listData whenever several lists
+            // interleave, silently corrupting the WGSL neighbor reads.
+            const listOffsets = new Uint32Array(nodeCount * 4);
+            const listCounts = new Uint32Array(nodeCount * 4);
+            const listDataArrays = [[], [], [], []];
+            const listCursors = [0, 0, 0, 0];
+            let listCursor = 0; // total entries (buffer sizing only)
+            // List 4 is dual to List 3: many leaves append to the SAME node
+            // across leaf iterations, so chronological appends interleave and
+            // per-node runs would not be contiguous. Collect (node, leaf)
+            // pairs and counting-sort them per node instead.
+            const l4Nodes = [], l4Leaves = [];
+            const visited = new Uint32Array(nodeCount);
+            let visitGen = 0;
+
+            const appendList = (node, li, value) => {
+                if (listCounts[node * 4 + li] === 0) {
+                    listOffsets[node * 4 + li] = listCursors[li];
+                }
+                listDataArrays[li].push(value);
+                listCursors[li]++;
+                listCursor++;
+                listCounts[node * 4 + li]++;
+            };
+
+            const sameLevelNode = (l, ix, iy) => {
+                const side = 1 << l;
+                if (ix < 0 || iy < 0 || ix >= side || iy >= side) return -1;
+                const nm = nodeOf[l][iy * side + ix];
+                return nm ? levelStart[l] + nm - 1 : -1;
+            };
+
+            // Iterative descent for List 1: visit only nodes whose cell is
+            // adjacent to the leaf; terminal visitors join List 1.
+            const descendAdjacent = (leafIdx, leafLevel, startNode, startLevel, sx, sy, out) => {
+                const stackN = [startNode], stackL = [startLevel], stackX = [sx], stackY = [sy];
+                while (stackN.length) {
+                    const n = stackN.pop(), l = stackL.pop(), cx = stackX.pop(), cy = stackY.pop();
+                    if (visited[n] === visitGen) continue;
+                    visited[n] = visitGen;
+                    if (!cellsTouch(leafLevel, nodeCell[leafIdx * 2], nodeCell[leafIdx * 2 + 1], l, cx, cy)) continue;
+                    if (nodeIsLeaf[n]) {
+                        out.push(n);
+                    } else {
+                        for (let dy = 0; dy < 2; dy++) {
+                            for (let dx = 0; dx < 2; dx++) {
+                                const nx = 2 * cx + dx, ny = 2 * cy + dy;
+                                const ch = sameLevelNode(l + 1, nx, ny);
+                                if (ch >= 0) { stackN.push(ch); stackL.push(l + 1); stackX.push(nx); stackY.push(ny); }
+                            }
+                        }
+                    }
+                }
+            };
+
+            // List 2 for every node at level >= 1 (leaves included: their
+            // local expansion is evaluated by L2P for their own particles).
+            for (let l = 1; l < numLevels; l++) {
+                const side = 1 << l;
+                const map = nodeOf[l];
+                for (let iy = 0; iy < side; iy++) {
+                    for (let ix = 0; ix < side; ix++) {
+                        if (!map[iy * side + ix]) continue;
+                        const idx = levelStart[l] + map[iy * side + ix] - 1;
+                        const pix = ix >> 1, piy = iy >> 1;
+                        for (let pdy = -1; pdy <= 1; pdy++) {
+                            for (let pdx = -1; pdx <= 1; pdx++) {
+                                const pnx = pix + pdx, pny = piy + pdy;
+                                const pc = sameLevelNode(l - 1, pnx, pny);
+                                if (pc < 0) continue;
+                                for (let cdy = 0; cdy < 2; cdy++) {
+                                    for (let cdx = 0; cdx < 2; cdx++) {
+                                        const cnx = (pnx << 1) + cdx, cny = (pny << 1) + cdy;
+                                        const ch = sameLevelNode(l, cnx, cny);
+                                        if (ch < 0) continue;
+                                        if (Math.abs(cnx - ix) <= 1 && Math.abs(cny - iy) <= 1) continue;
+                                        appendList(idx, 1, ch);
                                     }
                                 }
                             }
-                            listCounts[idx * 4 + 1] = cnt;
                         }
                     }
+                }
+            }
+
+            // Lists 1, 3, 4 per leaf.
+            for (const b of leafIds) {
+                const lb = nodeCenterSize[b * 4 + 3];
+                const bx = nodeCell[b * 2], by = nodeCell[b * 2 + 1];
+                visitGen++;
+                visited[b] = visitGen;
+                const l1 = [b];
+
+                // List 3/4 helpers for this leaf.
+                const inspect = (startNode, startLevel, sx, sy) => {
+                    const stackN = [startNode], stackL = [startLevel], stackX = [sx], stackY = [sy];
+                    while (stackN.length) {
+                        const n = stackN.pop(), l = stackL.pop(), cx = stackX.pop(), cy = stackY.pop();
+                        if (cellsTouch(lb, bx, by, l, cx, cy)) {
+                            if (!nodeIsLeaf[n]) {
+                                for (let dy = 0; dy < 2; dy++) {
+                                    for (let dx = 0; dx < 2; dx++) {
+                                        const nx = 2 * cx + dx, ny = 2 * cy + dy;
+                                        const ch = sameLevelNode(l + 1, nx, ny);
+                                        if (ch >= 0) { stackN.push(ch); stackL.push(l + 1); stackX.push(nx); stackY.push(ny); }
+                                    }
+                                }
+                            }
+                        } else {
+                            // First non-adjacent node: M2P source for b,
+                            // and b is a P2L source for it (dual lists).
+                            appendList(b, 2, n);
+                            l4Nodes.push(n);
+                            l4Leaves.push(b);
+                        }
+                    }
+                };
+
+                let ax = bx, ay = by;
+                for (let l = lb; l >= 0; l--) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const c = sameLevelNode(l, ax + dx, ay + dy);
+                            if (c < 0 || c === b) continue;
+                            if (l === lb) {
+                                // Same-level colleague: adjacent by
+                                // construction (3x3 neighborhood) — descend
+                                // for List 1 and inspect for Lists 3/4.
+                                descendAdjacent(b, lb, c, l, ax + dx, ay + dy, l1);
+                                inspect(c, l, ax + dx, ay + dy);
+                            } else {
+                                // Ancestor-level colleague: descend for
+                                // List 1 (adjacent coarse/fine leaves).
+                                descendAdjacent(b, lb, c, l, ax + dx, ay + dy, l1);
+                            }
+                        }
+                    }
+                    if (l > 0) { ax >>= 1; ay >>= 1; }
+                }
+                for (const n of l1) appendList(b, 0, n);
+            }
+
+            // The flattened array concatenates the four lists' entries in
+            // order [L1][L2][L3][L4]; a list's recorded offset is its
+            // within-block position, so add each block's base offset.
+            {
+                const base = [0, 0, 0, 0];
+                for (let li = 1; li < 4; li++) base[li] = base[li - 1] + listDataArrays[li - 1].length;
+                for (let node = 0; node < nodeCount; node++) {
+                    for (let li = 0; li < 3; li++) {
+                        if (listCounts[node * 4 + li] > 0) listOffsets[node * 4 + li] += base[li];
+                    }
+                }
+                // List 4: counting-sort the (node, leaf) pairs by node so
+                // each node's P2L sources are contiguous, then assign
+                // offsets relative to the list-4 block base.
+                const l4Count = new Uint32Array(nodeCount);
+                for (let k = 0; k < l4Nodes.length; k++) l4Count[l4Nodes[k]]++;
+                const l4Cursor = new Uint32Array(nodeCount);
+                let l4Acc = 0;
+                for (let n = 0; n < nodeCount; n++) {
+                    l4Cursor[n] = l4Acc;
+                    if (l4Count[n] > 0) {
+                        listOffsets[n * 4 + 3] = base[3] + l4Acc;
+                        listCounts[n * 4 + 3] = l4Count[n];
+                    }
+                    l4Acc += l4Count[n];
+                }
+                for (let k = 0; k < l4Nodes.length; k++) {
+                    listDataArrays[3][l4Cursor[l4Nodes[k]]++] = l4Leaves[k];
                 }
             }
 
             // Flatten list data into a single typed array
-            const listData = new Uint32Array(listCursor);
+            const listData = new Uint32Array(
+                listDataArrays[0].length + listDataArrays[1].length +
+                listDataArrays[2].length + listDataArrays[3].length);
             let copyOff = 0;
             for (let li = 0; li < 4; li++) {
                 for (let j = 0; j < listDataArrays[li].length; j++) {
@@ -4452,53 +5099,67 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // P2P budget subsampling warning: when the max leaf particle
             // count exceeds the WGSL p2pBudget (24/12/6 tiered by N), the
             // near-field P2P pass silently subsamples neighbors and accuracy
-            // degrades.  Warn once so the user knows.
+            // degrades.  Warn once so the user knows. With the adaptive tree
+            // this only triggers when cells saturate at the max depth.
             let maxLeafParticles = 0;
-            for (let l = 0; l < numLevels; l++) {
-                if (l !== depth) continue;
-                const side = 1 << l;
-                for (let idx = levelStart[l]; idx < levelStart[l] + side * side; idx++) {
-                    const c = nodeParticleRange[idx * 2 + 1];
-                    if (c > maxLeafParticles) maxLeafParticles = c;
-                }
+            for (let idx = 0; idx < nodeCount; idx++) {
+                if (!nodeIsLeaf[idx]) continue;
+                const c = nodeParticleRange[idx * 2 + 1];
+                if (c > maxLeafParticles) maxLeafParticles = c;
             }
-            const p2pBudgetN = N > 2000000 ? 6 : (N > 500000 ? 12 : 24);
+            const p2pBudgetN = p2pBudgetOverride > 0 ? p2pBudgetOverride
+                : (N > 2000000 ? 6 : (N > 500000 ? 12 : 24));
             if (maxLeafParticles > p2pBudgetN && !p2pBudgetWarned) {
                 p2pBudgetWarned = true;
-                console.warn(`p2pBudget subsampling: max leaf occupancy ${maxLeafParticles} > budget ${p2pBudgetN} (N=${N}, depth=${depth}); near-field P2P is subsampled — accuracy degrades silently. See docs/GPU_NOTES.md §5.4.`);
+                const frac = ((p2pBudgetN / Math.max(1, maxLeafParticles)) * 100).toFixed(1);
+                console.warn(`p2pBudget subsampling: max leaf occupancy ${maxLeafParticles} > budget ${p2pBudgetN} (N=${N}, maxDepth=${D}, leafTarget=${leafTarget}); near-field P2P samples ${p2pBudgetN}/leaf (${frac}% of the densest leaf, stride-reweighted so the mean force stays unbiased). Raise it with ?p2pbudget=${Math.min(64, p2pBudgetN * 4)}. See docs/GPU_NOTES.md section 5.4.`);
             }
 
-            // Funnel-hash occupied-node directory: insert every node key
-            // (level<<20 | iy<<10 | ix) -> node index into a FunnelTable sized
-            // to totalNodes (all nodes are occupied in this regular quadtree).
-            // delta=1/16 keeps the probe bound short. The packed table (keys +
-            // values + geometry) is uploaded as adaptiveNodeHash buffers and
-            // probed in the adaptive WGSL l2p kernel when useAdaptiveNodeHash.
-            // CPU verification: every occupied node must be findable via probe;
-            // warn once on failure (not a throw — the legacy leafForParticle
-            // path is the fallback when useAdaptiveNodeHash == 0).
-            const nodeHash = new FunnelTable(totalNodes, 1.0 / 16.0);
+            // Funnel-hash occupied-node directory: insert every existing
+            // node key (level<<20 | iy<<10 | ix) -> node index into a
+            // FunnelTable sized to nodeCount. delta=1/16 keeps the probe
+            // bound short. The packed table (keys + values + geometry) is
+            // uploaded as the adaptiveNodeHash buffer and probed by the
+            // adaptive WGSL l2p kernel when useAdaptiveNodeHash is set: it
+            // derives the deepest-level cell from the particle position and
+            // walks up until the probe hits the containing leaf.
+            // CPU verification: every occupied node must be findable via
+            // probe; warn once on failure (not a throw — the legacy
+            // leafForParticle path is the fallback when
+            // useAdaptiveNodeHash == 0). The directory (and its per-rebuild
+            // build + upload cost) is only materialized when the L2P will
+            // actually probe it; otherwise the packed array stays empty and
+            // the shader reads leafForParticle exclusively.
+            let nodeHash = null;
             let hashFailures = 0;
-            for (let l = 0; l < numLevels; l++) {
-                const side = 1 << l;
-                for (let iy = 0; iy < side; iy++) {
-                    for (let ix = 0; ix < side; ix++) {
-                        const idx = levelStart[l] + iy * side + ix;
-                        const key = (l << 20) | (iy << 10) | ix;
-                        const slot = nodeHash.insert(key >>> 0, idx);
-                        if (slot < 0) { hashFailures++; continue; }
-                        // Verify round-trip (cheap; every rebuild but warn-once).
-                        if (nodeHash.probe(key >>> 0) !== idx) { hashFailures++; }
+            if (useAdaptiveNodeHash) {
+                nodeHash = new FunnelTable(nodeCount, 1.0 / 16.0);
+                for (let l = 0; l < numLevels; l++) {
+                    const side = 1 << l;
+                    const map = nodeOf[l];
+                    for (let iy = 0; iy < side; iy++) {
+                        for (let ix = 0; ix < side; ix++) {
+                            if (!map[iy * side + ix]) continue;
+                            const idx = levelStart[l] + map[iy * side + ix] - 1;
+                            const key = (l << 20) | (iy << 10) | ix;
+                            const slot = nodeHash.insert(key >>> 0, idx);
+                            if (slot < 0) { hashFailures++; continue; }
+                            // Verify round-trip (cheap; every rebuild but warn-once).
+                            if (nodeHash.probe(key >>> 0) !== idx) { hashFailures++; }
+                        }
                     }
                 }
-            }
-            if (hashFailures > 0 && !adaptiveNodeHashWarned) {
-                adaptiveNodeHashWarned = true;
-                console.warn(`adaptiveNodeHash: ${hashFailures}/${totalNodes} nodes failed insert/probe (delta=1/16, capacity=${totalNodes}); falling back to leafForParticle when useAdaptiveNodeHash==0. The WGSL probe is authoritative; this JS verify is a build-time sanity check.`);
+                if (hashFailures > 0 && !adaptiveNodeHashWarned) {
+                    adaptiveNodeHashWarned = true;
+                    console.warn(`adaptiveNodeHash: ${hashFailures}/${totalNodes} nodes failed insert/probe (delta=1/16, capacity=${totalNodes}); falling back to leafForParticle when useAdaptiveNodeHash==0. The WGSL probe is authoritative; this JS verify is a build-time sanity check.`);
+                }
             }
 
             return {
-                depth,
+                depth: D,
+                leafTarget,
+                leafCount: leafIds.length,
+                maxLeafParticles,
                 numLevels,
                 totalNodes,
                 levelStart,
@@ -4513,13 +5174,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 listOffsets,
                 listCounts,
                 listData,
-                nodeHashKeys: nodeHash.keys,
-                nodeHashValues: nodeHash.values,
-                nodeHashGeom: nodeHash.geom.packed,
-                nodeHashGeomSize: nodeHash.geom.totalSize,
+                nodeHashKeys: nodeHash ? nodeHash.keys : null,
+                nodeHashValues: nodeHash ? nodeHash.values : null,
+                nodeHashGeom: nodeHash ? nodeHash.geom.packed : null,
+                nodeHashGeomSize: nodeHash ? nodeHash.geom.totalSize : 0,
                 // Packed upload layout (geom | keys | values) matching the
-                // shader's single-binding nodeHash buffer.
+                // shader's single-binding nodeHash buffer. Empty (16 zero
+                // u32) when the directory is disabled; the shader never
+                // probes binding 16 unless useAdaptiveNodeHash == 1.
                 nodeHashPacked: (() => {
+                    if (!nodeHash) { return new Uint32Array(16); }
                     const g = nodeHash.geom.packed, k = nodeHash.keys, v = nodeHash.values;
                     const buf = new Uint32Array(g.length + k.length + v.length);
                     buf.set(g, 0); buf.set(k, g.length); buf.set(v, g.length + k.length);
@@ -4654,7 +5318,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         const fmmErrors = fmmInfo.messages.filter((message) => message.type === 'error');
                         if (fmmErrors.length > 0) throw new Error(`WGSL FMM compile failed: ${fmmErrors.map((message) => message.message).join(' | ')}`);
                         webgpuDevice.pushErrorScope('validation');
-                        for (const entryPoint of ['clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'gather_sorted', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p']) {
+                        for (const entryPoint of [
+                            'clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'gather_sorted',
+                            'materialize_ranges',
+                            'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p',
+                            // Boid order-0 far field (NOT gravity multipoles).
+                            'build_boid_centroids', 'boid_centroid_eval',
+                        ]) {
                             webgpuFmmPipelines[entryPoint] = webgpuDevice.createComputePipeline({ label: `FMM ${entryPoint}`, layout: fmmPipelineLayout, compute: { module: fmmModule, entryPoint } });
                         }
                         // T3 elastic-hash build passes share the FMM bind
@@ -4678,6 +5348,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuFunnelPipelines = {};
                         } else {
                             webgpuFmmEnabled = true;
+                            // The mode label may still read 'Analytic (no
+                            // FMM)' from init-time (before pipelines existed);
+                            // re-sync it with the now-known backend state.
+                            updateFmmControlsState();
                         }
 
                         // ---- T4 quantized pack/unpack pipelines ----
@@ -4711,10 +5385,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuQuantPipelines = {};
                         }
 
-                        // ---- Adaptive CGR88 FMM Pipeline ----
+                        // ---- Adaptive FMM Pipeline ----
                         try {
-                            // Build metadata on CPU
+                            // Build metadata on CPU (occupancy-adaptive quadtree;
+                            // max depth sized from N)
+                            adaptiveDepth = computeAdaptiveDepth(N, computeAdaptiveLeafTarget(N));
                             adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth);
+                            adaptiveMetaGen++;
                             const md = adaptiveMetadata;
                             const nn = md.totalNodes;
 
@@ -4765,27 +5442,27 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                                 webgpuAdaptivePipelines = {};
                             } else {
                                 webgpuAdaptiveEnabled = true;
-                                console.log(`Adaptive CGR88 FMM enabled: depth=${adaptiveDepth}, nodes=${nn}, leaves=${md.levelCount[adaptiveDepth]}`);
+                                console.log(`Adaptive FMM enabled: maxDepth=${md.depth}, leafTarget=${md.leafTarget}, nodes=${nn}, leaves=${md.leafCount}, maxLeafOccupancy=${md.maxLeafParticles}`);
                             }
 
                             // Create metadata buffers (static, uploaded once)
                             const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
                             const rwStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
 
-                            webgpuAdaptiveBuffers.nodeCenterSize = webgpuDevice.createBuffer({ size: md.nodeCenterSize.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeParticleRange = webgpuDevice.createBuffer({ size: md.nodeParticleRange.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.leafForParticle = webgpuDevice.createBuffer({ size: md.leafForParticle.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: md.particleIndices.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.listOffsets = webgpuDevice.createBuffer({ size: md.listOffsets.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.listCounts = webgpuDevice.createBuffer({ size: md.listCounts.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.listData = webgpuDevice.createBuffer({ size: md.listData.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeParent = webgpuDevice.createBuffer({ size: md.nodeParent.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeChildren = webgpuDevice.createBuffer({ size: md.nodeChildren.byteLength, usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeFlags = webgpuDevice.createBuffer({ size: md.nodeFlags.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeCenterSize = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeCenterSize.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeParticleRange = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeParticleRange.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.leafForParticle = webgpuDevice.createBuffer({ size: Math.max(16, md.leafForParticle.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: Math.max(16, md.particleIndices.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.listOffsets = webgpuDevice.createBuffer({ size: Math.max(16, md.listOffsets.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.listCounts = webgpuDevice.createBuffer({ size: Math.max(16, md.listCounts.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.listData = webgpuDevice.createBuffer({ size: Math.max(16, md.listData.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeParent = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeParent.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeChildren = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeChildren.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeFlags = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeFlags.byteLength), usage: roStorage });
                             // Funnel-hash occupied-node directory buffer (static,
                             // uploaded once + on metadata rebuild). geom|keys|
                             // values packed into ONE buffer (16-storage limit).
-                            webgpuAdaptiveBuffers.nodeHash = webgpuDevice.createBuffer({ size: md.nodeHashPacked.byteLength, usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeHash = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeHashPacked.byteLength), usage: roStorage });
 
                             // Dynamic buffers (cleared and rewritten each frame)
                             webgpuAdaptiveBuffers.multipoles = webgpuDevice.createBuffer({ size: nn * 3 * 16, usage: rwStorage });
@@ -4906,11 +5583,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
                         activeBackend = 'WEBGPU';
                         document.getElementById('hwAccelWarning').style.display = 'none';
-                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${(webgpuAdaptiveEnabled && useAdaptiveFmm) ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
+                        document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${(webgpuAdaptiveEnabled && useAdaptiveFmm) ? 'WebGPU Adaptive FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Fallback')}`;
                         document.getElementById('gpuName').innerText = gpuDescription;
                         document.getElementById('vramMode').innerText = 'Estimated WebGPU buffer allocation';
                         updateMemoryTelemetry();
-                        requestAnimationFrame(frameLoop);
+                        applyFrameCapMode(uncappedSteps);
+                        scheduleNextFrame();
                         return;
                     }
                 } catch (e) {
@@ -4920,7 +5598,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
             // 2. Fallback to WebGL 2.0 Transform Feedback (Non-FMM) Pipeline
             initWebGL2TF();
-            requestAnimationFrame(frameLoop);
+            applyFrameCapMode(uncappedSteps);
+            scheduleNextFrame();
         }
 
         function uploadWebGPUParticles() {
@@ -4987,7 +5666,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuEhCursor = webgpuDevice.createBuffer({ size: ehCells * 4, usage: fmmStorage });
                 // All levels' moments and locals packed into two buffers
                 // (level l occupies its momCellBase/localCellBase range).
-                // Three vec4 slots per cell store five complex CGR88
+                // Three vec4 slots per cell store five complex adaptive FMM
                 // coefficients: c0=(slot0.xy), c1=(slot0.zw), c2=(slot1.xy),
                 // c3=(slot1.zw), c4=(slot2.xy).
                 // COPY_SRC: the ?fmmdebug=1 structural dump reads both back.
@@ -5095,7 +5774,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     'Funnel-hash directory over occupied adaptive nodes, packed as geom | keys | values in one buffer');
             }
             if (adaptiveStagingBuffer) bytes += part('adaptStaging', adaptiveStagingSize, 'Adaptive tree',
-                'MAP_READ staging for the periodic live-position tree refresh (rebuild every 24 frames)');
+                'MAP_READ staging for the periodic live-position tree refresh (rebuild every 24–96 frames (N-tiered))');
             webgpuBufferBytes = bytes;
             webgpuBufferBreakdown = parts.join(' · ');
             webgpuBufferEntries = entries;
@@ -5249,30 +5928,49 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         }
 
         function uploadAdaptiveMetadata(md) {
-            // N-dependent buffers must be recreated when the particle count
-            // changes, otherwise writeBuffer would exceed the old buffer size.
-            if (!webgpuAdaptiveBuffers.leafForParticle ||
-                webgpuAdaptiveBuffers.leafForParticle.size !== md.leafForParticle.byteLength) {
-                if (webgpuAdaptiveBuffers.leafForParticle) webgpuAdaptiveBuffers.leafForParticle.destroy();
-                if (webgpuAdaptiveBuffers.particleIndices) webgpuAdaptiveBuffers.particleIndices.destroy();
-                const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-                webgpuAdaptiveBuffers.leafForParticle = webgpuDevice.createBuffer({ size: md.leafForParticle.byteLength, usage: roStorage });
-                webgpuAdaptiveBuffers.particleIndices = webgpuDevice.createBuffer({ size: md.particleIndices.byteLength, usage: roStorage });
-                recreateAdaptiveBindGroups();
+            // With the occupancy-adaptive quadtree the tree SHAPE changes
+            // between rebuilds (node count, list sizes, level count), so any
+            // buffer whose size changed must be recreated, and the bind
+            // groups (which reference multipoles/locals/params/nodeHash)
+            // rebuilt afterwards. writeBuffer into an undersized buffer
+            // would otherwise fail validation.
+            const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+            const rwStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+            const ensureSize = (name, byteLength, usage) => {
+                byteLength = Math.max(16, byteLength); // WebGPU rejects zero-size buffers
+                if (webgpuAdaptiveBuffers[name] && webgpuAdaptiveBuffers[name].size === byteLength) return false;
+                if (webgpuAdaptiveBuffers[name]) webgpuAdaptiveBuffers[name].destroy();
+                webgpuAdaptiveBuffers[name] = webgpuDevice.createBuffer({ size: byteLength, usage });
+                return true;
+            };
+            let resized = false;
+            resized = ensureSize('leafForParticle', md.leafForParticle.byteLength, roStorage) || resized;
+            resized = ensureSize('particleIndices', md.particleIndices.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeCenterSize', md.nodeCenterSize.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeParticleRange', md.nodeParticleRange.byteLength, roStorage) || resized;
+            resized = ensureSize('listOffsets', md.listOffsets.byteLength, roStorage) || resized;
+            resized = ensureSize('listCounts', md.listCounts.byteLength, roStorage) || resized;
+            resized = ensureSize('listData', md.listData.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeParent', md.nodeParent.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeChildren', md.nodeChildren.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeFlags', md.nodeFlags.byteLength, roStorage) || resized;
+            resized = ensureSize('multipoles', md.totalNodes * 3 * 16, rwStorage) || resized;
+            resized = ensureSize('locals', md.totalNodes * 3 * 16, rwStorage) || resized;
+            resized = ensureSize('nodeHash', md.nodeHashPacked.byteLength, roStorage) || resized;
+            // Per-level uniform blocks: one 256-byte block per level for the
+            // m2m/l2l/m2l dynamic-offset dispatches. Recreate the views when
+            // the level count changes so the frame loop writes valid blocks.
+            const paramsBytes = 256 * md.numLevels;
+            if (!webgpuAdaptiveParams || webgpuAdaptiveParams.size !== paramsBytes) {
+                if (webgpuAdaptiveParams) webgpuAdaptiveParams.destroy();
+                webgpuAdaptiveParams = webgpuDevice.createBuffer({
+                    size: paramsBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+                });
+                adaptiveParamData = new ArrayBuffer(paramsBytes);
+                adaptiveParamU = new Uint32Array(adaptiveParamData);
+                resized = true;
             }
-            // The funnel-hash directory table size depends on totalNodes
-            // (capacity), which is stable across rebuilds at a fixed depth,
-            // but the packed geom|keys|values contents change every rebuild
-            // (positions move -> leaf assignment changes -> keys re-inserted).
-            // Recreate the buffer only if the table size changed (depth
-            // change); otherwise just re-upload the contents.
-            if (webgpuAdaptiveBuffers.nodeHash &&
-                webgpuAdaptiveBuffers.nodeHash.size !== md.nodeHashPacked.byteLength) {
-                webgpuAdaptiveBuffers.nodeHash.destroy();
-                const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-                webgpuAdaptiveBuffers.nodeHash = webgpuDevice.createBuffer({ size: md.nodeHashPacked.byteLength, usage: roStorage });
-                recreateAdaptiveBindGroups();
-            }
+            if (resized) recreateAdaptiveBindGroups();
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParticleRange, 0, md.nodeParticleRange);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.leafForParticle, 0, md.leafForParticle);
@@ -5288,6 +5986,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
         function rebuildAdaptiveMetadata(positions) {
             if (!webgpuDevice || !webgpuAdaptiveEnabled) return;
+            adaptiveMetaGen++;
+            adaptiveDepth = computeAdaptiveDepth(N, computeAdaptiveLeafTarget(N));
             adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth, positions);
             uploadAdaptiveMetadata(adaptiveMetadata);
         }
@@ -5306,11 +6006,105 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let adaptiveFrameCounter = 0;
         let adaptiveStagingBuffer = null;
         let adaptiveStagingSize = 0;
+        // Strided x/y snapshot from the previous refresh, used to measure
+        // drift since the last tree rebuild (staleness probe below).
+        let adaptiveLastSamplePos = null;
+        // Bumped by every synchronous metadata build (init / mode switch /
+        // reset). In-flight worker builds stamped with an older generation
+        // are dropped on arrival.
+        let adaptiveMetaGen = 0;
+        let adaptiveMetaWorker = null;
+        let adaptiveMetaWorkerBroken = false;
+
+        // Off-main-thread tree builder. "Tree-free" is about the PER-STEP
+        // data structure — hash directories over an implicit quadtree
+        // lattice, no pointers, no per-step traversal — but the occupancy
+        // pass that DECIDES which lattice cells exist still has to run
+        // somewhere, and doing it synchronously on the main thread cost a
+        // ~60ms(200k)..~400ms(5M) hitch every refresh interval. The worker
+        // is assembled from THIS PAGE'S OWN SOURCE (the pure builder span
+        // is sliced verbatim out of the inline script — the same trick the
+        // Node meta emitter uses, so it cannot drift), receives a
+        // compacted x/y snapshot, and transfers the resulting arrays back
+        // zero-copy. The render loop only pays the snapshot copy; the tree
+        // swaps in between frames when the result lands. Falls back to the
+        // synchronous path when Workers are unavailable.
+        function getAdaptiveMetaWorker() {
+            if (adaptiveMetaWorkerBroken) return null;
+            if (adaptiveMetaWorker) return adaptiveMetaWorker;
+            try {
+                const scriptText = Array.from(document.scripts)
+                    .map((s) => s.textContent || '')
+                    .find((t) => t.includes('function buildAdaptiveMetadata'));
+                if (!scriptText) throw new Error('builder source not found in inline scripts');
+                // Piece 1: funnel hashing helpers + FunnelTable (pure).
+                const p1a = scriptText.indexOf('function computeFunnelGeometry');
+                const p1b = scriptText.indexOf('const simUniformData');
+                // Piece 2: adaptive depth/leaf-target + the builder itself —
+                // the exact span the Node emitter evals, known pure.
+                const p2a = scriptText.indexOf('function computeAdaptiveDepth');
+                const p2b = scriptText.indexOf('async function initEngine');
+                if (p1a < 0 || p1b <= p1a || p2a < 0 || p2b <= p2a) {
+                    throw new Error('builder slice markers missing');
+                }
+                const glue = [
+                    'let N = 0, initialPositions = null;',
+                    'let useAdaptiveNodeHash = true, p2pBudgetOverride = 0;',
+                    'let p2pBudgetWarned = false, adaptiveNodeHashWarned = false;',
+                    'onmessage = (e) => {',
+                    '    const m = e.data;',
+                    '    N = m.N; useAdaptiveNodeHash = m.useAdaptiveNodeHash; p2pBudgetOverride = m.p2pBudgetOverride;',
+                    '    const positions = new Float32Array(m.posBuffer);',
+                    '    const md = buildAdaptiveMetadata(m.depth, positions, 2);',
+                    '    // Raw directory arrays are already packed into nodeHashPacked',
+                    '    // inside the builder and have no consumer afterwards.',
+                    '    md.nodeHashKeys = null; md.nodeHashValues = null; md.nodeHashGeom = null;',
+                    '    const transfer = [md.levelStart.buffer, md.levelCount.buffer,',
+                    '        md.nodeCenterSize.buffer, md.nodeParent.buffer, md.nodeChildren.buffer,',
+                    '        md.nodeFlags.buffer, md.nodeParticleRange.buffer, md.leafForParticle.buffer,',
+                    '        md.particleIndices.buffer, md.listOffsets.buffer, md.listCounts.buffer,',
+                    '        md.listData.buffer, md.nodeHashPacked.buffer];',
+                    '    postMessage({ gen: m.gen, md: md }, transfer);',
+                    '};'
+                ].join('\n');
+                const workerSrc = scriptText.slice(p1a, p1b) + '\n' + scriptText.slice(p2a, p2b) + '\n' + glue;
+                const blob = new Blob([workerSrc], { type: 'application/javascript' });
+                adaptiveMetaWorker = new Worker(URL.createObjectURL(blob));
+                adaptiveMetaWorker.onmessage = (e) => {
+                    adaptiveRefreshPending = false;
+                    const { gen, md } = e.data;
+                    // Drop stale builds: a reset / mode switch / particle-count
+                    // change rebuilt synchronously (bumping the generation)
+                    // while the worker was busy, or adaptive mode was left.
+                    if (gen !== adaptiveMetaGen || !webgpuDevice || !webgpuAdaptiveEnabled
+                        || !useAdaptiveFmm || scenarioId !== 0) return;
+                    adaptiveMetadata = md;
+                    uploadAdaptiveMetadata(md);
+                };
+                adaptiveMetaWorker.onerror = () => {
+                    // One strike and out: synchronous fallback for the session.
+                    adaptiveMetaWorkerBroken = true;
+                    adaptiveRefreshPending = false;
+                    try { adaptiveMetaWorker.terminate(); } catch (_) { /* already gone */ }
+                    adaptiveMetaWorker = null;
+                };
+                return adaptiveMetaWorker;
+            } catch (err) {
+                console.warn('adaptive metadata worker unavailable; using synchronous rebuild:', err);
+                adaptiveMetaWorkerBroken = true;
+                return null;
+            }
+        }
 
         function maybeStartAdaptiveRefresh() {
             if (!webgpuDevice || !webgpuAdaptiveEnabled || !useAdaptiveFmm || scenarioId !== 0) return;
             adaptiveFrameCounter++;
-            if (adaptiveFrameCounter % ADAPTIVE_REFRESH_INTERVAL !== 0) return;
+            // The rebuild itself runs in the metadata worker (see
+            // getAdaptiveMetaWorker); the main thread only pays the GPU
+            // readback + x/y compaction. At extreme counts the readback is
+            // still O(N) bandwidth, so stretch the interval.
+            const interval = N > 2000000 ? 96 : (N > 500000 ? 48 : ADAPTIVE_REFRESH_INTERVAL);
+            if (adaptiveFrameCounter % interval !== 0) return;
             if (adaptiveRefreshPending || !adaptiveMetadata) return;
             const needed = Math.ceil((N * 16) / 256) * 256; // keep MAP_READ size 256-aligned
             if (!adaptiveStagingBuffer || adaptiveStagingSize < needed) {
@@ -5338,12 +6132,60 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     // finally block unmaps (avoids a 4*N*16 MB memcpy per
                     // refresh; only x/y are read by buildAdaptiveMetadata).
                     const live = new Float32Array(staging.getMappedRange());
-                    rebuildAdaptiveMetadata(live);
+                    // Staleness probe: mean displacement of a 1/64-strided
+                    // sample since the last rebuild. Once particles have
+                    // drifted ~a third of the finest leaf width, P2M expands
+                    // about stale centers and the old lattice shows through
+                    // as square artifacts — pull the NEXT refresh forward to
+                    // interval/4 instead of waiting the full interval.
+                    const sampleStride = Math.max(1, N >> 6);
+                    const sampleCount = Math.ceil(N / sampleStride);
+                    if (adaptiveLastSamplePos && adaptiveLastSamplePos.length === sampleCount * 2) {
+                        let sumDisp = 0, k = 0;
+                        for (let i = 0; i < N; i += sampleStride, k++) {
+                            const dx = live[i * 4] - adaptiveLastSamplePos[k * 2];
+                            const dy = live[i * 4 + 1] - adaptiveLastSamplePos[k * 2 + 1];
+                            sumDisp += Math.sqrt(dx * dx + dy * dy);
+                        }
+                        const meanDisp = sumDisp / Math.max(1, k);
+                        if (meanDisp > 0.3 / (1 << adaptiveDepth)) {
+                            adaptiveFrameCounter = interval - Math.max(6, interval >> 2);
+                        }
+                    }
+                    if (!adaptiveLastSamplePos || adaptiveLastSamplePos.length !== sampleCount * 2) {
+                        adaptiveLastSamplePos = new Float32Array(sampleCount * 2);
+                    }
+                    for (let i = 0, k = 0; i < N; i += sampleStride, k++) {
+                        adaptiveLastSamplePos[k * 2] = live[i * 4];
+                        adaptiveLastSamplePos[k * 2 + 1] = live[i * 4 + 1];
+                    }
+                    adaptiveDepth = computeAdaptiveDepth(N, computeAdaptiveLeafTarget(N));
+                    const worker = getAdaptiveMetaWorker();
+                    if (worker) {
+                        // Compact x/y (the builder reads nothing else) and
+                        // hand the build to the worker; the new tree swaps in
+                        // between frames when the transferred result lands.
+                        // adaptiveRefreshPending stays set until the worker
+                        // answers so builds never overlap.
+                        const xy = new Float32Array(N * 2);
+                        for (let i = 0; i < N; i++) {
+                            xy[i * 2] = live[i * 4];
+                            xy[i * 2 + 1] = live[i * 4 + 1];
+                        }
+                        worker.postMessage({
+                            gen: adaptiveMetaGen, depth: adaptiveDepth, N,
+                            useAdaptiveNodeHash, p2pBudgetOverride,
+                            posBuffer: xy.buffer,
+                        }, [xy.buffer]);
+                    } else {
+                        rebuildAdaptiveMetadata(live);
+                        adaptiveRefreshPending = false;
+                    }
                 } catch (err) {
                     console.error('Adaptive metadata refresh failed:', err);
+                    adaptiveRefreshPending = false;
                 } finally {
                     staging.unmap();
-                    adaptiveRefreshPending = false;
                 }
             }).catch(() => { adaptiveRefreshPending = false; });
         }
@@ -5606,19 +6448,168 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
             frameCount++;
             const now = performance.now();
-            if (now - lastFpsTime >= 1000) {
-                const fps = frameCount;
+            const fpsElapsed = now - lastFpsTime;
+            if (fpsElapsed >= 1000) {
+                // Official 1 s window (frame = one sim step + one submit).
+                const fps = Math.round(frameCount * 1000 / fpsElapsed);
                 document.getElementById('valFPS').innerText = fps;
                 document.getElementById('valThroughput').innerText = `${((N * fps) / 1e6).toFixed(1)}M parts/sec`;
                 frameCount = 0;
                 lastFpsTime = now;
+                lastFpsDisplayTime = now;
                 updatePassTimingTelemetry();
                 updateExtreme5mTelemetry();
                 diagFlush();
                 autoprintTelemetry(fps);
+            } else if (fpsElapsed >= 250 && frameCount >= 4 && now - lastFpsDisplayTime >= 250) {
+                // Provisional in-window rate: without this, a mode/preset
+                // switch left the previous number on screen for up to a full
+                // second while the (synchronous) reset work diluted the new
+                // window — the "fps ramps up for 1 s" effect.
+                document.getElementById('valFPS').innerText = Math.round(frameCount * 1000 / fpsElapsed);
+                lastFpsDisplayTime = now;
             }
 
-            requestAnimationFrame(frameLoop);
+            scheduleNextFrame();
+        }
+
+        // ====================================================================
+        // FRAME SCHEDULER — vsync vs uncapped
+        // --------------------------------------------------------------------
+        // requestAnimationFrame is vsync-locked to the display refresh rate
+        // (typically 60 Hz), which caps the visible FPS regardless of how
+        // much GPU headroom the sim has. Uncapped mode re-schedules each
+        // step through a MessageChannel macrotask (no setTimeout's 4 ms
+        // nesting clamp), so steps/sec rises to the true pipeline limit and
+        // the FPS metric reports real throughput. Render presents beyond the
+        // compositor rate are dropped by the browser — only the last present
+        // per compositor frame is shown, so visuals are unchanged.
+        // Toggle: #btnFrameCap button or ?capped=1 / ?uncapped=1.
+        // DEFAULT is the vsync-locked loop (smooth + responsive out of the
+        // box); uncapped is the opt-in benchmark mode.
+        // ====================================================================
+        let uncappedSteps = false;
+        let lastRenderPresentMs = 0; // last encoded render present (uncapped-mode throttle)
+        const uncappedChannel = new MessageChannel();
+        uncappedChannel.port1.onmessage = () => frameLoop();
+        function scheduleNextFrame() {
+            if (uncappedSteps && !document.hidden) {
+                uncappedChannel.port2.postMessage(0);
+            } else {
+                // Hidden tab (or vsync mode): rAF pauses in the background,
+                // so an unattended uncapped tab cannot burn GPU indefinitely.
+                requestAnimationFrame(frameLoop);
+            }
+        }
+        function applyFrameCapMode(uncapped) {
+            uncappedSteps = uncapped;
+            resetFpsWindow();
+            const btn = document.getElementById('btnFrameCap');
+            if (btn) {
+                btn.innerText = uncapped ? 'Frame Cap: Uncapped' : 'Frame Cap: VSync';
+                btn.classList.toggle('active', uncapped);
+            }
+            const lbl = document.getElementById('lblFPS');
+            if (lbl) {
+                // Uncapped mode IS the benchmark mode: each loop iteration
+                // runs exactly one simulation step, so steps/sec is the true
+                // pipeline throughput (renders are throttled to ~1 per 12 ms
+                // because the compositor drops extra presents anyway). In
+                // vsync mode one step = one rendered frame = 1 fps.
+                lbl.innerText = uncapped ? 'Steps/sec (benchmark):' : 'Rendered FPS (vsync):';
+                lbl.title = uncapped
+                    ? 'Sim steps per second at the pipeline limit - use this to compare methods. The sim also runs faster than realtime in this mode (fixed dt per step).'
+                    : 'Presented frames per second, capped by the display refresh rate.';
+            }
+        }
+
+        // =====================================================================
+        // NEAR-FIELD vs FAR-FIELD (keep these axes separate in code reviews)
+        // ---------------------------------------------------------------------
+        // Near-field (this helper): HOW particles find local neighbors.
+        //   Shared: counting-sort | open-addr | funnel + optional sorted payload.
+        //   Used by galaxy P2P, boids sep/align, vortex viscosity, SPH kernels.
+        //
+        // Far-field (dispatched elsewhere): WHAT long-range force model runs.
+        //   none      — analytic only
+        //   gravity   — adaptive FMM multipoles (all-pairs self-gravity). Galaxy demo.
+        //               Requires a long-range kernel; not "scenario magic".
+        //   centroids — order-0 cell barycenter + mean vel (boid flocking).
+        //               Explicitly NOT log-gravity multipoles (see app4).
+        //   biot      — reserved Biot-Savart multipoles for vortex.
+        //
+        // SPH compact-support => far-field none + near-field cell lists.
+        // Gravity FMM mode/order are sub-controls of farFieldModel==gravity.
+        // =====================================================================
+        // Near-field cell-list membership backends (shared across scenarios).
+        // All three produce contiguous sortedIndex ranges; consumers recover
+        // them via cellStartOf/cellCountOf which branch on the hash flags.
+        function cellListsAvailable() {
+            return !!(webgpuFmmPipelines && webgpuFmmPipelines.count_cells
+                && webgpuFmmPipelines.clear_cells
+                && webgpuFmmPipelines.scan_cells
+                && webgpuFmmPipelines.scatter_cells);
+        }
+        // True when this frame should build/use near-field cell lists:
+        //   - boids / vortex / sph: always (true spatial neighbors)
+        //   - galaxy + gravity fixed-grid: yes (P2P near field of the FMM)
+        //   - galaxy adaptive gravity: no (adaptive List-1 handles near field)
+        //   - galaxy + farField none: no particle-particle near field
+        function wantsCellListsThisFrame() {
+            if (!cellListsAvailable()) return false;
+            if (scenarioId === 1 || scenarioId === 2 || scenarioId === 3) return true;
+            if (scenarioId === 0 && farFieldModel === 'gravity'
+                && webgpuFmmEnabled && !useAdaptiveFmm) return true;
+            return false;
+        }
+        // Encode clear + membership backend + optional gather_sorted into an
+        // existing compute pass (caller begins/ends the pass). Uses the same
+        // bind group layout as the FMM pipeline so eh_*/funnel_* entry points
+        // share the FMM bind group.
+        function dispatchCellListMembership(pass, fmmGroup, leafCells) {
+            const run = (name, groups) => {
+                pass.setPipeline(webgpuFmmPipelines[name] || webgpuEhPipelines[name] || webgpuFunnelPipelines[name]);
+                pass.setBindGroup(0, fmmGroup, [0]);
+                pass.dispatchWorkgroups(groups);
+            };
+            // Clear dense cell arrays always (and enough room for moments when
+            // galaxy multipole follows). Non-galaxy callers may pass a smaller
+            // clearThreads; membership only needs leafCells.
+            run('clear_cells', Math.ceil(leafCells / 256));
+            if (useFunnelHash && webgpuFunnelPipelines.funnel_build) {
+                const fCells = funnelGeometry ? funnelGeometry.totalSize : (2 * leafCells);
+                run('funnel_clear', Math.ceil(fCells / 256));
+                run('funnel_build', Math.ceil(N / 256));
+                run('funnel_scan', Math.ceil(fCells / 256));
+                run('funnel_scatter', Math.ceil(N / 256));
+                run('materialize_ranges', Math.ceil(leafCells / 256));
+            } else if (useElasticHash && webgpuEhPipelines.eh_build) {
+                const ehCells = 2 * leafCells;
+                run('eh_clear', Math.ceil(ehCells / 256));
+                run('eh_build', Math.ceil(N / 256));
+                run('eh_scan', Math.ceil(ehCells / 256));
+                run('eh_scatter', Math.ceil(N / 256));
+                run('materialize_ranges', Math.ceil(leafCells / 256));
+            } else {
+                run('count_cells', Math.ceil(N / 256));
+                run('scan_cells', 1);
+                run('scatter_cells', Math.ceil(N / 256));
+            }
+            if (useSortedPayload && webgpuFmmPipelines.gather_sorted) {
+                run('gather_sorted', Math.ceil(N / 256));
+            }
+        }
+        // Write the minimal FMM param block consumed by membership + gather.
+        // Hash flags must match the backend dispatched this frame so shader
+        // cellStartOf/cellCountOf route correctly.
+        function writeCellListParams() {
+            const K = fmmLevelCount();
+            fmmParamU[0] = N; fmmParamU[1] = fmmOrder; fmmParamU[2] = fmmLeafBits; fmmParamU[3] = K;
+            fmmParamU[4] = 0; fmmParamU[5] = fmmLevelRes(0); fmmParamU[6] = 0; fmmParamU[7] = 0;
+            fmmParamU[8] = (useElasticHash && webgpuEhPipelines.eh_build) ? 1 : 0;
+            fmmParamU[9] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0;
+            fmmParamU[10] = useSortedPayload ? 1 : 0;
+            webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData, 0, 64);
         }
 
         function runWebGPUFrame(dt) {
@@ -5642,7 +6633,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             uintView[3] = scenarioId;
             floatView[4] = p2pRadius;
             floatView[5] = simSpeed;
-            uintView[6] = use1Euro ? 1 : 0;
+            uintView[6] = (use1Euro && scenarioId === 1) ? 1 : 0; // 1-euro: boids only (see updateFmmControlsState)
             uintView[7] = colorMode;
             floatView[8] = mouseX;
             floatView[9] = mouseY;
@@ -5652,29 +6643,39 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             floatView[13] = core1.y;
             floatView[14] = core2.x;
             floatView[15] = core2.y;
-            uintView[16] = (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm)) ? 1 : 0;
-            uintView[17] = (webgpuAdaptiveEnabled && useAdaptiveFmm) ? 1 : 0;
+            // fmmEnabled / adaptiveMode mean GRAVITY multipole far field wrote
+            // fmmField this frame — not centroids, not near-field hash.
+            const gravityFarOn = farFieldModel === 'gravity' && scenarioId === 0
+                && (webgpuFmmEnabled || (webgpuAdaptiveEnabled && useAdaptiveFmm));
+            uintView[16] = gravityFarOn ? 1 : 0;
+            uintView[17] = (farFieldModel === 'gravity' && scenarioId === 0
+                && webgpuAdaptiveEnabled && useAdaptiveFmm) ? 1 : 0;
             uintView[18] = fmmLeafBits;
             // Per-list P2P sample cap: 128 up to 500k (full traversal for all
             // but the densest cells), then scaled down so total near-field
             // work stays roughly flat (>= 16 samples/list at 5M keeps the
             // force noise floor comparable to the old visual-quality budget).
             uintView[19] = N <= 500000 ? 128 : Math.max(16, Math.round((128 * 500000) / N));
-            uintView[20] = useElasticHash ? 1 : 0; // T3
+            // Hash flags always mirror UI; consumers only probe when cell lists
+            // were actually built this frame (cellListsReady) and the matching
+            // backend ran. Safe to set even when unused.
+            uintView[20] = (useElasticHash && webgpuEhPipelines.eh_build) ? 1 : 0; // T3
             uintView[21] = useQuantized ? 1 : 0;   // T4 (reserved in-shader; pack/unpack are separate passes)
             uintView[22] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
-            // cellListsReady: set when counting-sort cell lists were built this
-            // frame (boids uses them for true spatial neighbor traversal).
-            uintView[23] = (scenarioId === 1 && webgpuFmmPipelines.count_cells) ? 1 : 0;
+            // cellListsReady: near-field membership built this frame for any
+            // scenario that wants spatial neighbors (boids/vortex/sph always;
+            // galaxy fixed-grid FMM for P2P). Shared across hash backends.
+            const cellListsThisFrame = wantsCellListsThisFrame();
+            uintView[23] = cellListsThisFrame ? 1 : 0;
             // Sorted payload: only enable when cell lists WILL be built this
-            // frame (galaxy fixed-grid FMM or boids cell-list pass). Otherwise
-            // fmmSortedIndex/sortedParticles are stale and the main compute
-            // must use the legacy posVelIn[gid] path.
-            const cellListsThisFrame = (scenarioId === 1 && webgpuFmmPipelines.count_cells)
-                || (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm);
+            // frame. Otherwise fmmSortedIndex/sortedParticles are stale and
+            // the main compute must use the legacy posVelIn[gid] path.
             uintView[24] = (useSortedPayload && cellListsThisFrame) ? 1 : 0;
+            // Far-field model code (u32 @ offset 100). Gravity multipoles only
+            // when model==gravity; boid centroids when model==centroids.
+            uintView[25] = FAR_FIELD_CODE[farFieldModel] || 0;
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 100);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 104);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -5716,59 +6717,57 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: beginIdx, endOfPassWriteIndex: endIdx } }
                 : {};
 
-            // Boids: build counting-sorted cell lists (the SAME count/scan/
-            // scatter passes galaxy uses) so the main compute shader's boids
-            // branch can traverse TRUE spatial neighbors via the 3x3 leaf
-            // neighborhood instead of random global samples. Multipole passes
-            // (build_moments / m2m / m2l / l2l / l2p) stay galaxy-only.
-            if (scenarioId === 1 && webgpuFmmPipelines.count_cells) {
+            // Non-galaxy near-field cell lists (boids / vortex / sph): shared
+            // membership backend (counting-sort / open-addr / funnel) + optional
+            // sorted-payload gather. Gravity multipoles are NOT run here —
+            // they require farFieldModel=='gravity' (galaxy path below).
+            // Boid order-0 centroids ARE far-field, but a different kernel; see
+            // build_boid_centroids / boid_centroid_eval after membership.
+            const nonGalaxyCellLists = cellListsThisFrame && scenarioId !== 0;
+            if (nonGalaxyCellLists) {
                 const leafCells = 1 << (2 * fmmLeafBits);
-                // Minimal FMM params block: only numParticles + leafBits +
-                // levelCount are consumed by clear/count/scan/scatter.
-                const K = fmmLevelCount();
-                fmmParamU[0] = N; fmmParamU[1] = fmmOrder; fmmParamU[2] = fmmLeafBits; fmmParamU[3] = K;
-                fmmParamU[4] = 0; fmmParamU[5] = fmmLevelRes(0); fmmParamU[6] = 0; fmmParamU[7] = 0;
-                fmmParamU[8] = 0; fmmParamU[9] = 0;
-                fmmParamU[10] = useSortedPayload ? 1 : 0; // gather_sorted + sortedFmmParticles valid
-                webgpuDevice.queue.writeBuffer(webgpuFmmParams, 0, fmmParamData, 0, 64);
+                writeCellListParams();
                 const fmmGroup = webgpuPingPong === 0 ? webgpuFmmBindGroupA : webgpuFmmBindGroupB;
                 const cellPass = commandEncoder.beginComputePass();
-                cellPass.setPipeline(webgpuFmmPipelines.clear_cells);
-                cellPass.setBindGroup(0, fmmGroup, [0]);
-                cellPass.dispatchWorkgroups(Math.ceil(leafCells / 256));
-                cellPass.setPipeline(webgpuFmmPipelines.count_cells);
-                cellPass.dispatchWorkgroups(Math.ceil(N / 256));
-                cellPass.setPipeline(webgpuFmmPipelines.scan_cells);
-                cellPass.dispatchWorkgroups(1);
-                cellPass.setPipeline(webgpuFmmPipelines.scatter_cells);
-                cellPass.dispatchWorkgroups(Math.ceil(N / 256));
-                // Sorted payload gather: re-order fmmPos by cell so the main
-                // compute boids P2P neighbor reads are coalesced. Dispatched
-                // right after scatter_cells; one thread per sorted slot.
-                if (useSortedPayload && webgpuFmmPipelines.gather_sorted) {
-                    cellPass.setPipeline(webgpuFmmPipelines.gather_sorted);
-                    cellPass.setBindGroup(0, fmmGroup, [0]);
-                    cellPass.dispatchWorkgroups(Math.ceil(N / 256));
-                }
+                dispatchCellListMembership(cellPass, fmmGroup, leafCells);
                 cellPass.end();
+
+                // Boid cell-centroid far field (order-0 mass/momentum). Requires
+                // cell lists + membership just built. Not adaptive FMM gravity.
+                if (farFieldModel === 'centroids'
+                    && scenarioId === 1
+                    && webgpuFmmPipelines.build_boid_centroids
+                    && webgpuFmmPipelines.boid_centroid_eval) {
+                    const centPass = commandEncoder.beginComputePass();
+                    centPass.setPipeline(webgpuFmmPipelines.build_boid_centroids);
+                    centPass.setBindGroup(0, fmmGroup, [0]);
+                    centPass.dispatchWorkgroups(Math.ceil(leafCells / 64));
+                    centPass.setPipeline(webgpuFmmPipelines.boid_centroid_eval);
+                    centPass.setBindGroup(0, fmmGroup, [0]);
+                    centPass.dispatchWorkgroups(Math.ceil(N / 256));
+                    centPass.end();
+                }
             }
 
-            // Galaxy only: counting-sort cell lists, then the multi-level
-            // uniform FMM (P2M -> M2M chain -> per-level M2L -> L2L chain -> L2P).
-            if (scenarioId === 0 && webgpuFmmEnabled && !useAdaptiveFmm) {
+            // Galaxy gravity far field: cell-list membership + multi-level
+            // uniform adaptive FMM (P2M -> M2M -> M2L -> L2L -> L2P). Only when
+            // farFieldModel=='gravity' (webgpuFmmEnabled tracks that).
+            if (scenarioId === 0 && farFieldModel === 'gravity' && webgpuFmmEnabled && !useAdaptiveFmm) {
                 fmmProbeFrames++;
                 const leafCells = 1 << (2 * fmmLeafBits);
                 const K = fmmLevelCount();
                 // Fill all K+1 uniform blocks (256-byte stride): shared header
                 // fields + this level's geometry/bases in CELL units.
                 let momBase = 0, localBase = 0;
+                const ehFlag = (useElasticHash && webgpuEhPipelines.eh_build) ? 1 : 0;
+                const funnelFlag = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0;
                 for (let l = 0; l <= K; l++) {
                     const res = fmmLevelRes(l);
                     const o = l * 64; // 256 bytes / 4
                     fmmParamU[o + 0] = N; fmmParamU[o + 1] = fmmOrder; fmmParamU[o + 2] = fmmLeafBits; fmmParamU[o + 3] = K;
                     fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
-                    fmmParamU[o + 8] = useElasticHash ? 1 : 0; // T3: route cell lookups through the hash
-                    fmmParamU[o + 9] = (useFunnelHash && webgpuFunnelPipelines.funnel_build) ? 1 : 0; // T6.4
+                    fmmParamU[o + 8] = ehFlag; // T3: route cell lookups through the hash
+                    fmmParamU[o + 9] = funnelFlag; // T6.4
                     fmmParamU[o + 10] = useSortedPayload ? 1 : 0; // gather_sorted + sortedFmmParticles valid
                     if (l >= 1) localBase += res * res;
                     momBase += res * res;
@@ -5784,42 +6783,34 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     pass.dispatchWorkgroups(groups);
                 };
 
-                // Pass 1: FMM Build — clear, cell membership, leaf P2M, then
-                // the M2M chain. Cell membership is the counting sort
-                // (count/scan/scatter) by default, the open-addressing hash
-                // (eh_*) when useElasticHash is on, or the funnel schedule
-                // (funnel_*) when useFunnelHash is on — all three produce the
-                // same sortedIndex contiguous ranges the consumers read.
-                // Dispatches inside one compute pass are implicitly ordered
-                // with memory visibility in WebGPU.
+                // Pass 1: FMM Build — clear (cells + moments + locals), cell
+                // membership (shared backend), leaf P2M, then the M2M chain.
+                // clear_cells is sized to cover moments/locals; membership
+                // backends then clear/build their own tables as needed.
                 const clearThreads = Math.max(leafCells, fmmTotalMomCells() * 3, fmmTotalLocalCells() * 3);
                 const fmmBuildPass = commandEncoder.beginComputePass(tsOpts(0, 1));
                 runFmmInPass(fmmBuildPass, 'clear_cells', Math.ceil(clearThreads / 256));
+                // Membership without the dense clear (already done above with
+                // the larger clearThreads that also zeros moments/locals).
                 if (useFunnelHash && webgpuFunnelPipelines.funnel_build) {
-                    // T6.4 funnel schedule: table reuses the eh buffers (sized
-                    // 2*leafCells >= funnelGeometry.totalSize), so the clear
-                    // pass covers the funnel table size, not 2*leafCells.
                     const fCells = funnelGeometry ? funnelGeometry.totalSize : (2 * leafCells);
                     runFmmInPass(fmmBuildPass, 'funnel_clear', Math.ceil(fCells / 256));
                     runFmmInPass(fmmBuildPass, 'funnel_build', Math.ceil(N / 256));
                     runFmmInPass(fmmBuildPass, 'funnel_scan', Math.ceil(fCells / 256));
                     runFmmInPass(fmmBuildPass, 'funnel_scatter', Math.ceil(N / 256));
-                } else if (useElasticHash) {
+                    runFmmInPass(fmmBuildPass, 'materialize_ranges', Math.ceil(leafCells / 256));
+                } else if (useElasticHash && webgpuEhPipelines.eh_build) {
                     const ehCells = 2 * leafCells;
                     runFmmInPass(fmmBuildPass, 'eh_clear', Math.ceil(ehCells / 256));
                     runFmmInPass(fmmBuildPass, 'eh_build', Math.ceil(N / 256));
                     runFmmInPass(fmmBuildPass, 'eh_scan', Math.ceil(ehCells / 256));
                     runFmmInPass(fmmBuildPass, 'eh_scatter', Math.ceil(N / 256));
+                    runFmmInPass(fmmBuildPass, 'materialize_ranges', Math.ceil(leafCells / 256));
                 } else {
                     runFmmInPass(fmmBuildPass, 'count_cells', Math.ceil(N / 256));
                     runFmmInPass(fmmBuildPass, 'scan_cells', 1);
                     runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
                 }
-                // Sorted payload gather: re-order fmmPos by cell so build_moments
-                // and the main compute P2P neighbor reads are coalesced. Runs
-                // after whichever scatter variant produced sortedIndex, and
-                // before build_moments (which reads sortedFmmParticles when
-                // useSortedPayload == 1). Folded into the FMM Build pass timing.
                 if (useSortedPayload && webgpuFmmPipelines.gather_sorted) {
                     runFmmInPass(fmmBuildPass, 'gather_sorted', Math.ceil(N / 256));
                 }
@@ -5898,23 +6889,32 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
 
-            // Adaptive CGR88 FMM: full multi-level pipeline with M2M/L2L/M2L/P2L.
+            // Adaptive FMM: full multi-level pipeline with M2M/L2L/M2L/P2L.
             // CPU timing is used for build/m2l/l2p because the adaptive path
             // has >6 passes but only 3 GPU timestamp slot pairs — the GPU
             // timestamps can't cleanly map to the three telemetry groups. The
             // readback callback checks webgpuQueryBufAdaptive and preserves
             // these CPU values instead of overwriting with stale slot data.
-            if (scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm) {
+            // Adaptive FMM gravity multipoles — only when far-field model is
+            // gravity (not centroids / none). Same kernel as fixed-grid FMM.
+            if (scenarioId === 0 && farFieldModel === 'gravity'
+                && webgpuAdaptiveEnabled && useAdaptiveFmm) {
                 fmmProbeFrames++;
                 const md = adaptiveMetadata;
                 const nn = md.totalNodes;
                 const depth = md.depth;
-                const order = Math.min(4, Math.max(1, fmmOrder));
+                // Order 0 (monopole) is honored here as well: every kernel
+                // gates its coefficient loops on expansionOrder, so p=0 is
+                // just "moments truncated to k=0".
+                const order = Math.min(4, Math.max(0, fmmOrder));
 
                 // Write per-level uniform blocks (P6): each 256-byte block holds
                 // the common params plus levelBase = levelStart[l], selected at
                 // dispatch time via the bind group's dynamic offset. Block 0
                 // (levelBase 0) is shared by the clear/p2m/l2p whole-range passes.
+                // dispatchCount (index 6) = per-level node count: the m2m/l2l/m2l
+                // guards need the exact active-thread count so ceil(count/64)
+                // dispatches don't spill into the next level's nodes.
                 // zeroNearP2P (index 5): set to 1 when the bench probe is about
                 // to read back the field, so the l2p shader skips List-1 P2P
                 // and the probe measures the multipole path only (Fix #5).
@@ -5929,8 +6929,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     aU[base + 0] = N; aU[base + 1] = nn; aU[base + 2] = order; aU[base + 3] = md.numLevels;
                     aU[base + 4] = md.levelStart[l];
                     aU[base + 5] = zeroP2P;
-                    aU[base + 6] = 0; // _pad1 (reserved)
+                    aU[base + 6] = md.levelCount[l]; // dispatchCount (per-level m2m/l2l/m2l guard)
                     aU[base + 7] = useAdaptiveNodeHash ? 1 : 0; // useAdaptiveNodeHash
+                    aU[base + 8] = p2pBudgetOverride; // 0 = auto tier 24/12/6; ?p2pbudget= override
                 }
                 webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, adaptiveParamData);
 
@@ -5944,52 +6945,44 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 // CPU timing for the three telemetry groups.
                 const cpuT0Build = performance.now();
 
-                // Pass 1: Clear multipoles and locals (covers ALL nodes)
-                const clearPass = commandEncoder.beginComputePass();
-                runAdaptive(clearPass, 'clear', Math.ceil((nn * 3) / 256), 0);
-                clearPass.end();
-
-                // Pass 2: P2M at terminal leaves (flat whole-range dispatch)
-                const p2mPass = commandEncoder.beginComputePass();
-                runAdaptive(p2mPass, 'p2m', Math.ceil(nn / 64), 0);
-                p2mPass.end();
-
-                // Pass 3: M2M upward pass. EXACT per-level ranges: dispatching
-                // levelCount[l] threads would address flat ids 0..4^l-1, i.e.
-                // the WRONG nodes, without the levelBase offset (P6 fix).
+                // WebGPU orders dispatches within one compute pass and makes
+                // each dispatch's storage writes visible to the next, so the
+                // whole adaptive chain encodes as TWO passes instead of
+                // 3 + 3*depth separate begin/end pairs (up to 33 pass-boundary
+                // round trips per frame at depth 10 — the main reason adaptive
+                // trailed the 4-pass fixed-grid pipeline).
+                // Pass A (upward): clear, P2M at leaves, M2M per level
+                // bottom-up. EXACT per-level ranges: dispatching levelCount[l]
+                // threads would address flat ids 0..4^l-1, i.e. the WRONG
+                // nodes, without the levelBase offset (P6 fix).
+                const upPass = commandEncoder.beginComputePass();
+                runAdaptive(upPass, 'clear', Math.ceil((nn * 3) / 256), 0);
+                runAdaptive(upPass, 'p2m', Math.ceil(nn / 64), 0);
                 for (let l = depth - 1; l >= 0; l--) {
                     const lc = Math.ceil(md.levelCount[l] / 64);
                     if (lc === 0) continue;
-                    const m2mPass = commandEncoder.beginComputePass();
-                    runAdaptive(m2mPass, 'm2m', lc, l);
-                    m2mPass.end();
+                    runAdaptive(upPass, 'm2m', lc, l);
                 }
+                upPass.end();
 
                 webgpuPassTimings.fmmBuild = performance.now() - cpuT0Build;
                 const cpuT0M2l = performance.now();
 
-                // Pass 4: L2L + M2L downward pass (exact per-level ranges, so
-                // each node's locals are written exactly once per frame after
-                // the clear pass)
+                // Pass B (downward + evaluation): per level L2L then M2L
+                // (l2l(l) must see m2l(l-1)'s locals — in-pass dispatch order
+                // guarantees that), then L2P at particles (List 3 M2P and
+                // List 1 P2P included).
+                const downPass = commandEncoder.beginComputePass();
                 for (let l = 1; l <= depth; l++) {
                     const lc = Math.ceil(md.levelCount[l] / 64);
                     if (lc === 0) continue;
-                    // L2L and M2L in separate passes for correct memory ordering
-                    const l2lPass = commandEncoder.beginComputePass();
-                    runAdaptive(l2lPass, 'l2l', lc, l);
-                    l2lPass.end();
-                    const m2lPass = commandEncoder.beginComputePass();
-                    runAdaptive(m2lPass, 'm2l', lc, l);
-                    m2lPass.end();
+                    runAdaptive(downPass, 'l2l', lc, l);
+                    runAdaptive(downPass, 'm2l', lc, l);
                 }
-
                 webgpuPassTimings.fmmM2l = performance.now() - cpuT0M2l;
                 const cpuT0L2p = performance.now();
-
-                // Pass 5: L2P at particles (includes List 3 M2P and List 1 P2P)
-                const l2pPass = commandEncoder.beginComputePass();
-                runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256), 0);
-                l2pPass.end();
+                runAdaptive(downPass, 'l2p', Math.ceil(N / 256), 0);
+                downPass.end();
 
                 webgpuPassTimings.fmmL2p = performance.now() - cpuT0L2p;
                 // One-shot field magnitude check for adaptive path
@@ -6042,26 +7035,36 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
 
             // 2. Render Pass
-            const currentTexture = webgpuContext.getCurrentTexture().createView();
-            const renderTsOpts = webgpuTimestampQueryEnabled
-                ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: 8, endOfPassWriteIndex: 9 } }
-                : {};
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    view: currentTexture,
-                    clearValue: { r: 0.043, g: 0.055, b: 0.078, a: 1.0 },
-                    loadOp: 'clear',
-                    storeOp: 'store'
-                }],
-                ...renderTsOpts
-            });
-            renderPass.setPipeline(webgpuPipelineRender);
-            renderPass.setBindGroup(0, webgpuRenderBindGroup);
-            const currentPosVelBuffer = webgpuPingPong === 0 ? webgpuPosVelBufferB : webgpuPosVelBufferA;
-            renderPass.setVertexBuffer(0, currentPosVelBuffer);
-            renderPass.setVertexBuffer(1, webgpuExtraBuffer);
-            renderPass.draw(N);
-            renderPass.end();
+            // In uncapped (benchmark) mode the compositor only shows the last
+            // present per refresh anyway, so encoding a render pass for every
+            // step floods the GPU queue with presents the display never
+            // shows — the "uncapped mode lags hard" effect. Present at most
+            // once per ~12 ms; every step still simulates and submits.
+            const renderNow = performance.now();
+            const shouldRender = !uncappedSteps || document.hidden || (renderNow - lastRenderPresentMs) >= 12;
+            if (shouldRender) {
+                lastRenderPresentMs = renderNow;
+                const currentTexture = webgpuContext.getCurrentTexture().createView();
+                const renderTsOpts = webgpuTimestampQueryEnabled
+                    ? { timestampWrites: { querySet: webgpuQuerySet, beginningOfPassWriteIndex: 8, endOfPassWriteIndex: 9 } }
+                    : {};
+                const renderPass = commandEncoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: currentTexture,
+                        clearValue: { r: 0.043, g: 0.055, b: 0.078, a: 1.0 },
+                        loadOp: 'clear',
+                        storeOp: 'store'
+                    }],
+                    ...renderTsOpts
+                });
+                renderPass.setPipeline(webgpuPipelineRender);
+                renderPass.setBindGroup(0, webgpuRenderBindGroup);
+                const currentPosVelBuffer = webgpuPingPong === 0 ? webgpuPosVelBufferB : webgpuPosVelBufferA;
+                renderPass.setVertexBuffer(0, currentPosVelBuffer);
+                renderPass.setVertexBuffer(1, webgpuExtraBuffer);
+                renderPass.draw(N);
+                renderPass.end();
+            }
 
             // Resolve GPU timestamp queries and copy to a free readback buffer
             if (webgpuTimestampQueryEnabled && webgpuQuerySet) {
@@ -6073,7 +7076,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     if (webgpuQueryBufState[idx] === 0) {
                         commandEncoder.copyBufferToBuffer(webgpuQueryResolveBuffer, 0, webgpuQueryReadbackBufs[idx], 0, 10 * 8);
                         webgpuQueryBufState[idx] = 1; // has data
-                        webgpuQueryBufAdaptive[idx] = !!(scenarioId === 0 && webgpuAdaptiveEnabled && useAdaptiveFmm);
+                        webgpuQueryBufAdaptive[idx] = !!(scenarioId === 0 && farFieldModel === 'gravity'
+                            && webgpuAdaptiveEnabled && useAdaptiveFmm);
                         webgpuQueryCopyIdx = (idx + 1) % 3;
                         copied = true;
                         break;
@@ -6195,7 +7199,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             gl.uniform1f(gl.getUniformLocation(glProgram, 'u_simTime'), simTime);
             gl.uniform1i(gl.getUniformLocation(glProgram, 'u_scenario'), scenarioId);
             gl.uniform1f(gl.getUniformLocation(glProgram, 'u_speedMult'), simSpeed);
-            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_use1Euro'), use1Euro ? 1 : 0);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_use1Euro'), (use1Euro && scenarioId === 1) ? 1 : 0);
             gl.uniform1i(gl.getUniformLocation(glProgram, 'u_colorMode'), colorMode);
             gl.uniform2f(gl.getUniformLocation(glProgram, 'u_mouse'), mouseX, mouseY);
             gl.uniform1f(gl.getUniformLocation(glProgram, 'u_mouseMode'), mouseMode);
@@ -6230,6 +7234,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // UI & INTERACTION CONTROLS
         // ====================================================================
         function resetSimulation() {
+            resetFpsWindow();
             generateParticles();
             if (activeBackend === 'WEBGPU') {
                 // Resize GPU buffers if the particle count (or its derived
@@ -6278,43 +7283,100 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         });
         canvas.addEventListener('touchend', () => { mouseX = -1; mouseY = -1; isMouseDown = false; });
 
-        // FMM mode/order are galaxy-only. In other scenarios the controls are
-        // visually disabled (greyed out + tooltip) and #valFmmMode shows a
-        // 'galaxy-only' note. Re-enabled when switching back to galaxy.
-        // Also disables the Near-Field Hash Mode select (galaxy-only).
+        // Control enablement reflects the two axes:
+        //   near-field hash  — always on (shared membership backends)
+        //   far-field model  — scenario defaults + gravity sub-controls
+        // Gravity FMM mode/order are enabled only when farFieldModel=='gravity'
+        // (not "because scenario==galaxy"). Scenario change picks a default
+        // far-field that matches the force model (see defaultFarFieldForScenario).
+        function defaultFarFieldForScenario(scen) {
+            if (scen === 'galaxy') return 'gravity';
+            if (scen === 'boids') return 'centroids';
+            // vortex: analytic Biot-Savart cores today; particle-particle Biot
+            // multipoles are reserved (farFieldModel biot). SPH: compact
+            // support => no long-range multipole far field.
+            return 'none';
+        }
+        function farFieldLabel(model) {
+            return ({
+                none: 'None (analytic / local)',
+                gravity: 'Gravity FMM',
+                centroids: 'Boid cell-centroids',
+                biot: 'Biot-Savart FMM (reserved)',
+            })[model] || model;
+        }
         function updateFmmControlsState() {
             const modeEl = document.getElementById('selectFmmMode');
             const orderEl = document.getElementById('selectFmmOrder');
             const hashEl = document.getElementById('selectHashMode');
+            const farEl = document.getElementById('selectFarField');
             const valFmmModeEl = document.getElementById('valFmmMode');
-            const galaxyOnly = scenario !== 'galaxy';
+            const valFarEl = document.getElementById('valFarField');
+            const gravityActive = farFieldModel === 'gravity';
+
+            // Far-field select: enable options that match this scenario's physics.
+            if (farEl) {
+                for (const opt of farEl.options) {
+                    if (opt.value === 'biot') {
+                        opt.disabled = true; // reserved
+                    } else if (opt.value === 'gravity') {
+                        // Gravity multipoles need an all-pairs long-range kernel.
+                        // Demo ships that for galaxy; still allow picking on
+                        // other scenarios for experiment (mostly inert).
+                        opt.disabled = false;
+                    } else if (opt.value === 'centroids') {
+                        opt.disabled = false;
+                    } else {
+                        opt.disabled = false;
+                    }
+                }
+                farEl.value = farFieldModel;
+                farEl.disabled = false;
+                farEl.style.opacity = '';
+                farEl.style.cursor = '';
+            }
+            if (valFarEl) valFarEl.innerText = farFieldLabel(farFieldModel);
+
+            // Gravity sub-controls: only meaningful for farFieldModel==gravity.
             if (modeEl) {
-                modeEl.disabled = galaxyOnly;
-                modeEl.title = galaxyOnly ? 'FMM is galaxy-only (self-gravity); other scenarios use analytic forces' : '';
-                modeEl.style.opacity = galaxyOnly ? '0.45' : '';
-                modeEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+                modeEl.disabled = !gravityActive;
+                modeEl.title = gravityActive
+                    ? 'Gravity far-field layout: fixed-grid vs adaptive-quadtree multilevel vs analytic cores only'
+                    : 'Gravity FMM mode applies only when Far-Field Model = Gravity FMM';
+                modeEl.style.opacity = gravityActive ? '' : '0.45';
+                modeEl.style.cursor = gravityActive ? '' : 'not-allowed';
             }
             if (orderEl) {
-                orderEl.disabled = galaxyOnly;
-                orderEl.title = galaxyOnly ? 'FMM expansion order is galaxy-only' : '';
-                orderEl.style.opacity = galaxyOnly ? '0.45' : '';
-                orderEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+                orderEl.disabled = !gravityActive;
+                orderEl.title = gravityActive
+                    ? 'Gravity multipole truncation order p'
+                    : 'Expansion order applies only when Far-Field Model = Gravity FMM';
+                orderEl.style.opacity = gravityActive ? '' : '0.45';
+                orderEl.style.cursor = gravityActive ? '' : 'not-allowed';
             }
+            // Near-field hash: always available (independent axis).
             if (hashEl) {
-                hashEl.disabled = galaxyOnly;
-                hashEl.title = galaxyOnly ? 'Near-field hash mode is galaxy-only' : '';
-                hashEl.style.opacity = galaxyOnly ? '0.45' : '';
-                hashEl.style.cursor = galaxyOnly ? 'not-allowed' : '';
+                hashEl.disabled = false;
+                hashEl.title = 'Near-field cell-list membership (shared; independent of far-field model)';
+                hashEl.style.opacity = '';
+                hashEl.style.cursor = '';
             }
             if (valFmmModeEl) {
-                if (galaxyOnly) {
-                    valFmmModeEl.innerText = 'Galaxy-only';
+                if (!gravityActive) {
+                    valFmmModeEl.innerText = `n/a (${farFieldModel})`;
                 } else {
-                    // Restore the active mode label when switching back to galaxy.
-                    valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)'
-                        : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (2-Level)' : 'Analytic (no FMM)');
+                    valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive FMM (Multi-Level)'
+                        : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (Multi-Level)' : 'Analytic (no FMM)');
                 }
             }
+
+            // The 1 euro filter smooths velocity jitter for slow particles;
+            // it was designed for boid flocking (apps/app4_fmm_boids_1euro)
+            // and is visually a no-op in the other scenarios (galaxy/vortex/
+            // sph particles move near maxSpeed where the adaptive alpha
+            // saturates to 1.0). Hide the toggle where it does nothing.
+            const euroBtn = document.getElementById('btn1Euro');
+            if (euroBtn) euroBtn.style.display = (scenario === 'boids') ? '' : 'none';
         }
 
         // Apply a deferred 'adaptive' selection once the async adaptive
@@ -6327,9 +7389,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 useAdaptiveFmm = true;
                 webgpuFmmEnabled = false;
                 const valFmmModeEl = document.getElementById('valFmmMode');
-                if (valFmmModeEl) valFmmModeEl.innerText = 'Adaptive CGR88 (Multi-Level)';
+                if (valFmmModeEl) valFmmModeEl.innerText = 'Adaptive FMM (Multi-Level)';
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>WebGPU Adaptive CGR88 FMM`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>WebGPU Adaptive FMM`;
                 }
             } else {
                 // Init failed — fall back to fixed-grid and surface it.
@@ -6346,12 +7408,40 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             updatePassTimingTelemetry();
         }
 
-        // Scenario Selector
+        // Scenario Selector — picks a default far-field model that matches
+        // the scenario's force physics (gravity for galaxy, centroids for
+        // boids, none for vortex/sph). User can still override via Far-Field.
         document.getElementById('scenarioSelect').addEventListener('change', (e) => {
             scenario = e.target.value;
+            farFieldModel = defaultFarFieldForScenario(scenario);
+            // Gravity layout flags follow far-field + remaining FMM mode select.
+            if (farFieldModel !== 'gravity') {
+                // Leave webgpuFmmEnabled / useAdaptiveFmm as last gravity choice
+                // so switching back to galaxy restores prior mode; they are
+                // gated by farFieldModel at dispatch time.
+            }
             updateFmmControlsState();
             resetSimulation();
         });
+
+        // Far-field model select (independent of near-field hash).
+        const selectFarFieldEl = document.getElementById('selectFarField');
+        if (selectFarFieldEl) {
+            selectFarFieldEl.addEventListener('change', (e) => {
+                const v = e.target.value;
+                if (v === 'biot') {
+                    // Reserved — snap back.
+                    farFieldModel = defaultFarFieldForScenario(scenario);
+                    e.target.value = farFieldModel;
+                } else {
+                    farFieldModel = v;
+                }
+                updateFmmControlsState();
+                resetSimulation();
+                updateMemoryTelemetry();
+                updateFmmAxisTelemetry();
+            });
+        }
 
         // Sliders
         document.getElementById('sliderParticles').addEventListener('input', (e) => {
@@ -6381,8 +7471,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const labels = {
                     0: 'p=0 (Monopole)',
                     1: 'p=1 (Dipole)',
-                    2: 'p=2 (Quadrupole CGR88)',
-                    4: 'p=4 (Hexadecapole CGR88)'
+                    2: 'p=2 (Quadrupole)',
+                    4: 'p=4 (Hexadecapole)'
                 };
                 const valOrderEl = document.getElementById('valOrder');
                 if (valOrderEl) {
@@ -6444,12 +7534,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     } else if (useOff) {
                         valFmmModeEl.innerText = 'Analytic (no FMM)';
                     } else {
-                        valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Uniform-Lattice FMM (2-Level)';
+                        valFmmModeEl.innerText = useAdaptiveFmm ? 'Adaptive FMM (Multi-Level)' : 'Uniform-Lattice FMM (Multi-Level)';
                     }
                 }
                 // Update engine badge
                 if (activeBackend === 'WEBGPU') {
-                    const badge = useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM'
+                    const badge = useAdaptiveFmm ? 'WebGPU Adaptive FMM'
                         : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores');
                     document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${badge}`;
                 }
@@ -6464,10 +7554,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         }
 
         // Near-Field Hash Mode select: controls which spatial-hash backend
-        // the fixed-grid FMM uses for cell-list construction. 'none' = the
-        // validated counting-sort cell lists; 'openaddr' = open-addressing
-        // linear probe (useElasticHash); 'funnel' = FCK funnel schedule
-        // (useFunnelHash). Galaxy-only like the other FMM controls.
+        // cell-list construction uses for ALL scenarios with spatial
+        // neighbors (galaxy fixed-grid P2P, boids, vortex, sph).
+        // 'none' = counting-sort; 'openaddr' = linear probe; 'funnel' = FCK.
         const selectHashModeEl = document.getElementById('selectHashMode');
         if (selectHashModeEl) {
             selectHashModeEl.addEventListener('change', (e) => {
@@ -6485,38 +7574,20 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                         valHashEl.innerText = v === 'none' ? 'Counting-Sort' : (v === 'openaddr' ? 'Open-Addr' : 'Funnel');
                     }
                 }
-                if (scenario === 'galaxy') {
-                    resetSimulation();
-                }
+                // Membership backend change applies every scenario that builds
+                // cell lists; re-seed so the next frame picks up clean state.
+                resetSimulation();
                 updateMemoryTelemetry();
                 updateFmmAxisTelemetry();
             });
         }
 
-        // Sorted payload checkbox: toggles the gather_sorted dispatch and the
-        // main compute's sorted-slot iteration (coalesced P2P reads). A/B via
-        // ?sortedPayload=0|1. Applies to both galaxy (FMM P2P) and boids
-        // (cell-list spatial neighbors) since both use the counting-sort
-        // sortedIndex ranges.
-        const chkSortedPayloadEl = document.getElementById('chkSortedPayload');
-        if (chkSortedPayloadEl) {
-            chkSortedPayloadEl.addEventListener('change', (e) => {
-                useSortedPayload = e.target.checked;
-            });
-        }
-
-        // Adaptive node hash checkbox: toggles the funnel-hash occupied-node
-        // directory in adaptive CGR88 mode (l2p resolves the target leaf via a
-        // funnel probe instead of the leafForParticle array). A/B via
-        // ?adaptiveHash=0|1. Only affects adaptive mode; ignored by the
-        // fixed-grid path.
-        const chkAdaptiveNodeHashEl = document.getElementById('chkAdaptiveNodeHash');
-        if (chkAdaptiveNodeHashEl) {
-            chkAdaptiveNodeHashEl.addEventListener('change', (e) => {
-                useAdaptiveNodeHash = e.target.checked;
-                updateFmmAxisTelemetry();
-            });
-        }
+        // Sorted payload + adaptive node hash: previously checkboxes, now
+        // URL-param A/B only (?sortedPayload=0|1, ?adaptiveHash=0|1; the
+        // funnel node directory defaults ON — see its declaration). The UI
+        // was reduced in R9 to shrink the benchmark option matrix; both
+        // default to the fast path. Applies to galaxy P2P and
+        // boids/vortex/sph spatial neighbors (shared sortedIndex ranges).
 
         // Presets
         const setPreset = (val, btn) => {
@@ -6578,6 +7649,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             e.target.innerText = `1€ Filter: ${use1Euro ? 'ON' : 'OFF'}`;
         });
 
+        // Vsync vs uncapped frame scheduling (see scheduleNextFrame). Uncapped
+        // removes the display-refresh ceiling so FPS measures true pipeline
+        // throughput; vsync mode restores the classic 60 Hz-locked loop.
+        document.getElementById('btnFrameCap').addEventListener('click', () => {
+            applyFrameCapMode(!uncappedSteps);
+        });
+
         const colorModeNames = [
             'Color: Velocity Heatmap',
             'Color: FMM Dynamics',
@@ -6602,6 +7680,33 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         });
 
         document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
+
+        // Copy implementation-details telemetry to clipboard.
+        (function () {
+            const btn = document.getElementById('btnCopyImpl');
+            const implEl = document.getElementById('implDetailsLabel');
+            if (!btn || !implEl) return;
+            btn.addEventListener('click', async () => {
+                const text = implEl.innerText.trim();
+                if (!text) return;
+                try {
+                    await navigator.clipboard.writeText(text);
+                } catch (_) {
+                    // Fallback for non-secure contexts: select + execCommand.
+                    const range = document.createRange();
+                    range.selectNodeContents(implEl);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand('copy');
+                    sel.removeAllRanges();
+                }
+                const prev = btn.innerText;
+                btn.innerText = 'Copied';
+                btn.style.color = 'var(--accent-cyan)';
+                setTimeout(() => { btn.innerText = prev; btn.style.color = ''; }, 1200);
+            });
+        })();
 
         // ====================================================================
         // VARIANT BENCHMARK PANEL (live in-browser micro-bench)
@@ -6660,7 +7765,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 fmmOrder = cfg.fmmOrder;
                 const sel = document.getElementById('selectFmmOrder');
                 sel.value = String(cfg.fmmOrder);
-                const labels = { 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' };
+                const labels = { 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole, O(N))', 4: 'p=4 (Hexadecapole, O(N))' };
                 document.getElementById('valOrder').innerText = labels[fmmOrder] || `p=${fmmOrder}`;
             }
             if (cfg.fmmOff !== undefined && cfg.fmmOff) {
@@ -6682,9 +7787,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const wantAdaptive = cfg.adaptive;
                 useAdaptiveFmm = wantAdaptive && webgpuAdaptiveEnabled;
                 webgpuFmmEnabled = !useAdaptiveFmm && Object.keys(webgpuFmmPipelines).length > 0;
-                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)' : 'Uniform-Lattice FMM (2-Level)';
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive FMM (Multi-Level)' : 'Uniform-Lattice FMM (Multi-Level)';
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
                 }
                 updateMemoryTelemetry();
             }
@@ -6708,11 +7813,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 useQuantized = prev.useQuantized;
                 document.getElementById('selectFmmMode').value = prev.fmmModeSelectVal;
                 document.getElementById('selectFmmOrder').value = prev.orderSelectVal;
-                document.getElementById('valOrder').innerText = ({ 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole CGR88 O(N))', 4: 'p=4 (Hexadecapole CGR88 O(N))' })[fmmOrder] || `p=${fmmOrder}`;
-                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive CGR88 (Multi-Level)'
-                    : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (2-Level)' : 'Analytic (no FMM)');
+                document.getElementById('valOrder').innerText = ({ 0: 'p=0 (Monopole O(N))', 1: 'p=1 (Dipole O(N))', 2: 'p=2 (Quadrupole, O(N))', 4: 'p=4 (Hexadecapole, O(N))' })[fmmOrder] || `p=${fmmOrder}`;
+                document.getElementById('valFmmMode').innerText = useAdaptiveFmm ? 'Adaptive FMM (Multi-Level)'
+                    : (webgpuFmmEnabled ? 'Uniform-Lattice FMM (Multi-Level)' : 'Analytic (no FMM)');
                 if (activeBackend === 'WEBGPU') {
-                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive CGR88 FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
+                    document.getElementById('engineBadge').innerHTML = `<span id="gpu-status-indicator"></span>${useAdaptiveFmm ? 'WebGPU Adaptive FMM' : (webgpuFmmEnabled ? 'WebGPU Cell-List FMM' : 'WebGPU Analytic Cores')}`;
                 }
                 updateMemoryTelemetry();
             };
@@ -6766,9 +7871,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 { axis: '+fmm p=1', label: '+fmm p=1 (dipole)', cfg: { fmmOrder: 1 }, note: '' },
                 { axis: '+fmm p=2', label: '+fmm p=2 (quadrupole)', cfg: { fmmOrder: 2 }, note: 'app default' },
                 { axis: '+fmm p=4', label: '+fmm p=4 (hexadecapole)', cfg: { fmmOrder: 4 }, note: 'highest far-field accuracy' },
-                { axis: '+adaptivefmm', label: '+adaptivefmm adaptive CGR88', cfg: { adaptive: true }, note: 'multi-level (if available)' },
+                { axis: '+adaptivefmm', label: '+adaptivefmm adaptive quadtree', cfg: { adaptive: true }, note: 'occupancy-adaptive multilevel (if available)' },
                 { axis: '+openaddr-hash', label: '+openaddr-hash (linear probe)', cfg: { useElasticHash: true }, note: 'open-addressing hash (hashU32 + linear probe); NOT the funnel schedule of core/elastic_hash.py' },
-                { axis: '+funnel-hash', label: '+funnel-hash (FCK funnel schedule)', cfg: { useFunnelHash: true }, note: 'Farach-Colton/Krapivin/Kuszmaul funnel: alpha slabs of beta-slot sub-arrays + overflow; bounded probe_bound' },
+                { axis: '+funnel-hash', label: '+funnel-hash (FCK funnel schedule)', cfg: { useFunnelHash: true }, note: 'Farach-Colton, Krapivin, & Kuszmaul (2025) funnel: alpha slabs of beta-slot sub-arrays + overflow; bounded probe_bound' },
                 { axis: '+quantized_bitpacked', label: '+quantized_bitpacked', cfg: { useQuantized: true }, note: 'f16-packed state round-trip' },
             ];
 
@@ -6915,7 +8020,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 scenario = scen;
                 const sel = document.getElementById('scenarioSelect');
                 if (sel) sel.value = scen;
+                // Default far-field model tracks scenario physics unless
+                // ?farField= overrides below.
+                farFieldModel = defaultFarFieldForScenario(scen);
             }
+            // ?farField=none|gravity|centroids  (biot reserved / ignored)
+            const ffParam = (qs.get('farField') || '').toLowerCase();
+            if (ffParam && ['none', 'gravity', 'centroids'].includes(ffParam)) {
+                farFieldModel = ffParam;
+            }
+            const farSel = document.getElementById('selectFarField');
+            if (farSel) farSel.value = farFieldModel;
             // Reflect N in the UI controls (slider + custom input + readout).
             document.getElementById('valParticles').innerText = N.toLocaleString();
             const slider = document.getElementById('sliderParticles');
@@ -6934,22 +8049,29 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 useFunnelHash = true;
             }
             // ?sortedPayload=0|1: A/B the coalesced-P2P gather. Default ON.
+            // (URL-only A/B: the checkbox was removed from the UI in R9 to
+            // shrink the option matrix; the default is the fast path.)
             const spParam = qs.get('sortedPayload');
             if (spParam !== null) {
                 useSortedPayload = spParam !== '0';
-                const chk = document.getElementById('chkSortedPayload');
-                if (chk) chk.checked = useSortedPayload;
             }
             // ?adaptiveHash=0|1: A/B the adaptive funnel-hash occupied-node
-            // directory. Default ON.
+            // directory. (URL-only A/B; checkbox removed from the UI in R9.)
             const ahParam = qs.get('adaptiveHash');
             if (ahParam !== null) {
                 useAdaptiveNodeHash = ahParam !== '0';
-                const chk = document.getElementById('chkAdaptiveNodeHash');
-                if (chk) chk.checked = useAdaptiveNodeHash;
             }
-            // Reflect the initial scenario in the FMM controls (disable them
-            // for non-galaxy scenarios loaded via ?scenario=).
+            // ?p2pbudget=N: override the adaptive near-field sampling budget
+            // (auto tier 24/12/6 by N). Raise for accuracy, lower for speed.
+            const pbParam = parseInt(qs.get('p2pbudget') || '', 10);
+            if (Number.isFinite(pbParam) && pbParam > 0) {
+                p2pBudgetOverride = Math.min(256, pbParam);
+            }
+            // ?capped=1 (the default) keeps the vsync-locked rAF loop;
+            // ?uncapped=1 removes the display-refresh ceiling (benchmark).
+            if (qs.get('capped') === '1') applyFrameCapMode(false);
+            if (qs.get('uncapped') === '1') applyFrameCapMode(true);
+            // Reflect initial scenario + far-field defaults in the control panel.
             updateFmmControlsState();
         }
         // One stable parseable console line per 1Hz telemetry refresh.
