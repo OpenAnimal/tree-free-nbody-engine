@@ -1,10 +1,10 @@
 """
 Vectorized, High-Throughput Matrix Kernel Engine for Tree-Free FMM
-Replaces Python for-loops with dense block SIMD matrix multiplications & vectorized CGR88 kernels.
+Replaces Python for-loops with dense block SIMD matrix multiplications & vectorized adaptive FMM kernels.
 
 Implements:
 - Vectorized P2M (Particle to Multipole)
-- Vectorized M2L (Multipole to Local) with full CGR88 binomial expansion tensor
+- Vectorized M2L (Multipole to Local) with full adaptive FMM binomial expansion tensor
 - Vectorized L2P (Local to Particle potential & force)
 - Block-tiled symmetric P2P near-field summation
 """
@@ -13,21 +13,23 @@ import numpy as np
 import math
 from typing import Tuple, Dict, List, Optional, Union
 try:
-    from .cgr88_adaptive_fmm import CGR88AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
+    from .adaptive_fmm import AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
     from .tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
     from .elastic_hash import ElasticHashTable
+    from ._csr import build_csr
 except ImportError:
-    from cgr88_adaptive_fmm import CGR88AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
+    from adaptive_fmm import AdaptiveFMM, GreengardRokhlin87RegularFMM, exact_direct_nbody_2d, exact_direct_nbody_forces_2d
     from tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
     from elastic_hash import ElasticHashTable
+    from _csr import build_csr
 
 
 class FastVectorizedFMM:
     """
-    Flat (single-level) tree-free 2D FMM with CGR88 expansions.
+    Flat (single-level) tree-free 2D FMM with adaptive FMM expansions.
 
-    Cell index of record: an ElasticHashTable (Farach-Colton/Krapivin/
-    Kuszmaul 2025 elastic hashing, core.elastic_hash) maps each occupied
+    Cell index of record: an ElasticHashTable (Farach-Colton, Krapivin, &
+    Kuszmaul, 2025, elastic hashing, core.elastic_hash) maps each occupied
     Morton cell key to its dense cluster index.  Occupancy and 3x3
     adjacency are resolved through hash lookups -- no sorted arrays, no
     dicts, no pointers.  Hot numeric kernels remain vectorized NumPy.
@@ -44,6 +46,11 @@ class FastVectorizedFMM:
         order: int = 6,
         softening: float = 0.0
     ):
+        if not 1 <= depth <= 12:
+            # cell keys pack (depth<<24)|(ix<<12)|iy with ix,iy < 2^depth in
+            # 12 bits each; depth > 12 silently aliases distinct cells.
+            raise ValueError(
+                f"depth must be in [1, 12] for the 12-bit cell-key layout, got {depth}")
         self.depth = depth
         self.order = order
         self.softening = softening
@@ -66,12 +73,19 @@ class FastVectorizedFMM:
         p = self.order
         box_size = 1.0 / grid_res
         
-        # 1. Morton Quantization & Bucket Binning
+        # 1. Cell Quantization & Bucket Binning
+        # Round-7 task T-E4 (F-03): renamed morton_keys -> cell_keys.
+        # The key is a level-tagged row-major-style pair (ix in bits 12-23,
+        # iy in bits 0-11) -- NOT Morton interleaving. NOTE: this is
+        # TRANSPOSED from spatial_index.morton_2d_key (which puts iy in the
+        # high bits); the layout is self-consistent within this module
+        # (encode, decode, and the 3x3 neighbor probes below all agree),
+        # but do not mix keys between the two modules.
         ix = np.clip((positions[:, 0] * grid_res).astype(np.int32), 0, grid_res - 1)
         iy = np.clip((positions[:, 1] * grid_res).astype(np.int32), 0, grid_res - 1)
-        morton_keys = (self.depth << 24) | (ix << 12) | iy
-        
-        unique_keys, inverse_indices = np.unique(morton_keys, return_inverse=True)
+        cell_keys = (self.depth << 24) | (ix << 12) | iy
+
+        unique_keys, inverse_indices = np.unique(cell_keys, return_inverse=True)
         num_clusters = len(unique_keys)
 
         # Elastic hash = authoritative occupied-cell index (key -> cluster id)
@@ -105,7 +119,7 @@ class FastVectorizedFMM:
                 1j * np.bincount(inverse_indices, weights=np.imag(term), minlength=num_clusters)
             )
                                
-        # 3. Vectorized M2L (CGR88 Multipole to Local Translation Matrix)
+        # 3. Vectorized M2L (adaptive FMM Multipole to Local Translation Matrix)
         # delta = tgt_center - src_center -> centers[:, None] - centers[None, :]
         delta = centers[:, None] - centers[None, :]
         dx = cluster_ix[:, None] - cluster_ix[None, :]
@@ -150,10 +164,14 @@ class FastVectorizedFMM:
         forces_y = np.imag(far_deriv_complex)
         
         # 5. Fast Local Direct Near-Field P2P (Evaluate self and adjacent 3x3 neighbor buckets)
-        cluster_indices_list = [np.where(inverse_indices == c)[0] for c in range(num_clusters)]
+        # Round-7 task T-E4: replaced O(N*K) list comprehension with CSR
+        # (argsort + searchsorted, same pattern as T-C3's solvation engine).
+        cell_start, cell_particles, _ = build_csr(inverse_indices, num_clusters)
         # Near-field pair list resolved through funnel-hash neighbor lookups:
-        # for each occupied cell, probe the 3x3 Morton neighborhood in the
-        # elastic hash; only cells the hash reports as occupied take part.
+        # for each occupied cell, probe the 3x3 neighborhood (key
+        # = depth<<24 | ix<<12 | iy per the layout note above -- NOT Morton
+        # interleaving) in the elastic hash; only cells the hash reports as
+        # occupied take part.
         near_pairs = []
         key_depth = self.depth << 24
         for c in range(num_clusters):
@@ -169,7 +187,7 @@ class FastVectorizedFMM:
         eps2 = self.softening * self.softening
 
         for c1, c2 in near_cluster_pairs:
-            idx1 = cluster_indices_list[c1]
+            idx1 = cell_particles[cell_start[c1]:cell_start[c1 + 1]]
             if len(idx1) == 0:
                 continue
 
@@ -185,14 +203,14 @@ class FastVectorizedFMM:
                     
                     pot_self = np.sum(p_q[None, :] * 0.5 * np.log(r2) * mask, axis=1)
                     potentials[idx1] += pot_self
-                    
+
                     if compute_forces:
                         inv_r2 = np.where(mask, 1.0 / r2, 0.0)
                         forces_x[idx1] -= np.sum(p_q[None, :] * diff[:, :, 0] * inv_r2, axis=1)
                         forces_y[idx1] -= np.sum(p_q[None, :] * diff[:, :, 1] * inv_r2, axis=1)
             elif c2 > c1:
                 # Adjacent neighbor bucket direct P2P (symmetric contribution)
-                idx2 = cluster_indices_list[c2]
+                idx2 = cell_particles[cell_start[c2]:cell_start[c2 + 1]]
                 if len(idx2) == 0:
                     continue
                 p_pts1 = positions[idx1]
@@ -206,12 +224,12 @@ class FastVectorizedFMM:
                 
                 potentials[idx1] += np.sum(p_q2[None, :] * 0.5 * np.log(r2_safe), axis=1)
                 potentials[idx2] += np.sum(p_q1[:, None] * 0.5 * np.log(r2_safe), axis=0)
-                
+
                 if compute_forces:
                     inv_r2 = 1.0 / r2_safe
                     forces_x[idx1] -= np.sum(p_q2[None, :] * diff[:, :, 0] * inv_r2, axis=1)
                     forces_y[idx1] -= np.sum(p_q2[None, :] * diff[:, :, 1] * inv_r2, axis=1)
-                    
+
                     forces_x[idx2] += np.sum(p_q1[:, None] * diff[:, :, 0] * inv_r2, axis=0)
                     forces_y[idx2] += np.sum(p_q1[:, None] * diff[:, :, 1] * inv_r2, axis=0)
 

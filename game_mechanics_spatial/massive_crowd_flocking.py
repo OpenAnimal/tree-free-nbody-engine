@@ -84,13 +84,30 @@ class MassiveGameCrowdEngine:
             accel[m] = w_align * align + w_cohere * cohere * grid_res + w_separate * sep
 
         # 4. Far-field: order-0 alignment toward the surrounding flock heading.
+        # Vectorized (round-8 audit): the previous implementation called
+        # ``far_keys(k, ring=1)`` per occupied cell, which scans ALL occupied
+        # cells to build the far set -- O(C^2)/step (4.3 FPS at N=5000).  The
+        # per-cell far mean heading is mathematically equal to
+        #   (global_count_weighted_heading - near_ring_count_weighted_heading)
+        #   / (global_count            - near_ring_count)
+        # because far(k) = all_cells \ near(k, ring=1).  Computing the global
+        # totals ONCE per step and subtracting each cell's 3x3 near-ring sum
+        # (O(9) per cell, O(C) total) gives the identical per-cell far heading
+        # without the O(C^2) far_keys scan.  The validation harness below
+        # (brute_force_step_accel + far-residual report) compares the full
+        # step against the brute near-field and stays green.
+        total_w = float(counts.sum())
+        total_v = (cluster_vel * counts[:, None]).sum(axis=0)  # count-weighted global heading (2,)
         for k in occ_keys:
-            far_keys = self.index.far_keys(k, ring=1)
-            if not far_keys:
+            neigh_idx = self.index.neighborhood_indices(k, ring=1)
+            near_w_k = float(len(neigh_idx))
+            if near_w_k == 0.0:
                 continue
-            far_ids = np.array([key_of[fk] for fk in far_keys])
-            w = counts[far_ids]
-            mean_heading = (cluster_vel[far_ids] * w[:, None]).sum(axis=0) / max(1e-9, w.sum())
+            near_v_k = velocities[neigh_idx].sum(axis=0)
+            far_w = total_w - near_w_k
+            if far_w <= 1e-9:
+                continue
+            mean_heading = (total_v - near_v_k) / far_w
             m = self.index.bucket(k)
             accel[m] += 0.1 * (mean_heading[None, :] - velocities[m])
 

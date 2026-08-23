@@ -1,5 +1,5 @@
 """
-Flat adaptive metadata for the hybrid WebGPU CGR88 backend.
+Flat adaptive metadata for the hybrid WebGPU adaptive FMM backend.
 
 The GPU performs numerical FMM kernels; this module builds the control metadata
 that is awkward to construct safely inside a WebGPU dispatch: terminal adaptive
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, Tuple
 import numpy as np
 
-from .cgr88_adaptive_fmm import AdaptiveQuadTree
+from .adaptive_fmm import AdaptiveQuadTree
 
 
 MAX_INTERACTIONS_PER_NODE = 64
@@ -64,6 +64,31 @@ class FlatAdaptiveMetadata:
                     raise ValueError("interaction-list range exceeds list_data")
         if np.any(self.leaf_node_for_particle == INVALID):
             raise ValueError("some particles have no terminal leaf")
+        # List 3 / List 4 reciprocity (adaptive FMM dual interaction lists):
+        # for each leaf A listing B in List 3, B must list A in List 4,
+        # and vice versa. The previous validate() only checked shapes and
+        # index ranges, so a one-sided list would pass silently.
+        LIST3 = 2
+        LIST4 = 3
+        for a in range(n):
+            l3_a = self.list_for(a, LIST3)
+            l4_a = self.list_for(a, LIST4)
+            for b in l3_a:
+                b = int(b)
+                if b == INVALID or b >= n:
+                    raise ValueError(f"node {a} List 3 has invalid entry {b}")
+                if a not in self.list_for(b, LIST4).tolist():
+                    raise ValueError(
+                        f"List 3/4 reciprocity broken: node {a} lists {b} "
+                        f"in List 3 but {b} does not list {a} in List 4")
+            for b in l4_a:
+                b = int(b)
+                if b == INVALID or b >= n:
+                    raise ValueError(f"node {a} List 4 has invalid entry {b}")
+                if a not in self.list_for(b, LIST3).tolist():
+                    raise ValueError(
+                        f"List 3/4 reciprocity broken: node {a} lists {b} "
+                        f"in List 4 but {b} does not list {a} in List 3")
 
     def list_for(self, node: int, list_id: int) -> np.ndarray:
         start = int(self.list_offsets[node, list_id])
@@ -79,7 +104,7 @@ def build_flat_adaptive_metadata(
     max_depth: int = 6,
     max_interactions_per_node: int = MAX_INTERACTIONS_PER_NODE,
 ) -> FlatAdaptiveMetadata:
-    """Build upload-ready flat metadata from the validated CGR88 adaptive tree."""
+    """Build upload-ready flat metadata from the validated adaptive FMM tree."""
     positions = np.asarray(positions, dtype=np.float64)
     if positions.ndim != 2 or positions.shape[1] != 2:
         raise ValueError("positions must have shape (N, 2)")

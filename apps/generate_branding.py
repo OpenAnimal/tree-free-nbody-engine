@@ -65,7 +65,7 @@ def generate_banner():
     sub.set_path_effects(stroke_bg)
 
     # Symmetrically matched fully written out citations with prominent larger sizing & extra thick dark backdrop
-    cit = ax.text(x_pos, 1.58, "Fast Multipole Method (Greengard & Rokhlin, 1987)  +  Elastic Open Addressing (Farach-Colton et al., 2025)",
+    cit = ax.text(x_pos, 1.58, "Fast Multipole Method (Greengard & Rokhlin, 1987)  +  Elastic Open Addressing (Farach-Colton, Krapivin, & Kuszmaul, 2025)",
                   fontsize=11.2, fontweight='medium', color='#E6EDF3', fontfamily='sans-serif', zorder=4)
     cit.set_path_effects(stroke_bg)
 
@@ -81,11 +81,9 @@ def generate_banner():
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_path = os.path.join(repo_root, "assets", "banner.png")
-    root_banner = os.path.join(repo_root, "banner.png")
     plt.savefig(output_path, dpi=250, facecolor=fig.get_facecolor(), edgecolor='none')
-    plt.savefig(root_banner, dpi=250, facecolor=fig.get_facecolor(), edgecolor='none')
     plt.close()
-    print("[-] Successfully generated banner.png and assets/banner.png")
+    print("[-] Successfully generated assets/banner.png")
 
 if __name__ == '__main__':
     generate_banner()

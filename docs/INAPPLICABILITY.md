@@ -2,7 +2,7 @@
 
 The tree-free FMM in `core/` is a *fast kernel-sum* engine: it approximates
 SUMS of the form `u(x_i) = sum_j q_j G(x_i - x_j)` for translation-invariant
-radial kernels `G` on a uniform grid, using CGR88 multipole/local expansions
+radial kernels `G` on a uniform grid, using adaptive FMM multipole/local expansions
 over funnel-hash-indexed occupied cells. Not every problem in the repo is
 such a sum. This file catalogs the cases where the FMM is inapplicable, so
 the BENCHMARKS.md "omitted" rows have a single permanent home.
@@ -44,7 +44,7 @@ bucketing is the standard ANN technique.
 
 ## Class B — "kernel lacks FMM structure" (non-translation-invariant / non-radial)
 
-The CGR88 expansion requires a kernel that is radial (a function of `|x-y|`
+The adaptive FMM expansion requires a kernel that is radial (a function of `|x-y|`
 alone) and translation-invariant, so that `G(x-y)` admits a Taylor /
 multipole expansion in `x-y`. Softmax attention `softmax(q·k / sqrt(d))` is
 neither radial nor translation-invariant — it depends on the dot product
@@ -97,23 +97,28 @@ documented Class B non-radial case).
 
 The kernel is a perfectly good radial translation-invariant 3D kernel, so an
 FMM exists in principle — but the flagship `FastVectorizedFMM` /
-`CGR88AdaptiveFMM` engines in `core/` are 2D (complex-CGR88 log kernel).
+`AdaptiveFMM` engines in `core/` are 2D (complex adaptive FMM log kernel).
 A 3D FMM needs real-space derivative tensors, not complex log expansions.
 
 **Affected apps:** app5 (3D Debye-Huckel screened Coulomb / Yukawa
 potential `G(r) = exp(-kappa r)/r`), volumetric AO (3D inverse-square
 kernel, candidate for a future 3D FMM).
 
-**Falsifiable reason:** the 2D CGR88 engine expands `log|x-y|` as a complex
+**Falsifiable reason:** the 2D adaptive FMM engine expands `log|x-y|` as a complex
 Taylor series in `z = (x+iy)`; the 3D Yukawa kernel `exp(-kappa r)/r` has no
 such holomorphic representation. A 3D FMM must instead use real derivative
 tensors `d^alpha G / dx^alpha` over multi-indices `alpha = (a,b,c)` — a
 different mathematical object.
 
-**Status — PARTIALLY FIXED:** the 3D Yukawa case is now handled by
-`core/yukawa3d_fmm.py` (`Yukawa3DFMM`, single-level flat scheme with the
-exact derivative-tensor math from the round-3 plan). See the `+fmm
-(Yukawa3DFMM)` row in the [App 5](../BENCHMARKS.md#app-5-3d-protein-electrostatics-debye-huckel-screened-coulomb)
+**Status — FIXED-for-bio (Round-7 task T-C1):** the 3D Yukawa case is now
+handled by `core/yukawa3d_fmm.py` (`Yukawa3DFMM`, single-level flat scheme
+with the exact derivative-tensor math from the round-3 plan). Round-7 task
+T-C1 added `TaylorYukawaBioFMM` in `bioinformatics/core/fast_multipole_kernel.py`
+— a bio-units wrapper that maps Ångström coordinates to the unit box,
+rescales kappa, and converts potentials back to kcal/mol/e. It reaches
+**3.3e-8 rel-L2** vs direct Debye-Hückel at N=3000 (below the 1e-6 target).
+See the `+bio_taylor (TaylorYukawaBioFMM)` and `+fmm (Yukawa3DFMM)` rows in
+the [App 5](../BENCHMARKS.md#app-5-3d-protein-electrostatics-debye-huckel-screened-coulomb)
 table. The volumetric AO 3D inverse-square kernel remains a candidate for a
 future 3D FMM (the derivative-tensor machinery in `yukawa3d_fmm.py` is
 kernel-agnostic and could be retargeted).
@@ -139,8 +144,8 @@ constant factors.
 crossover actually appears), flocking at N=1000, app3 at N=1500, app4 at
 N=400.
 
-**Falsifiable reason:** at N=2000 the direct vectorized sum is ~40 ms while
-the flat FMM is ~480 ms — the FMM's per-cell Python loop over occupied
+**Falsifiable reason:** at N=2000 the direct vectorized sum is ~57 ms while
+the flat FMM is ~711 ms — the FMM's per-cell Python loop over occupied
 cells (K^2 M2L pairs in pure Python) costs more than the 4e6-pair vectorized
 direct. As N grows the direct cost grows as N^2 while the FMM near-field
 grows as N * neighbors, so a crossover exists; the scaling table locates it

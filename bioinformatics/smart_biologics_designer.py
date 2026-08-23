@@ -146,10 +146,14 @@ class SmartBiologicsDesigner:
         delta_g_solv = solv_c - (solv_ab + solv_ag)
 
         # Intermolecular electrostatic energy
+        # P19-3: the Ab-Ag interaction occurs across solvent, so the water
+        # dielectric (eps_w ~ 78.5) is the correct effective dielectric — not
+        # the protein interior dielectric (eps_p ~ 4.0). Using eps_p here
+        # overestimated the screened Coulomb term by ~20x.
         diff = ab_ph.coords[:, None, :] - ag_ph.coords[None, :, :]
         dist = np.sqrt(np.sum(diff**2, axis=-1) + 1e-6)
         screened_coulomb = np.sum(
-            (ab_ph.charges[:, None] * ag_ph.charges[None, :]) * np.exp(-self.solvation_engine.kappa * dist) / (self.solvation_engine.eps_p * dist)
+            (ab_ph.charges[:, None] * ag_ph.charges[None, :]) * np.exp(-self.solvation_engine.kappa * dist) / (self.solvation_engine.eps_w * dist)
         ) * COULOMB_CONSTANT_KCAL
 
         # Interface contact bonus

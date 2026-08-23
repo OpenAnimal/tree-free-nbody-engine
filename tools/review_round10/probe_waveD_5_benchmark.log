@@ -1,0 +1,76 @@
+==========================================================================
+   bioinformatics: O(N) Scaling & Numerical Accuracy Benchmark
+==========================================================================
+
+[+] Benchmarking Molecular System (N = 500 atoms)...
+    - Tree-Free Bio-FMM Time:     16.40 ms
+    - Direct O(N^2) Time:          8.87 ms | Speedup:    0.5x | Rel L2 Error: 1.30e-03
+
+[+] Benchmarking Molecular System (N = 1,500 atoms)...
+    - Tree-Free Bio-FMM Time:     63.84 ms
+    - Direct O(N^2) Time:         94.19 ms | Speedup:    1.5x | Rel L2 Error: 3.96e-03
+
+[+] Benchmarking Molecular System (N = 5,000 atoms)...
+    - Tree-Free Bio-FMM Time:    116.37 ms
+    - Direct O(N^2) Time:        844.84 ms | Speedup:    7.3x | Rel L2 Error: 2.40e-03
+
+[+] Benchmarking Molecular System (N = 15,000 atoms)...
+    - Tree-Free Bio-FMM Time:    384.74 ms
+    - Direct O(N^2) Time:       9422.35 ms | Speedup:   24.5x | Rel L2 Error: 1.71e-03
+
+[+] Benchmarking Molecular System (N = 50,000 atoms)...
+    - Tree-Free Bio-FMM Time:   2831.64 ms
+    - Direct O(N^2) (Extrap):  104656.22 ms | Speedup:   37.0x (O(N) Advantage)
+
+==========================================================================
+   Part 1: Physics & FMM Applications (A, B, C, D)
+==========================================================================
+
+--- Application A: Generalized Born & SASA Solvation Free Energy ---
+    System Atoms:          2,289
+    Total Solvation dG:      -8102.14 kcal/mol
+    - Electrostatic GB dG:   -8289.22 kcal/mol
+    - Non-Polar SASA dG:       187.08 kcal/mol
+    Total SASA:              37416.25 Angstrom^2
+    Computation Time:      9298.89 ms
+
+--- Application B: Differentiable Equivariant GNN Physical Prior Layer ---
+    Forward Latency:       130.97 ms
+    Electrostatic Energy:     -539.86 kcal/mol
+    Mean Electric Field:         1.72 V/Angstrom
+    Max Electric Field:          6.61 V/Angstrom
+
+--- Application C: Non-Periodic Macromolecular MD (NVT Langevin Verlet) ---
+    Initialized Viral Capsid Assembly: 2,700 atoms
+    Executed 20 MD Steps in: 10580.73 ms (529.04 ms/step)
+    Final Temperature:       32743.7 K
+    Final Total Energy:      630383.42 kcal/mol
+
+--- Application D: Constant-pH Monte Carlo Protonation Titration ---
+    Titratable Sites Found:  167
+    Isoelectric Point (pI):  pH 7.00
+    Titration Sweep Time:    19942.81 ms
+
+==========================================================================
+   Part 2: Pure Elastic Hashing Tools (Genomics & Structural Biology)
+==========================================================================
+
+--- Non-FMM Tool 1: Lock-Free Genomic k-mer Counter (Farach-Colton Open Addressing) ---
+    Ingested 249,980 21-mers from 250k bp DNA in: 8370.21 ms (29,865 kmers/sec)
+    Unique 21-mers in Table: 249,980
+
+--- Non-FMM Tool 2: Grid-Free Binding Pocket & Cavity Detector ---
+    Identified Pockets:      0
+    Detection Latency:       1655.07 ms
+
+--- Non-FMM Tool 3: O(N) Residue Contact Map & Allosteric Network Graph ---
+    Residues Analyzed:       416
+    Non-Local Contacts:      414
+    Top Hub Residue:         VAL 17 (Degree: 2)
+    Graph Construction Time: 11.08 ms
+
+[+] Generating Publication-Grade Visualization Figures...
+    - Saved benchmark chart to: D:\Unreal Engine\FMM_Repos\tree-free-nbody-engine\bioinformatics\fmm_bioinformatics_benchmark.png
+    - Saved application showcase to: D:\Unreal Engine\FMM_Repos\tree-free-nbody-engine\bioinformatics\bioinformatics_showcase.png
+
+[SUCCESS] All bioinformatics benchmarks and validations completed successfully!

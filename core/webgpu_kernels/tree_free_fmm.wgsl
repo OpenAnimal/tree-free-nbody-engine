@@ -163,7 +163,7 @@ fn fmm_compute_main(
     var acc_phi: f32 = 0.0;
     var acc_f: vec2<f32> = vec2<f32>(0.0, 0.0);
 
-    // 1. Far-field CGR88 L2P Local Expansion Evaluation
+    // 1. Far-field adaptive FMM L2P Local Expansion Evaluation
     if (gid < n) {
         let cid = my_p.cluster_id;
         let c_center = cluster_centers[cid];

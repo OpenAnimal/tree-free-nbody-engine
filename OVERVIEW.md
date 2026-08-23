@@ -53,7 +53,7 @@ tree-free-nbody-engine/
 │   ├── greedy_multipole_mesh.py         # Run-length Morton cluster merging for M2L pruning
 │   └── benchmark_ablation.py            # 4-stage systematic ablation & cache saturation harness
 │
-├── neural_ops/                          # Linear O(N) Neural Network & Spatial AI Layers
+├── neural_ops/                          # Sub-quadratic Neural Layers (O(N) at fixed grid depth; self-contained drop-in folder)
 │   ├── multipole_attention.py           # Linear-time Tree-Free Multipole Attention (TFMA)
 │   ├── flash_multipole_kernel.py        # Fused memory-efficient Flash Multipole Attention
 │   ├── visual_transformer_ops.py        # Multi-scale & cross-multipole attention for Vision (ViT)
@@ -72,8 +72,8 @@ tree-free-nbody-engine/
 │   ├── elastic_kv_cache.py              # Zero-displacement lock-free elastic KV-cache
 │   ├── autograd_adjoint_fmm.py          # Transposed analytical adjoint & Vector-Jacobian Product (VJP)
 │   ├── neural_sph_ipc.py                # Mesh-free continuum mechanics layer (SPH fluid + IPC barrier)
-│   ├── test_fmm_neural_ops.py           # Core neural ops unit test suite
-│   ├── test_neural_ops_advanced.py      # Advanced neural ops & gradient verification suite
+│   ├── _core_deps.py                    # Standalone fallbacks (canonical core/ used in-repo; see neural_ops/README)
+│   ├── _coord_contract.py               # [0,1)^dims input contract warnings for spatial operators
 │   ├── benchmark_neural_scaling.py      # Empirical scaling benchmark for neural operators
 │   ├── benchmark_diffusion_and_gp.py    # Benchmark harness for diffusion policy & GP regression
 │   └── examples/                        # 8 End-to-end deep learning integration examples
@@ -159,7 +159,7 @@ tree-free-nbody-engine/
 ├── physics_simulation/                  # Matrix-Free Contact & Shell Mechanics
 │   └── ppf_contact_solver_fmm/          # Incremental Potential Contact (IPC) & barrier solver
 │       ├── matrix_free_ipc.py           # Matrix-free IPC without dynamic sparse matrices
-│       ├── tetrahedral_surgical_soft_robotics.py # 3D hyperelastic surgical soft body simulation
+│       ├── tetrahedral_surgical_soft_robotics.py # Broadphase-only scaffold (no FEM/IPC solve; see module docstring)
 │       ├── cloth_shell_simulation.py    # Thin-shell & cloth large-deformation dynamics
 │       ├── generate_cloth_gif.py        # High-resolution animation generator
 │       └── benchmark_contact_scaling.py # Contact solver scaling benchmark
@@ -274,8 +274,7 @@ python native/benchmark_zig_backend.py
 python quantized_bitpacked_optimization/benchmark_ablation.py
 
 # Neural Ops: Linear attention, Equivariant Field layers, and Diffusion
-python neural_ops/test_fmm_neural_ops.py
-python neural_ops/test_neural_ops_advanced.py
+python -m pytest tests/neural_ops/ -q
 python neural_ops/benchmark_neural_scaling.py
 python neural_ops/benchmark_diffusion_and_gp.py
 
@@ -306,13 +305,13 @@ python physics_simulation/ppf_contact_solver_fmm/benchmark_contact_scaling.py
 
 ### 1. `core/` & Systems Architecture
 
-* **Theoretical Foundation:** Classic Fast Multipole Methods rely on hierarchical Octrees or $k$-d trees that necessitate dynamic memory allocation and pointer-chasing traversal on every timestep, inducing severe SIMD and GPU thread warp divergence. `core/` completely eliminates tree allocations by mapping 3D Morton coordinates directly into **Optimal Non-Reordering Elastic Hash Tables** (Farach-Colton, Krapivin, and Kuszmaul, 2025).
+* **Theoretical Foundation:** Classic Fast Multipole Methods rely on hierarchical Octrees or $k$-d trees that necessitate dynamic memory allocation and pointer-chasing traversal on every timestep, inducing severe SIMD and GPU thread warp divergence. `core/` completely eliminates tree allocations by mapping 3D Morton coordinates directly into **Optimal Non-Reordering Elastic Hash Tables** (Farach-Colton, Krapivin, & Kuszmaul, 2025).
 * **Key Algorithmic Properties:**
   * **Zero Element Relocation:** Insertions guarantee strictly zero displacement of previously inserted keys, allowing multi-threaded GPU warps to insert coordinates concurrently via single atomic compare-and-swap (`atomicCAS`) instructions without cascading locks.
   * **Bounded Search Latency:** Achieves $O(1)$ amortized probe complexity and $O(\log \delta^{-1})$ expected worst-case search complexity, maintaining stable sub-microsecond lookups even at high load factors ($\ge 95\%$).
 * **Multi-Backend Runtime Dispatcher (`core/device_runtime.py`):**
   * **Vectorized CPU Backend (`core/fast_vectorized_fmm.py`):** Pure NumPy SIMD vectorized matrix broadcasts for P2M/M2L multipole expansions; zero external compiler dependencies.
-  * **Vectorized JAX JIT Backend (`core/jax_tree_free_fmm.py`):** End-to-end differentiable pipeline with `@jax.jit` complex harmonic multipoles and reverse-mode automatic differentiation (`jax.grad` / `jax.vjp`).
+  * **Vectorized JAX JIT Backend (`core/jax_tree_free_fmm.py`):** Verified adaptive FMM operator primitives (P2M/M2M/M2L/L2L/L2P/P2P) with `@jax.jit` complex harmonics, plus a differentiable dense O(N²) reference with reverse-mode automatic differentiation, and an assembled flat-scheme 2D log-kernel FMM pipeline (`jax_flat_fmm_evaluate`, Round-7 task T-D4). Multi-level upward/downward assembly remains future work.
   * **Native CUDA Kernel (`core/cuda_kernels/tree_free_fmm_kernel.cu`):** Direct GPU kernel with warp-level `__shfl_down_sync` multipoles and fused `__shared__` memory interaction tiles.
   * **AMD ROCm / HIP Kernel (`core/hip_kernels/tree_free_fmm_kernel.hip`):** Native AMD Radeon / ROCm kernel featuring lock-free atomics and warp shuffle reductions.
   * **OpenAI Triton Kernel (`core/cuda_kernels/triton_tree_free_fmm.py`):** Block-tiled GPU kernel for PyTorch providing fused SRAM potential evaluations.

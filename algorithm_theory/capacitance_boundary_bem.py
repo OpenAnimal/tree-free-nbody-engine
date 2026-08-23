@@ -22,7 +22,7 @@ A * v is evaluated via a CellIndex-backed near/far split: the near field is a di
 patch-to-patch block over the ring-1 neighborhood of each occupied cell, and the far field
 is a per-cell monopole + dipole cluster expansion evaluated as one vectorized
 (n_target_in_cell, n_far_cells) matrix op per target cell. This is a first-order
-(Barnes-Hut-style) tree code, NOT a Greengard-Rokhlin translation-based FMM (there is no
+(Barnes-Hut-style) tree code, NOT a Greengard & Rokhlin translation-based FMM (there is no
 M2M/M2L/L2L operator hierarchy); the module name and claims reflect that. The Python-level
 matvec iterates once per occupied cell (O(K) iterations with vectorized inner work), which
 is sub-quadratic in K versus the previous O(K^2) cell-pair double loop. A dense O(N_surf^2)
@@ -262,6 +262,8 @@ class CapacitanceBoundaryBEM:
             rhs = np.asarray(v_applied, dtype=np.float64) - np.asarray(phi_external, dtype=np.float64)
 
         n = len(rhs)
+        if max_iter < 0:
+            max_iter = 0
         x = np.zeros(n, dtype=np.float64)
 
         r0 = rhs - matvec(x)
@@ -278,6 +280,7 @@ class CapacitanceBoundaryBEM:
         beta_vec[0] = norm_r0
 
         k_iter = 0
+        y = np.zeros(0, dtype=np.float64)  # initialize for max_iter=0 edge case
         for j in range(max_iter):
             k_iter = j + 1
             # Matrix-free matvec

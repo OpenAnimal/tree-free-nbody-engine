@@ -156,10 +156,16 @@ class PolypharmacologyAffinityMatrixEngine:
             solv_d = self.solvation_engine.compute_solvation_free_energy(drug_ligand)["delta_G_solv_kcal_mol"]
             delta_g_solv = solv_c - (solv_t + solv_d)
 
-            # Screened Coulomb interaction
+            # Screened Coulomb interaction between target protein and drug
+            # ligand. This is an INTERMOLECULAR interaction mediated by
+            # solvent, so the effective dielectric is the water dielectric
+            # eps_w (not the protein dielectric eps_p, which only applies to
+            # intramolecular interactions within a single protein body).
+            # Same fix as P19-3 in smart_biologics_designer.py and
+            # personalized_oncology_ddg.py.
             diff = target_sys.coords[:, None, :] - drug_ligand.coords[None, :, :]
             dist = np.sqrt(np.sum(diff ** 2, axis=-1) + 1e-6)
-            coulomb_factor = COULOMB_CONSTANT_KCAL / self.solvation_engine.eps_p
+            coulomb_factor = COULOMB_CONSTANT_KCAL / self.solvation_engine.eps_w
             e_coulomb = float(np.sum(
                 (target_sys.charges[:, None] * drug_ligand.charges[None, :]) * np.exp(-self.solvation_engine.kappa * dist) / dist
             ) * coulomb_factor)

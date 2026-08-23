@@ -128,7 +128,7 @@ void zig_fmm_contact_forces(
 );
 
 // ----------------------------------------------------------------------------
-// 2D Complex Multipole Expansions (Greengard-Rokhlin Laurent series)
+// 2D Complex Multipole Expansions (Greengard & Rokhlin Laurent series)
 // ----------------------------------------------------------------------------
 
 void zig_fmm_2d_p2m(

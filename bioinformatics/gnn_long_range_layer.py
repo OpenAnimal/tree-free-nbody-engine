@@ -68,9 +68,15 @@ class FMMLongRangeGNNLayer:
             compute_forces=True
         )
 
-        # Equivariant Electric Field Vector: E_i = -grad(Phi_i)
-        # Force on atom: F_i = q_i * E_i -> E_i = F_i / (q_i + eps)
-        electric_field = forces / (np.abs(charges[:, None]) + 1e-6)
+        # Equivariant Electric Field Vector: E_i = -grad(Phi_i).
+        # Force on atom: F_i = q_i * E_i  ->  E_i = F_i / q_i  (SIGNED division).
+        # Finding O: the previous code divided by |q_i|+1e-6, which drops the
+        # charge sign and gives a wrong-sign field for anions.  We divide by
+        # the signed charge (with a safe fallback to zero field for uncharged
+        # atoms, where F_i is also zero).
+        q_signed = np.where(np.abs(charges) > 1e-10, charges, 1.0)
+        electric_field = forces / q_signed[:, None]
+        electric_field[np.abs(charges) <= 1e-10] = 0.0
         field_magnitude = np.linalg.norm(electric_field, axis=1, keepdims=True)
 
         # Invariant Scalar Embedding: f(Phi_i, |E_i|)

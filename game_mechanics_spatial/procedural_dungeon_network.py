@@ -1,12 +1,19 @@
 """
 Procedural Dungeon & Corridor Network Synthesizer.
-Combines Fast Poisson-Disc Spatial Hashing, Delaunay/RNG Triangulation, Minimum Spanning Tree (MST)
-Corridor Synthesis, and Loop Restoration for Boundless Roguelike & RPG Level Generation.
+Combines rejection-sampled room placement, an all-pairs Euclidean proximity graph, Minimum Spanning
+Tree (MST) corridor synthesis, and loop restoration for boundless Roguelike & RPG level generation.
 
 Algorithmic Pipeline:
-1. Spatial Room Anchor Distribution: Fast O(N) Bridson Poisson-Disc sampling using Elastic Spatial Hash.
-2. Geometric Sizing: Variable rectangular/circular room bounding volumes with overlap clearance.
-3. Graph Connectivity: Delaunay Triangulation / K-Nearest Relative Neighborhood Graph.
+1. Spatial Room Anchor Distribution: rejection sampling for room locations. Each
+   candidate is validated against already-accepted rooms by a linear scan
+   (O(R) per candidate, O(R^2) overall for R accepted rooms) — this is NOT
+   Bridson Poisson-Disc and uses no spatial hash (an earlier revision constructed
+   an ElasticHashTable here but never read it; that dead instance was removed).
+2. Geometric Sizing: Variable rectangular room bounding volumes with a guaranteed
+   non-overlapping AABB test plus a centroid-spacing filter.
+3. Graph Connectivity: all-pairs Euclidean proximity graph (candidate edges between
+   every room pair, sorted by distance). This is a plain O(R^2) all-pairs loop,
+   NOT a Delaunay triangulation or Relative Neighborhood Graph.
 4. Spanning Tree & Loop Insertion: Kruskal's MST (guaranteeing 100% reachability) + alpha-fraction cycle re-insertion.
 5. Corridor Path Carving: Orthogonal Manhattan/L-shaped corridor carving with door placement.
 6. Raster Grid Export: High-performance 2D/3D integer tilemap for Unreal Engine / Unity level streamers.
@@ -19,7 +26,6 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
 
 
 # Tile constants
@@ -79,7 +85,6 @@ class ProceduralDungeonSynthesizer:
         self.room_spacing = room_spacing
         self.loop_factor = loop_factor
         self.seed = seed
-        self.hash_table = ElasticHashTable(capacity=4096, delta=0.05)
 
     def generate(self, max_rooms: int = 35) -> Dict:
         """
@@ -102,7 +107,7 @@ class ProceduralDungeonSynthesizer:
                 "grid": None
             }
 
-        # Step 2: Extract Room Centroids & Delaunay-like Proximity Graph
+        # Step 2: Extract Room Centroids & All-Pairs Proximity Graph
         centroids = np.array([[r["cx"], r["cy"]] for r in rooms], dtype=np.float32)
         edges = self._build_proximity_graph(centroids)
 
@@ -147,11 +152,17 @@ class ProceduralDungeonSynthesizer:
 
     def _generate_room_anchors(self, max_rooms: int) -> List[Dict]:
         """
-        Fast Poisson-disc sampling for room locations and non-overlapping bounding boxes.
+        Rejection-sampled room placement with non-overlapping bounding boxes.
+
+        Each candidate room is accepted only if (a) its AABB does not overlap any
+        already-accepted room's AABB and (b) its centroid is at least
+        `room_spacing` from every accepted room's centroid. The AABB test makes
+        the "non-overlapping bounding boxes" guarantee real (a centroid-distance
+        check alone permits bbox overlap for wide rooms at small spacing).
         """
         rooms = []
         margin = self.max_room_size + 2
-        
+
         # Candidate attempts
         max_attempts = max_rooms * 20
         for _ in range(max_attempts):
@@ -160,16 +171,26 @@ class ProceduralDungeonSynthesizer:
 
             rw = np.random.randint(self.min_room_size, self.max_room_size + 1)
             rh = np.random.randint(self.min_room_size, self.max_room_size + 1)
-            
+
             rx = np.random.randint(margin, self.width - margin - rw)
             ry = np.random.randint(margin, self.height - margin - rh)
 
             cx = rx + rw // 2
             cy = ry + rh // 2
+            r_x2 = rx + rw - 1
+            r_y2 = ry + rh - 1
 
-            # Spatial distance check against existing rooms
+            # AABB non-overlap + centroid-spacing check against existing rooms.
             valid = True
             for existing in rooms:
+                # Inclusive AABB overlap test.
+                overlaps = not (
+                    r_x2 < existing["x1"] or rx > existing["x2"] or
+                    r_y2 < existing["y1"] or ry > existing["y2"]
+                )
+                if overlaps:
+                    valid = False
+                    break
                 dist = np.hypot(cx - existing["cx"], cy - existing["cy"])
                 if dist < self.room_spacing:
                     valid = False
@@ -179,7 +200,7 @@ class ProceduralDungeonSynthesizer:
                 rooms.append({
                     "id": len(rooms),
                     "x1": rx, "y1": ry,
-                    "x2": rx + rw - 1, "y2": ry + rh - 1,
+                    "x2": r_x2, "y2": r_y2,
                     "w": rw, "h": rh,
                     "cx": cx, "cy": cy
                 })
@@ -188,7 +209,10 @@ class ProceduralDungeonSynthesizer:
 
     def _build_proximity_graph(self, centroids: np.ndarray) -> List[Tuple[float, int, int]]:
         """
-        Builds candidate edges between nearby room centroids sorted by Euclidean distance.
+        Builds the all-pairs Euclidean proximity graph: one candidate edge per room
+        pair, sorted by distance. This is a plain O(R^2) all-pairs loop (NOT a
+        Delaunay triangulation or Relative Neighborhood Graph); for the small room
+        counts used here (R <= ~100) it is fast enough.
         """
         N = len(centroids)
         edges = []

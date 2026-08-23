@@ -7,7 +7,7 @@ Inspired by:
 2. "Spectral Graph Theory"
    Daniel A. Spielman (Yale University Lecture Notes / Combinatorial Scientific Computing, 2019).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Given a massive, dense graph G = (V, E) with |E| = O(|V|^2) edges, solving linear systems,

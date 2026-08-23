@@ -6,7 +6,7 @@ Core Biophysics Solvers:
 - gnn_long_range_layer: Differentiable O(N) long-range physical prior layer for Equivariant GNNs (App B).
 - non_periodic_md_engine: Linear-time Molecular Dynamics without 3D-FFT bottlenecks (App C).
 - constant_ph_titration: Fast Monte Carlo protonation state and pKa shift evaluator (App D).
-- core.fast_multipole_kernel: O(N) screened Coulomb, Debye-Huckel, and Born multipole kernel.
+- core.fast_multipole_kernel: O(N·K) far-field screened Coulomb, Debye-Huckel, and Born multipole kernel (single-level flat scheme; O(N) at fixed cell count; multilevel O(N) is future work).
 
 High-Impact SOTA Application Suites:
 1. personalized_oncology_ddg: Patient-specific Delta-Delta-G drug resistance & NGS variant profiler.

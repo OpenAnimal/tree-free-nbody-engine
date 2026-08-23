@@ -1,0 +1,32 @@
+[FAIL] __init__.py ImportError: attempted relative import with no known parent package
+[OK  ] allosteric_druggability_engine.py 
+[OK  ] binding_pocket_detector.py 
+[OK  ] biomolecular_condensate_engine.py 
+[OK  ] biosignal_lsl_stream_engine.py 
+[OK  ] causal_perturb_seq_grn.py 
+[OK  ] chromatin_expression_engine.py 
+[OK  ] constant_ph_titration.py 
+[OK  ] contact_map_graph.py 
+[OK  ] crispr_offtarget_detector.py 
+[OK  ] cross_validation.py 
+[OK  ] cryo_em_flexible_fitting.py 
+[OK  ] diff_fmm_guidance.py 
+[OK  ] eeg_source_localization_fmm.py 
+[OK  ] gnn_long_range_layer.py 
+[OK  ] kmer_elastic_hash.py 
+[OK  ] macromolecular_nma_engine.py 
+[OK  ] mendelian_randomization_causal.py 
+[OK  ] minimizer_sequence_search.py 
+[OK  ] non_periodic_md_engine.py 
+[OK  ] pangenome_search_engine.py 
+[OK  ] pdb_loader.py 
+[OK  ] personalized_oncology_ddg.py 
+[OK  ] pharmacogenomics_metabolism.py 
+[OK  ] polypharmacology_affinity_matrix.py 
+[OK  ] rna_tertiary_folding_engine.py 
+[OK  ] smart_biologics_designer.py 
+[OK  ] solvation_free_energy.py 
+[OK  ] tcr_pmhc_immunogenicity.py 
+[OK  ] whole_cell_viral_simulation.py 
+
+1 failures out of 30 modules

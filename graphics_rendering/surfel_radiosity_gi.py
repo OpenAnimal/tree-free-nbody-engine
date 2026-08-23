@@ -15,7 +15,7 @@ Mathematical Foundation:
 
 Honesty note: the clusters are order-0/1 moments per spatial cell — a Barnes-Hut-style
 approximation indexed by the elastic hash, NOT a multipole-expansion FMM. The radiative
-form-factor kernel is 3D with cosine terms; the core CGR88 FMM (2D logarithmic kernel)
+form-factor kernel is 3D with cosine terms; the core adaptive FMM (2D logarithmic kernel)
 does not apply here. The default compute_indirect_bounce sums over ALL clusters (O(N*K));
 the near_far variant resolves the 27-cell neighborhood exclusively via hash probes.
 """
@@ -141,6 +141,11 @@ class SurfelRadiosityGI:
         positions = np.asarray(positions, dtype=np.float32)
         normals = np.asarray(normals, dtype=np.float32)
         albedos = np.asarray(albedos, dtype=np.float32)
+        # Ensure albedos is 2-D (N, 3) for RGB broadcasting.  Pass-30 fix:
+        # scalar albedos (N,) need expansion to (N, 1) to broadcast with
+        # (N, 3) irradiance; RGB albedos (N, 3) are left as-is.
+        if albedos.ndim == 1:
+            albedos = albedos[:, None]
         areas = np.asarray(areas, dtype=np.float32).ravel()
         direct_radiance = np.asarray(direct_radiance, dtype=np.float32)
 
@@ -278,6 +283,11 @@ class SurfelRadiosityGI:
         areas64 = np.asarray(areas, dtype=np.float64).ravel()
         radiance = np.asarray(radiance, dtype=np.float64)
         albedos64 = np.asarray(albedos, dtype=np.float64)
+        # Ensure albedos is 2-D (N, 3) for RGB broadcasting.  Pass-30 fix:
+        # scalar albedos (N,) need expansion to (N, 1) to broadcast with
+        # (N, 3) irradiance; RGB albedos (N, 3) are left as-is.
+        if albedos64.ndim == 1:
+            albedos64 = albedos64[:, None]
         n = len(positions)
         if n == 0:
             return np.zeros((0, 3))

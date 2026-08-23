@@ -112,7 +112,7 @@ fn binomial(n: usize, k: usize) usize {
 }
 
 /// M2L: Translates 2D multipole moments at src_center into local Taylor expansion at dst_center.
-/// Exact transcription of CGR88 Theorem 2.3 (core.cgr88_adaptive_fmm.m2l, the
+/// Exact transcription of CGR88 Theorem 2.3 (core.adaptive_fmm.m2l, the
 /// brute-force-validated Python reference), using the same direction convention
 /// delta = dst_center - src_center as the Python code:
 ///   c_0 = a_0 * log(delta) + sum_{k=1}^{P} a_k / delta^k

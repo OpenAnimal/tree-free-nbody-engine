@@ -10,11 +10,13 @@ from typing import Tuple, Dict, List, Optional, Set
 try:
     from .pdb_loader import MolecularSystem
     from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+    from core._csr import build_csr
 except (ImportError, ValueError):
     import os, sys
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from bioinformatics.pdb_loader import MolecularSystem
     from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+    from core._csr import build_csr
 
 
 class ContactMapGraphBuilder:
@@ -53,16 +55,20 @@ class ContactMapGraphBuilder:
         g_diff = np.abs(cluster_grid[:, None, :] - cluster_grid[None, :, :])
         is_near_cluster = np.all(g_diff <= 1, axis=-1)
 
+        # Finding N: CSR cell lists replace the per-cluster np.where(inverse==c)
+        # O(N*K) scans at the c1 / c2 gathers.
+        cell_start, cell_particles, _ = build_csr(inverse, K)
+
         edges = []
         edge_distances = []
         degrees = np.zeros(N_ca, dtype=np.int32)
 
         # Collect contacts
         for c1 in range(K):
-            idx1 = np.where(inverse == c1)[0]
+            idx1 = cell_particles[cell_start[c1]:cell_start[c1 + 1]]
             if len(idx1) == 0:
                 continue
-            
+
             p1 = ca_coords[idx1]
 
             # Neighboring clusters
@@ -70,8 +76,8 @@ class ContactMapGraphBuilder:
             for c2 in near_clusters:
                 if c2 < c1:
                     continue
-                
-                idx2 = np.where(inverse == c2)[0]
+
+                idx2 = cell_particles[cell_start[c2]:cell_start[c2 + 1]]
                 if len(idx2) == 0:
                     continue
 

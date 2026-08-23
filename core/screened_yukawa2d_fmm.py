@@ -303,12 +303,32 @@ def derivative_fd_guard(kappa: float = 1.0, p: int = 8,
 
 def toy_2cell_check(kappa: float = 1.0, p: int = 8) -> bool:
     """Two cells, a handful of particles, compare FMM vs exact direct.
-    Mandatory sign-convention check before scaling up."""
+    Mandatory sign-convention check before scaling up.
+
+    Round-7 finding: the previous configuration used depth=4 with cells
+    (3,3) and (10,10), but with LINEAR cells-per-side semantics (depth=4
+    -> 4 cells/side, indices 0..3), cell (10,10) clipped into (3,3) -- the
+    same cell as c1 -- so M2L never ran and the check silently exercised
+    only the near field. Now uses depth=10 with cells (1,1) and (8,8):
+    Chebyshev separation 7 > 2*ring_direct=4, genuinely well-separated,
+    with an explicit separation assertion so it can never degenerate again
+    (mirrors the fix in core/gaussian2d_fgt.py:toy_2cell_check).
+    """
     rng = np.random.default_rng(0)
-    depth = 4
+    depth = 10
     h_grid = 1.0 / depth
-    c1 = (np.array([3, 3]) + 0.5) * h_grid
-    c2 = (np.array([10, 10]) + 0.5) * h_grid
+    cell1 = np.array([1, 1])
+    cell2 = np.array([8, 8])
+    # Separation assertion: cells must be outside each other's ring-2
+    # neighborhood so the far (M2L) path is genuinely exercised.
+    cheb_sep = int(np.max(np.abs(cell1 - cell2)))
+    ring_direct = 2
+    assert cheb_sep > 2 * ring_direct, (
+        f"toy_2cell_check degenerate: cells {cell1} and {cell2} have "
+        f"Chebyshev separation {cheb_sep} <= 2*ring={2 * ring_direct}"
+    )
+    c1 = (cell1 + 0.5) * h_grid
+    c2 = (cell2 + 0.5) * h_grid
     n1, n2 = 4, 5
     pts1 = c1 + rng.uniform(-h_grid * 0.4, h_grid * 0.4, size=(n1, 2))
     pts2 = c2 + rng.uniform(-h_grid * 0.4, h_grid * 0.4, size=(n2, 2))

@@ -7,19 +7,25 @@ Inspired by:
 2. "Soft-DTW: a Differentiable Loss Function for Time-Series"
    Marco Cuturi and Mathieu Blondel (ICML 2017).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Given two multi-dimensional time series X in R^{T1 x D} and Y in R^{T2 x D}, finding optimal non-linear
 temporal alignment via classical Dynamic Time Warping (DTW) requires computing an exact
 O(T1 * T2) dynamic programming grid.
 
-The Multi-Scale FastDTW algorithm solves alignment in O(T * radius) time via hierarchical coarsening:
+The Multi-Scale FastDTW algorithm approximates alignment via hierarchical coarsening:
 1. Shrink time series recursively by dyadic factor 2: X_coarse = (x_{2i} + x_{2i+1}) / 2.
 2. At coarsest level, solve exact DTW.
 3. Project warping path to finer resolution and expand search corridor by radius r.
 4. Evaluate DP only within the adaptive spatial corridor.
-This drops alignment complexity from quadratic O(T^2) to O(T * log T) with provable accuracy.
+The per-level DP cost is O(T * radius) and there are O(log T) levels, giving a
+total of O(T * radius * log T) (often written loosely as O(T * log T) when
+radius is treated as a small constant, but the radius factor is real). This is
+a HEURISTIC corridor approximation: Salvador-Chan FastDTW has NO optimality
+guarantee -- the projected corridor can exclude the true optimal warping path,
+so the returned distance is an upper bound on the exact DTW distance, not a
+provable-accuracy approximation.
 """
 
 import time
@@ -30,8 +36,10 @@ import numpy as np
 class SublinearFastDTW:
     """
     Multi-Scale Adaptive Corridor Fast Dynamic Time Warping (FastDTW) Engine.
-    
-    Computes optimal warping distance and alignment path in O(T * radius) time.
+
+    Computes a HEURISTIC warping distance and alignment path (no optimality
+    guarantee) in O(T * radius * log T) time (O(T * radius) per level over
+    O(log T) levels). The result is an upper bound on the exact DTW distance.
     """
     def __init__(self, radius: int = 5, min_size: int = 32):
         self.radius = int(radius)

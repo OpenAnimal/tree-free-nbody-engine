@@ -71,12 +71,14 @@ class ConstantPHTitrationEngine:
                 if not sc_idx:
                     sc_idx = idx
 
+                initial_prot = True if rname in ["HIS", "LYS"] else False
                 self.titratable_sites.append({
                     "res_id": rid,
                     "res_name": rname,
                     "pka_model": pka_model,
                     "atom_indices": sc_idx,
-                    "is_protonated": True if rname in ["HIS", "LYS"] else False
+                    "is_protonated": initial_prot,
+                    "_initial_is_protonated": initial_prot,
                 })
 
     def run_mc_titration(
@@ -92,6 +94,14 @@ class ConstantPHTitrationEngine:
         num_sites = len(self.titratable_sites)
         if num_sites == 0:
             return {"target_ph": target_ph, "mean_protonation": {}, "net_charge": self.system.total_charge}
+
+        # Reset protonation states to initial values so that repeated calls
+        # start from a consistent state (finding P45-1: is_protonated was not
+        # reset between calls, causing charge drift because current_charges
+        # was reset to system.charges.copy() but is_protonated carried over
+        # from the previous run, making dq applied to the wrong baseline).
+        for site in self.titratable_sites:
+            site["is_protonated"] = site["_initial_is_protonated"]
 
         # Track protonation history
         protonated_history = np.zeros((num_mc_steps, num_sites), dtype=bool)
@@ -215,10 +225,17 @@ class ConstantPHTitrationEngine:
         for site in self.titratable_sites:
             skey = f"{site['res_name']}_{site['res_id']}"
             local_phi = float(np.mean(potentials[site["atom_indices"]]))
-            # Acidic residues: negative potential raises pKa (favors neutral/protonated form)
-            # Basic residues: positive potential lowers pKa (destabilizes cationic form)
-            sign = -1.0 if site["res_name"] in ["ASP", "GLU"] else +1.0
-            delta_pka = float(sign * local_phi / max(1e-3, self.ln10_kb_t))
+            # pKa is always defined for the DEPROTONATION reaction:
+            #   acid:   HA -> H+ + A-   (q_prod - q_react = -1 - 0 = -1)
+            #   base:   BH+ -> B + H+   (q_prod - q_react = 0 - (+1) = -1)
+            # In both cases delta_G_elec = -phi, so:
+            #   delta_pKa = delta_G_elec / (RT*ln10) = -phi / (RT*ln10)
+            # A negative potential raises pKa for acids (favors neutral form)
+            # and raises pKa for bases (stabilizes BH+). A positive potential
+            # lowers pKa for both. The previous code used sign = +1 for bases,
+            # which gave the OPPOSITE shift -- a positive potential raised pKa
+            # for bases instead of lowering it.
+            delta_pka = float(-local_phi / max(1e-3, self.ln10_kb_t))
             pka_shifts[skey] = {
                 "pka_model": site["pka_model"],
                 "predicted_pka": float(site["pka_model"] + delta_pka),

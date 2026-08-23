@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
 [![Ablation: 4 Core Techniques](https://img.shields.io/badge/Ablation-4%20Systems%20Techniques-orange.svg)]()
-[![Speedup: 140x](https://img.shields.io/badge/Speedup-140x%20vs%20N^2-brightgreen.svg)]()
+[![Speedup: ~140x (extrapolated)](https://img.shields.io/badge/Speedup-~140x%20vs%20N%5E2%20(extrapolated)-brightgreen.svg)]()
 
 ---
 
@@ -20,7 +20,7 @@ This sub-repository adapts practical low-level engine optimizations presented by
 
 ### How These Systems Ideas Benefit Tree-Free FMM & Elastic Hashing
 
-In tree-free Fast Multipole Methods, particles are grouped into spatial grid buckets via Morton keys and elastic hash tables rather than pointer-heavy tree structures (e.g. Farach-Colton et al. 2025). Adapting voxel-engine systems techniques addresses key bottlenecks:
+In tree-free Fast Multipole Methods, particles are grouped into spatial grid buckets via Morton keys and elastic hash tables rather than pointer-heavy tree structures (e.g. Farach-Colton, Krapivin, & Kuszmaul, 2025). Adapting voxel-engine systems techniques addresses key bottlenecks:
 
 1. **Quantized Fixed-Point Words (Bit-Packing):**
    * *Problem in FMM:* Storing coordinates $(x, y, z)$ and physical charges $q$ as standard 64-bit floats costs $32\text{--}48$ bytes per particle, creating memory-bandwidth bottlenecks in Particle-to-Multipole (P2M) and Particle-to-Particle (P2P) passes.
@@ -72,8 +72,12 @@ Scaling benchmarks across $N = 500$ to $N = 20,000$ particles:
 | **$N = 500$** | 8.24 ms | 32.38 ms | 28.81 ms | 10.45 ms | **12.44 ms** | $0.7\times$ *(crossover zone)* |
 | **$N = 2,000$** | 149.32 ms | 138.05 ms | 135.20 ms | 33.26 ms | **49.00 ms** | **$3.0\times$** |
 | **$N = 5,000$** | 1,139.78 ms | 246.88 ms | 259.71 ms | 61.62 ms | **53.72 ms** | **$21.2\times$** |
-| **$N = 10,000$** | 4,559.14 ms | 345.45 ms | 388.34 ms | 82.39 ms | **107.82 ms** | **$42.3\times$** |
-| **$N = 20,000$** | 18,236.55 ms (18.2s) | 555.76 ms | 518.26 ms | 145.62 ms | **130.34 ms** | **$139.9\times$** |
+| **$N = 10,000$** | 4,559.14 ms *(extrapolated)* | 345.45 ms | 388.34 ms | 82.39 ms | **107.82 ms** | **$42.3\times$** *(vs extrapolated $N^2$)* |
+| **$N = 20,000$** | 18,236.55 ms *(extrapolated)* | 555.76 ms | 518.26 ms | 145.62 ms | **130.34 ms** | **$139.9\times$** *(vs extrapolated $N^2$)* |
+
+> **Note on extrapolated times:** the Direct $O(N^2)$ baseline is only *measured* for $N \le 5{,}000$; for $N = 10{,}000$ and $N = 20{,}000$ the time is *extrapolated* as $t_{5000} \cdot (N/5000)^2$ (quadratic scaling). The speedup ratios at those scales are therefore vs an extrapolated reference, not a measured one.
+>
+> **Note on accuracy (the speedups are partly bought with error):** measured rel-L2 vs the direct $O(N^2)$ potential (`benchmark_ablation.py`): baseline tree-free FMM $\approx 1\times10^{-3}$; **+bit-packing $\approx 0.12$–$0.14$** (coordinate quantization is lossy); **+greedy merging $\approx 0.23$–$0.30$** (run-merged M2M moments are a coarse approximation); **combined engine $\approx 0.25$–$0.28$**. The table's speedups are for the lossy combined engine, not the $10^{-3}$-accurate baseline.
 
 ### Memory & Cluster Footprint Reductions
 * **Memory Buffer Footprint at $N = 20,000$:** Reduced from **$390.6\text{ KB}$ down to $78.1\text{ KB}$** ($5.0\times$ compression).
@@ -154,5 +158,6 @@ python quantized_bitpacked_optimization/benchmark_ablation.py
 ## Academic & Technical Citations
 
 1. **I Optimised My Game Engine Up To 12000 FPS.** Vercidium (2024). *Sector's Edge Systems Architecture* / [YouTube](https://www.youtube.com/watch?v=40JzyaOYJeY).
-2. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+2. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, & Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
 3. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
+4. **A Fast Adaptive Multipole Algorithm for Particle Simulations.** Carrier, Greengard, Rokhlin (1988). *SIAM Journal on Scientific and Statistical Computing*, 9(4), 669–686.

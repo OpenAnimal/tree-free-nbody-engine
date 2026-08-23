@@ -1,26 +1,30 @@
 """
 Wave Function Collapse (WFC) Procedural Content Generation Engine.
-Fast Constraint Propagation (AC-4 / Min-Entropy) with Bitset-Accelerated Superposition.
+Fast Constraint Propagation (AC-3-style / Min-Entropy) with Bitset-Accelerated Superposition.
 
 Mathematical & Algorithmic Formulation:
 - Wave Superposition: Each cell c in grid has a state vector W(c) in {0, 1}^K representing possible tile prototypes.
 - Bitset Optimization: For K <= 64 prototypes, W(c) is packed into a uint64 bitmask, allowing bitwise AND/OR/popcount in O(1).
 - Minimum Shannon Entropy Observation:
     H(c) = log(sum_{t in W(c)} w_t) - (sum_{t in W(c)} w_t * log(w_t)) / (sum_{t in W(c)} w_t) + noise
-- Forward Constraint Propagation (AC-4):
+- Forward Constraint Propagation (AC-3-style):
     When cell c is collapsed to pattern p, adjacent neighbor n in direction d must satisfy:
     W(n) <- W(n) AND AllowedMask(p, d)
     If W(n) changes, push n to propagation queue. Contradiction occurs if W(n) == 0.
+    NOTE: this is an AC-3-style re-check-from-scratch propagation (recompute the
+    allowed-neighbor mask from the source cell's full superposition each time an
+    arc is revisited), NOT AC-4 (which maintains per-(tile,dir) support counters
+    and decrements them). The propagation queue is a FIFO deque.
 """
 
 import numpy as np
 import time
+from collections import deque
 from typing import Tuple, List, Dict, Optional, Set
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.elastic_hash import ElasticHashTable
 
 
 # Direction offsets: (dx, dy) and corresponding opposite direction index
@@ -148,11 +152,11 @@ class WaveFunctionCollapse2D:
                 entropies[cy, cx] = float('inf')
                 collapsed_count += 1
 
-                # 4. Propagate Constraints (AC-4 Wavefront)
-                prop_queue = [(cx, cy)]
+                # 4. Propagate Constraints (AC-3-style wavefront, FIFO deque)
+                prop_queue = deque([(cx, cy)])
 
                 while prop_queue:
-                    qx, qy = prop_queue.pop(0)
+                    qx, qy = prop_queue.popleft()
                     src_mask = int(wave[qy, qx])
 
                     for d_idx, (dx, dy) in enumerate(DIRECTIONS_2D):

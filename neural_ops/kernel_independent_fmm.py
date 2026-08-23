@@ -163,19 +163,38 @@ class KernelIndependentNeuralOperator:
             pts_src = coords_clipped[p_src_arr]
             center_src = all_centers[key_to_idx[k_src]]
 
-            # Find spatial neighbors within adjacent grid cells
+            # Find spatial neighbors within adjacent grid cells.
+            # Derive the source cell from the bucket key k_src itself (NOT from
+            # the cluster centroid): for a multi-particle bucket whose members
+            # hug a cell boundary, the centroid can land in a different cell
+            # than every member, and the ring-1 neighborhood around the
+            # centroid cell then misses a cell that is ring-1 adjacent to the
+            # bucket's actual cell (where a true near neighbor lives).  The
+            # bucket key is LINEAR (see _morton_encode): k = nx + ny*res +
+            # nz*res^2, so the cell coords are recovered by integer division.
             res = self.grid_res
-            src_grid = np.floor(center_src * res).astype(np.int64)
+            if self.spatial_dim == 2:
+                src_grid = np.array([k_src % res,
+                                     (k_src // res) % res], dtype=np.int64)
+            elif self.spatial_dim == 3:
+                src_grid = np.array([k_src % res,
+                                     (k_src // res) % res,
+                                     k_src // (res * res)], dtype=np.int64)
+            else:
+                # General d-dim linear key: k = sum_i idx_i * res^i
+                src_grid = np.array(
+                    [(k_src // (res ** i)) % res for i in range(self.spatial_dim)],
+                    dtype=np.int64)
             near_indices_set = set()
             near_p_list = []
 
             # 3^d neighboring cells
             if self.spatial_dim == 2:
                 for dx in (-1, 0, 1):
-                    nx = src_grid[0] + dx
+                    nx = int(src_grid[0]) + dx
                     if 0 <= nx < res:
                         for dy in (-1, 0, 1):
-                            ny = src_grid[1] + dy
+                            ny = int(src_grid[1]) + dy
                             if 0 <= ny < res:
                                 nk = int(nx + ny * res)
                                 if nk in key_to_idx:
@@ -183,13 +202,13 @@ class KernelIndependentNeuralOperator:
                                     near_p_list.extend(bucket_map[nk])
             elif self.spatial_dim == 3:
                 for dx in (-1, 0, 1):
-                    nx = src_grid[0] + dx
+                    nx = int(src_grid[0]) + dx
                     if 0 <= nx < res:
                         for dy in (-1, 0, 1):
-                            ny = src_grid[1] + dy
+                            ny = int(src_grid[1]) + dy
                             if 0 <= ny < res:
                                 for dz in (-1, 0, 1):
-                                    nz = src_grid[2] + dz
+                                    nz = int(src_grid[2]) + dz
                                     if 0 <= nz < res:
                                         nk = int(nx + ny * res + nz * (res ** 2))
                                         if nk in key_to_idx:

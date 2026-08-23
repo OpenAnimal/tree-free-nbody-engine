@@ -1,4 +1,4 @@
-// Funnel hash table (Farach-Colton, Krapivin, Kuszmaul 2025, Section 3)
+// Funnel hash table (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3)
 // Zig port of core/elastic_hash.py:ElasticHashTable for microbenchmarking.
 //
 // Geometry (matches the Python reference):

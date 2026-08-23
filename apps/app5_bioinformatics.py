@@ -1,13 +1,18 @@
 """
 Application 5: 3D Molecular Electrostatics & Solvation Free Energy (Bioinformatics / Drug Design).
-Cell index: Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash
+Cell index: Farach-Colton, Krapivin, & Kuszmaul (2025) non-reordering funnel/elastic hash
 (core.elastic_hash), queried in the compute path for cluster membership.
 
 Method, stated honestly: the interaction kernel here is the 3D screened
 Yukawa (Debye-Huckel) potential, which does NOT match the 2D logarithmic
-CGR88 FMM in core/, so no FMM engine is used. Potentials are computed by
+adaptive FMM in core/, so no FMM engine is used. Potentials are computed by
 direct O(K^2) summation between spatial clusters (bucketed centroids),
 with the funnel hash resolving cluster membership per atom.
+
+Round-7 task T-C4: `--pdb path/to/structure.pdb` mode runs the
+`TaylorYukawaBioFMM` engine (T-C1) on a real PDB structure parsed by
+`bioinformatics/pdb_loader.py`, reporting rel-L2 vs direct Debye-Hückel
+at the largest N that fits the direct budget.
 """
 
 import sys
@@ -117,5 +122,72 @@ def run_bioinformatics_demo(n_atoms: int = 3000):
     plt.close()
     print(f"[-] Saved 3D protein electrostatics visualization to: {output_path}")
 
+def run_pdb_mode(pdb_path: str, max_n_direct: int = 3000):
+    """Round-7 task T-C4: run TaylorYukawaBioFMM on a real PDB structure.
+
+    Parses the PDB file via `bioinformatics.pdb_loader.parse_pdb`, runs the
+    T-C1 bio FMM engine, and reports rel-L2 vs direct Debye-Hückel at the
+    largest N that fits the direct budget (`max_n_direct`).
+    """
+    from bioinformatics.pdb_loader import parse_pdb
+    from bioinformatics.core.fast_multipole_kernel import TaylorYukawaBioFMM
+
+    print(f">>> App 5 real-PDB mode: {pdb_path}")
+    system = parse_pdb(pdb_path)
+    N = system.num_atoms
+    coords = system.coords.astype(np.float64)
+    charges = system.charges.astype(np.float64)
+    print(f"    Parsed {N} atoms from {pdb_path}")
+
+    # Debye screening: kappa = 0.329 * sqrt(I) for I=0.15 M (physiological)
+    kappa = 0.329 * np.sqrt(0.15)
+    eps = 78.5
+
+    # Run TaylorYukawaBioFMM (T-C1)
+    fmm = TaylorYukawaBioFMM(
+        kappa_angstrom=kappa, dielectric=eps, cell_size_A=8.0, p=8
+    )
+    t0 = time.perf_counter()
+    pot_fmm, _, meta = fmm.evaluate(coords, charges)
+    t_fmm = time.perf_counter() - t0
+    print(f"    TaylorYukawaBioFMM: {t_fmm*1000:.1f} ms, depth={meta['depth']}, "
+          f"kappa_unit={meta['kappa_unit']:.4f}")
+
+    # Direct reference (subsample if N > max_n_direct)
+    if N <= max_n_direct:
+        t0 = time.perf_counter()
+        diff = coords[:, None, :] - coords[None, :, :]
+        r = np.linalg.norm(diff, axis=-1)
+        np.fill_diagonal(r, 1e9)
+        pot_direct = np.sum(charges[None, :] * np.exp(-kappa * r) / r, axis=1)
+        pot_direct *= 332.063711 / eps
+        t_direct = time.perf_counter() - t0
+        rel = np.linalg.norm(pot_fmm - pot_direct) / max(1e-30, np.linalg.norm(pot_direct))
+        print(f"    Direct O(N^2): {t_direct*1000:.1f} ms (N={N})")
+        print(f"    rel-L2 vs direct: {rel:.4e}")
+    else:
+        # Subsample for direct reference
+        rng = np.random.RandomState(42)
+        idx = rng.choice(N, max_n_direct, replace=False)
+        coords_sub = coords[idx]
+        charges_sub = charges[idx]
+        t0 = time.perf_counter()
+        diff = coords_sub[:, None, :] - coords_sub[None, :, :]
+        r = np.linalg.norm(diff, axis=-1)
+        np.fill_diagonal(r, 1e9)
+        pot_direct_sub = np.sum(charges_sub[None, :] * np.exp(-kappa * r) / r, axis=1)
+        pot_direct_sub *= 332.063711 / eps
+        t_direct = time.perf_counter() - t0
+        pot_fmm_sub = pot_fmm[idx]
+        rel = np.linalg.norm(pot_fmm_sub - pot_direct_sub) / max(1e-30, np.linalg.norm(pot_direct_sub))
+        print(f"    Direct O(N^2): {t_direct*1000:.1f} ms (subsampled N={max_n_direct} of {N})")
+        print(f"    rel-L2 vs direct (subsampled): {rel:.4e}")
+
+    print(f">>> App 5 real-PDB mode complete.")
+
+
 if __name__ == '__main__':
-    run_bioinformatics_demo(3000)
+    if len(sys.argv) >= 3 and sys.argv[1] == '--pdb':
+        run_pdb_mode(sys.argv[2])
+    else:
+        run_bioinformatics_demo(3000)

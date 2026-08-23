@@ -4,7 +4,6 @@ over Sphere Obstacle with Matrix-Free Tree-Free IPC Solver.
 """
 
 import numpy as np
-import time
 import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -39,13 +38,15 @@ def generate_cloth_animation():
         density=0.25
     )
     # Layer 2: Top fabric (Cyan velvet)
+    # Uses the SAME material params as layer 1: combine_cloth_meshes stores a
+    # single material set, so per-layer params would be silently discarded.
     cloth2 = create_cloth_grid(
         nx=grid_res, ny=grid_res,
         width=width * 0.94, height=height * 0.94,
         center=(0.505, 0.495, 0.67),
-        k_stretch=1600.0,
-        k_bend=0.05,
-        density=0.22
+        k_stretch=1800.0,
+        k_bend=0.06,
+        density=0.25
     )
     
     cloth = combine_cloth_meshes([cloth1, cloth2])
@@ -54,7 +55,6 @@ def generate_cloth_animation():
     solver = MatrixFreeIPCSolver(
         dhat=0.016,
         stiffness=4e3,
-        cell_size=0.035,
         max_newton_iters=3,
         cg_max_iters=14,
         damp_coef=0.20
@@ -128,7 +128,7 @@ def generate_cloth_animation():
         azim = -60 + f * 2.0
         ax.view_init(elev=24, azim=azim)
         
-        ax.set_title(f"Matrix-Free IPC Multilayer Drape | Frame {f:2d}/{total_frames}\nMin Clearance: {min_c*100:4.2f} cm (Penetration-Free)",
+        ax.set_title(f"Matrix-Free IPC Multilayer Drape | Frame {f:2d}/{total_frames}\nMin Clearance: {min_c*100:4.2f} cm (sphere clearance; barrier prevents penetration of checked candidate set)",
                      color="#E6EDF3", fontsize=10, fontweight="bold", pad=8)
                      
         fig.tight_layout()

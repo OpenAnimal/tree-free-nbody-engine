@@ -2,11 +2,12 @@
 Sublinear Approximate Edit Distance & Pattern Matching Engine.
 Bridging Metric Space Embeddings (Batu-Ergun-Kilberg, Andoni-Krauthgamer) with Elastic Hashing.
 
-Replaces quadratic O(N * M) dynamic programming (Wagner-Fischer) with sublinear-time
-(1 + eps)-approximate string distance and fast diagonal-banded approximate pattern matching.
+Replaces quadratic O(N * M) dynamic programming (Wagner-Fischer) with diagonal-banded
+dynamic programming (Ukkonen-style) and fast approximate pattern matching.
 
 Key Capabilities:
-1. (1 + eps)-Approximate Levenshtein Edit Distance in subquadratic time.
+1. Banded Levenshtein edit distance in O(min(N, M) * K) when the true distance is <= K
+   (exact within the band; returns max(N, M) when the band is exceeded).
 2. Fast Approximate Pattern Matching in texts with up to k insertions/deletions/substitutions.
 3. Multi-resolution q-gram frequency sketches with elastic open addressing.
 """
@@ -94,24 +95,41 @@ class SublinearEditDistance:
         """
         Computes banded edit distance constrained along the main diagonal |i - j| <= K.
         Complexity: O(min(N, M) * K) instead of O(N * M).
+
+        The band must be wide enough to admit pure-prefix-deletion / pure-prefix-insertion
+        alignment paths. The j = 0 (empty s2 prefix) and i = 0 (empty s1 prefix) border
+        columns are initialised so that deleting/inserting a run of leading characters is
+        always reachable inside the band.
         """
         n, m = len(s1), len(s2)
-        if abs(n - m) > (max_k or self.band_width * 2):
+        # NOTE: use `is None` rather than truthiness so an explicit max_k == 0 (lengths must
+        # match exactly) is honoured instead of falling back to band_width * 2.
+        if max_k is None:
+            limit = self.band_width * 2
+        else:
+            limit = max_k
+        if abs(n - m) > limit:
             return max(n, m)
-            
+
         k = max_k if max_k is not None else self.band_width
         k = max(k, abs(n - m))
-        
+
         INF = 10**8
         dp = np.full((n + 1, 2 * k + 1), INF, dtype=np.int32)
-        
+
         # Helper index mapping: (i, j) -> j - i + k
         def col_idx(i: int, j: int) -> int:
             return j - i + k
-            
+
+        # i = 0 border: inserting j leading characters of s2.
         dp[0, k] = 0
         for j in range(1, min(m + 1, k + 1)):
             dp[0, col_idx(0, j)] = j
+        # j = 0 border: deleting i leading characters of s1. Without this the
+        # pure-prefix-deletion path (e.g. "abc" -> "c") is unreachable and the
+        # banded DP incorrectly returns the full deletion cost.
+        for i in range(1, min(n + 1, k + 1)):
+            dp[i, col_idx(i, 0)] = i
             
         for i in range(1, n + 1):
             c1 = s1[i - 1]
@@ -169,19 +187,30 @@ class SublinearEditDistance:
         self,
         text: str,
         pattern: str,
-        max_errors: int = 2
+        max_errors: int = 2,
+        scan_step: int = 1,
     ) -> List[Tuple[int, int, int]]:
         """
         Finds approximate matches of pattern in text with at most max_errors.
         Returns list of (start_idx, end_idx, edit_distance).
+
+        Recall / speed trade-off
+        ------------------------
+        ``scan_step`` controls how many text start offsets are skipped between
+        probes. The default ``scan_step=1`` probes *every* offset and therefore
+        never misses a 0-error (or low-error) match that begins at an unscanned
+        offset -- this is the safe, full-recall setting. Raising ``scan_step``
+        (e.g. ``p_len // 4``) gives a sublinear-time *approximate* scan that may
+        silently miss matches whose start offset falls between sampled probes;
+        use it only when approximate recall is acceptable and the text is large.
         """
         matches = []
         p_len = len(pattern)
         t_len = len(text)
         if p_len == 0 or t_len < p_len - max_errors:
             return matches
-            
-        step = max(1, p_len // 4)
+
+        step = max(1, int(scan_step))
         for i in range(0, t_len - p_len + max_errors + 1, step):
             for candidate_len in range(p_len - max_errors, min(t_len - i, p_len + max_errors) + 1):
                 window = text[i:i + candidate_len]
@@ -189,7 +218,7 @@ class SublinearEditDistance:
                 if dist <= max_errors:
                     matches.append((i, i + candidate_len, dist))
                     break
-                    
+
         return matches
 
 
@@ -270,7 +299,7 @@ class ElasticFuzzyDictionary:
     Tree-Free Elastic Symmetric Deletion Vocabulary Hash Table.
     
     Replaces pointer-chasing BK-Trees and Levenshtein Tries with flat open addressing
-    over precomputed symmetric deletion signatures. Provides O(1) query lookup
+    over precomputed symmetric deletion signatures. Provides O(1)-amortized query lookup
     at millions of queries per second with contiguous memory locality.
     """
     def __init__(self, max_edit_distance: int = 2):

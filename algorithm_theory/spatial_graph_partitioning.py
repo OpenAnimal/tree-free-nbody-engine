@@ -7,7 +7,7 @@ Inspired by:
 2. "Rapid Sampling of Planar Graph Partitions via Spanning Trees"
    Justin Solomon, Moon Duchin et al. (ACM SIGSPATIAL, 2020).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Partitioning a spatial geographic graph G = (V, E) into k contiguous, balanced-weight subgraphs
@@ -21,9 +21,15 @@ subgraph H = D_1 \cup D_2, computes a Uniform Spanning Tree T(H) via Kruskal/Wil
 and finds an edge cut (e \in T) that splits H into two connected components satisfying:
     (1 - eps) * P_target <= Population(D_i) <= (1 + eps) * P_target
 
-Coupled with Elastic Spatial Hashing to track boundary perimeters and Polsby-Popper compactness:
-    Compactness(D) = 4 * pi * Area(D) / Perimeter(D)^2
-this achieves rapid polynomial-time MCMC state mixing and mathematically neutral space partitions.
+A shape compactness proxy is computed per district (see
+``compute_polsby_popper_compactness``); note this is a DIMENSIONALLY
+HEURISTIC proxy, NOT the true Polsby-Popper isoperimetric quotient: the
+"area" is a variance-ellipse pseudo-area (pi * sqrt(var_x * var_y) * n_nodes)
+and the "perimeter" is a cut-edge count, so the two quantities are not in
+commensurate units and the ratio is not a genuine 4*pi*Area/Perimeter^2.
+It is retained as a relative shape-compactness score for MCMC acceptance,
+not as a physical compactness measure. No Elastic Spatial Hashing is used
+(boundary perimeters are counted by scanning the adjacency list).
 """
 
 import time
@@ -84,8 +90,18 @@ class SpatialGraphPartitioning:
 
     def compute_polsby_popper_compactness(self, assignments: np.ndarray) -> np.ndarray:
         """
-        Computes the isoperimetric Polsby-Popper compactness quotient for each district:
-            PP(D) = 4 * pi * Area(D) / (Perimeter(D))^2
+        Computes a SHAPE COMPACTNESS PROXY (dimensionally heuristic) for each
+        district.
+
+        This is NOT the true Polsby-Popper isoperimetric quotient
+        4*pi*Area/Perimeter^2. The "area" here is a variance-ellipse
+        pseudo-area (pi * sqrt(var_x * var_y) * n_nodes, mixing a
+        covariance-spread term with a node count) and the "perimeter" is a
+        cut-edge count (a topological boundary length, not a geometric
+        perimeter). The two are not in commensurate units, so the ratio is a
+        heuristic relative shape score used only for MCMC acceptance, not a
+        physical compactness measurement. The method name is retained for
+        backward compatibility.
         """
         compactness = np.zeros(self.k_districts, dtype=np.float64)
 
@@ -98,6 +114,7 @@ class SpatialGraphPartitioning:
             pts = self.coords[node_idx]
             var_x = np.var(pts[:, 0]) + 1e-6
             var_y = np.var(pts[:, 1]) + 1e-6
+            # variance-ellipse pseudo-area (NOT a geometric polygon area)
             area = np.pi * np.sqrt(var_x * var_y) * len(node_idx)
 
             boundary_cut_count = 0
@@ -106,6 +123,7 @@ class SpatialGraphPartitioning:
                     if assignments[v] != d:
                         boundary_cut_count += 1
 
+            # cut-edge count pseudo-perimeter (NOT a geometric perimeter)
             perimeter = max(1.0, float(boundary_cut_count))
             score = (4.0 * np.pi * area) / (perimeter ** 2)
             compactness[d] = float(np.clip(score, 0.0, 1.0))

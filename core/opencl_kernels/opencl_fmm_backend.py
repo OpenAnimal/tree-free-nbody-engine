@@ -40,6 +40,12 @@ class OpenCLFMMContext:
         self.platform = None
         self.is_initialized = False
         self.prefer_amd = prefer_amd
+        # Cache of compiled programs keyed by workgroup_size, so the
+        # kernel's WORKGROUP_SIZE macro always matches the dispatch/local
+        # memory sizing (otherwise a mismatch causes out-of-bounds local
+        # reads -- the kernel loops over WORKGROUP_SIZE elements while the
+        # host allocated only `workgroup_size` local slots).
+        self._programs: Dict[int, Any] = {}
 
         if HAS_PYOPENCL:
             self._initialize_context()
@@ -93,15 +99,32 @@ class OpenCLFMMContext:
             self.context = cl.Context([chosen_device])
             self.queue = cl.CommandQueue(self.context)
 
-            # Load and build OpenCL C kernel program
-            with open(OPENCL_CL_SOURCE_PATH, "r", encoding="utf-8") as f:
-                cl_src = f.read()
-
-            self.program = cl.Program(self.context, cl_src).build()
+            # The kernel program is built lazily per workgroup_size (see
+            # get_program) so the WORKGROUP_SIZE macro matches the host
+            # dispatch/local-memory sizing.
             self.is_initialized = True
 
         except Exception as ex:
             self.is_initialized = False
+
+    def get_program(self, workgroup_size: int = 256):
+        """Return a compiled program whose WORKGROUP_SIZE macro equals
+        `workgroup_size`. Programs are cached per workgroup_size. The
+        kernel source guards `#ifndef WORKGROUP_SIZE` so the `-D` define
+        supplied here overrides the source default."""
+        if not self.is_initialized:
+            return None
+        if workgroup_size in self._programs:
+            return self._programs[workgroup_size]
+        with open(OPENCL_CL_SOURCE_PATH, "r", encoding="utf-8") as f:
+            cl_src = f.read()
+        options = [f"-D WORKGROUP_SIZE={int(workgroup_size)}"]
+        prog = cl.Program(self.context, cl_src).build(options=options)
+        self._programs[workgroup_size] = prog
+        # Keep self.program pointing at the most-recently built program for
+        # backward compatibility with code that reads ctx.program.
+        self.program = prog
+        return prog
 
     def get_device_info(self) -> Dict[str, Any]:
         if not self.is_initialized or self.device is None:
@@ -155,7 +178,10 @@ def opencl_tree_free_nbody(
     global_size = ((N + workgroup_size - 1) // workgroup_size) * workgroup_size
     local_size = workgroup_size
 
-    ctx.program.opencl_p2p_coulomb_nbody(
+    # Build (or fetch cached) program whose WORKGROUP_SIZE macro matches
+    # the dispatch/local-memory sizing above.
+    program = ctx.get_program(workgroup_size)
+    program.opencl_p2p_coulomb_nbody(
         ctx.queue,
         (global_size,),
         (local_size,),
@@ -195,7 +221,15 @@ def opencl_morton_encode_3d(coords: np.ndarray, depth: int = 10) -> np.ndarray:
     d_keys = cl.Buffer(ctx.context, mf.WRITE_ONLY, size=N * 4)
 
     global_size = ((N + 255) // 256) * 256
-    ctx.program.opencl_morton_encode_3d(
+    # The lazy-program refactor (Round-7) stopped building self.program in
+    # _initialize_context -- programs are now built/cached per workgroup_size
+    # via get_program. Fetch the workgroup-256 program explicitly here so a
+    # fresh context that has not yet run opencl_tree_free_nbody does not hit
+    # `ctx.program is None` -> AttributeError.
+    program = ctx.get_program(256)
+    if program is None:
+        raise RuntimeError("OpenCL context is not initialized.")
+    program.opencl_morton_encode_3d(
         ctx.queue,
         (global_size,),
         (256,),

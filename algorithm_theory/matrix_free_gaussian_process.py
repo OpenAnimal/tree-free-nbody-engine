@@ -7,7 +7,7 @@ Inspired by:
 2. "Exact Gaussian Processes on a Million Data Points"
    Ke Alexander Wang, Geoff Pleiss, Jacob R. Gardner, Roman Garnett, Andrew Gordon Wilson (NeurIPS 2019).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Gaussian Process (GP) regression is the gold standard for Bayesian non-parametric function approximation

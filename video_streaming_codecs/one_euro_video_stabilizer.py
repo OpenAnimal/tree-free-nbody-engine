@@ -1,14 +1,15 @@
 """
-1€ (One-Euro) Adaptive Gyro Video Stabilizer & Latency-Free ABR Bitrate Controller
+1€ (One-Euro) Adaptive Gyro Video Stabilizer & ABR Bitrate Controller
 Translates Casiez et al. (2012) into video deshake and live streaming network transport.
 
 Features:
-1. Video Camera Deshake: Full jitter suppression at low velocities, zero phase lag on sharp intentional pans.
+1. Video Camera Deshake: Strong jitter suppression at low velocities; the adaptive cutoff
+   rises with speed so intentional fast pans track with low lag (NOT zero phase lag — a
+   causal 1€ filter always introduces some lag, it just adapts to minimize it).
 2. Adaptive Bitrate (ABR) Controller: Smooths noisy network jitter without delaying rapid emergency downshifts.
 """
 
 import numpy as np
-import time
 from typing import Tuple, List, Dict
 
 class OneEuroVideoStabilizer:

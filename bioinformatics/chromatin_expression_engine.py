@@ -115,10 +115,16 @@ class ChromatinPolymerModel:
         total_energy = 0.0
 
         # 1. Harmonic backbone bonds
+        # F_i = -dU/dr_i with U = 0.5*k*(d-r0)^2, d = |r_{i+1}-r_i|.
+        # dd/dr_i = -(r_{i+1}-r_i)/d, so F_i = k*(d-r0)*(r_{i+1}-r_i)/d
+        # (attractive when stretched, repulsive when compressed).
+        # P23-2: the previous code used -k*delta*diff_bonds/dist, which with
+        # diff_bonds = r_{i+1}-r_i gives a REPULSIVE force when stretched
+        # (the chain flies apart). The sign is now corrected to +k*delta.
         diff_bonds = self.coords[1:] - self.coords[:-1]
         dist_bonds = np.linalg.norm(diff_bonds, axis=-1, keepdims=True) + 1e-9
         delta = dist_bonds - self.r0
-        f_bonds = -self.k_bond * delta * (diff_bonds / dist_bonds)
+        f_bonds = self.k_bond * delta * (diff_bonds / dist_bonds)
 
         forces[:-1] += f_bonds
         forces[1:] -= f_bonds
@@ -139,9 +145,13 @@ class ChromatinPolymerModel:
         r_mat = np.linalg.norm(diff_all, axis=-1) + np.eye(self.num_beads) * 1e9
 
         # Excluded volume (Soft-core repulsion)
+        # U_ev = 50/3 * overlap^3, F = -dU/dr = 50 * overlap^2 (repulsive).
+        # P21-2: the previous code divided f_ev_mag by r, giving a force
+        # 50*overlap^2/r instead of 50*overlap^2 — too weak by a factor of r.
+        # Same bug pattern as P19-1 in biomolecular_condensate_engine.py.
         sigma = self.r0
         overlap = np.maximum(0.0, sigma - r_mat)
-        f_ev_mag = 50.0 * (overlap**2) / (r_mat + 1e-6)
+        f_ev_mag = 50.0 * (overlap**2)
         total_energy += float(np.sum(50.0 / 3.0 * (overlap**3))) * 0.5
 
         # Screened Coulomb: V(r) = q1 q2 exp(-kappa r) / (eps r)

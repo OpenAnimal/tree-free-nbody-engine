@@ -3,6 +3,9 @@ Module 15: Patient Pharmacogenomics (PGx) & Hepatic Metabolic Clearance Engine.
 Models patient-specific cytochrome P450 allele variants (CYP2D6, CYP2C19, CYP3A4, TPMT, DPYD)
 and calculates altered catalytic pocket volumes, substrate turnover kinetics (k_cat / K_m),
 and personalized dosage recommendation adjustments (CPIC clinical guidelines).
+
+Synthetic research prototype on self-generated data; not clinical; not diagnostic;
+no real patient or guideline data consumed.
 """
 
 from __future__ import annotations

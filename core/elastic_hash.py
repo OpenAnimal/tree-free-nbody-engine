@@ -1,7 +1,7 @@
 """
-Open addressing WITHOUT reordering (Farach-Colton, Krapivin, Kuszmaul,
+Open addressing WITHOUT reordering — Farach-Colton, Krapivin, & Kuszmaul (2025),
 "Optimal Bounds for Open Addressing Without Reordering",
-arXiv:2501.02305 / FOCS 2024).
+arXiv:2501.02305 / FOCS 2024.
 
 Two schemes from the paper live in this module:
 
@@ -109,7 +109,7 @@ def _mix64_arr(z: np.ndarray) -> np.ndarray:
 
 class ElasticHashTable:
     """
-    Funnel hash table (Farach-Colton, Krapivin, Kuszmaul 2025, Section 3),
+    Funnel hash table (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3),
     exposed under its historical class name for API compatibility.
 
     Geometry (see module docstring for the paper's parameterization):
@@ -140,8 +140,13 @@ class ElasticHashTable:
     monotone-fill argument insert() relies on — use
     ElasticBatchingHashTable if you need remove()).
 
-    Keys are arbitrary integers that fit in a signed 64-bit int (Morton
-    cell keys, LSH bucket ids, ...); values are arbitrary Python objects.
+    Keys must be NON-NEGATIVE integers that fit in a signed 64-bit int
+    (Morton cell keys, LSH bucket ids, ...): -1 and -2 are reserved as the
+    empty/tombstone sentinels. Values are arbitrary Python objects.
+
+    Primary in-repo consumer: `core.spatial_index.CellIndex` uses this table
+    as its occupied-cell index for membership / neighborhood probes (the
+    generic elastic hash backbone behind the spatial cell index).
     """
 
     def __init__(self, capacity: int, delta: float = 0.05,
@@ -363,11 +368,18 @@ class ElasticHashTable:
         searched first instead.
 
         Returns (success, probe_count). A miss can only occur when the table
-        already holds `capacity` keys (load 1 - delta reached), or — with
-        probability n^{-omega(1)} at any load below that — if the overflow
-        region is also exhausted.
+        already holds `capacity` keys (load 1 - delta reached) AND the key is
+        not already present, or — with probability n^{-omega(1)} at any load
+        below that — if the overflow region is also exhausted.
         """
         if self.count >= self.capacity:
+            # Table is full: check if the key already exists so it can be
+            # updated in place. Only genuinely new keys fail at capacity.
+            pos, probes = self._search(int(key))
+            if pos >= 0:
+                self.values[pos] = value
+                self.last_probes = probes
+                return True, probes
             self.last_probes = 0
             return False, 0
 
@@ -387,12 +399,14 @@ class ElasticHashTable:
                 if occupied[pos]:
                     if keys[pos] == k:
                         self.values[pos] = value
+                        self.last_probes = probes
                         return True, probes
                 elif sub_first_free < 0:
                     sub_first_free = pos
             if sub_first_free >= 0:
                 if overflow_was_empty:
                     self._fill(sub_first_free, k, value)
+                    self.last_probes = probes
                     return True, probes
                 if first_free < 0:
                     first_free = sub_first_free
@@ -402,11 +416,13 @@ class ElasticHashTable:
         probes += p
         if pos >= 0:
             self.values[pos] = value
+            self.last_probes = probes
             return True, probes
 
         # Genuinely new key: remembered slab slot, else overflow B/C.
         if first_free >= 0:
             self._fill(first_free, k, value)
+            self.last_probes = probes
             return True, probes
         pos, p = self._place_overflow(k, value)
         probes += p
@@ -450,6 +466,8 @@ class ElasticHashTable:
             return False
         self.keys[pos] = _TOMBSTONE
         self.values[pos] = None
+        if pos >= self.b_offset:
+            self._overflow_count -= 1
         self.count -= 1
         return True
 
@@ -466,7 +484,7 @@ class ElasticHashTable:
     def items(self):
         """Iterate (key, value) over all stored entries."""
         for pos in range(self.total_size):
-            if self.occupied[pos]:
+            if self.occupied[pos] and self.keys[pos] != _TOMBSTONE:
                 yield int(self.keys[pos]), self.values[pos]
 
     # Compatibility aliases for the historical level-based attribute names.
@@ -477,6 +495,76 @@ class ElasticHashTable:
     @property
     def level_offsets(self) -> List[int]:
         return self.slab_offsets
+
+
+# =============================================================================
+# ElasticIntTable — same funnel geometry, int64 values + insert_or_increment
+# (Round-7 task T-A3: used by `bioinformatics/kmer_elastic_hash.py`).
+# =============================================================================
+
+class ElasticIntTable(ElasticHashTable):
+    """
+    Funnel-hash table with `int64` values and an `insert_or_increment` method.
+
+    Same probe sequence as `ElasticHashTable._search`; the increment is safe
+    because the table is append-only + single-threaded here (no concurrent
+    inserts racing the read-modify-write on the same key).
+
+    Round-7 task T-A3: replaces the legacy pre-funnel `KmerElasticHashTable`
+    that lived in `bioinformatics/kmer_elastic_hash.py` (finding F-01).
+    """
+
+    def __init__(self, capacity: int, delta: float = 0.05, seed: int = 42):
+        super().__init__(capacity=capacity, delta=delta, seed=seed)
+        # Override the Python-list `values` with an int64 ndarray.
+        self.values = np.zeros(self.total_size, dtype=np.int64)
+
+    def insert(self, key: int, value: int) -> Tuple[bool, int]:
+        """Insert (key, int value). `value` must be a Python int or np.int64."""
+        return super().insert(int(key), int(value))
+
+    def insert_or_increment(self, key: int, inc: int = 1) -> Tuple[bool, int]:
+        """
+        Insert `key` with value `inc` if absent, otherwise add `inc` to the
+        existing value. Returns (ok, probe_count). The probe sequence is
+        identical to `ElasticHashTable._search`.
+        """
+        pos, probes = self._search(int(key))
+        if pos >= 0:
+            self.values[pos] = self.values[pos] + int(inc)
+            return True, probes
+        # Key absent: descend the funnel as a fresh insert.
+        return self.insert(int(key), int(inc))
+
+    def get(self, key: int, default: Optional[int] = None) -> Optional[int]:
+        """Dict-style access: int value for key, or `default` if absent."""
+        pos, _ = self._search(int(key))
+        return int(self.values[pos]) if pos >= 0 else default
+
+    def lookup(self, key: int) -> Tuple[Optional[int], int]:
+        """Returns (int value or None, probe_count)."""
+        pos, probes = self._search(int(key))
+        self.last_probes = probes
+        return (int(self.values[pos]) if pos >= 0 else None), probes
+
+    def remove(self, key: int) -> bool:
+        """Delete key (tombstone).  Overrides parent to use 0 instead of
+        None for the int64 values array."""
+        pos, _ = self._search(int(key))
+        if pos < 0:
+            return False
+        self.keys[pos] = _TOMBSTONE
+        self.values[pos] = 0
+        if pos >= self.b_offset:
+            self._overflow_count -= 1
+        self.count -= 1
+        return True
+
+    def items(self):
+        """Iterate (key, int value) over all stored entries."""
+        for pos in range(self.total_size):
+            if self.occupied[pos] and self.keys[pos] != _TOMBSTONE:
+                yield int(self.keys[pos]), int(self.values[pos])
 
 
 # =============================================================================
@@ -593,9 +681,15 @@ class ElasticBatchingHashTable:
     below (1 - delta/2) fill, a bounded probe budget
     f(eps) = c*min(log^2(1/eps), log(1/delta)) in the primary sub-array,
     unlimited probes in the secondary one, and an exhaustive safety-net
-    pass. Unlike the paper (whose insertion is non-greedy, with a 2-D probe
+    pass. insert() additionally runs a duplicate-prevention pre-scan over
+    every sub-array's probe sequence before placing a new key (a key
+    placed in an earlier primary sub-array would otherwise be re-inserted
+    as a duplicate once the cascade advances), so a worst-case insert
+    inspects O(total capacity) slots -- correctness over speed; the
+    empirical probe counts in core/test_elastic_hash.py reflect this.
+    Unlike the paper (whose insertion is non-greedy, with a 2-D probe
     sequence mapped through an injection phi), this implementation is
-    greedy — the bound it certifies in practice is the empirical one
+    greedy -- the bound it certifies in practice is the empirical one
     measured by core/test_elastic_hash.py, not Theorem 1.
 
     Keys must be non-negative integers (Morton keys, bucket ids, ...);
@@ -682,10 +776,31 @@ class ElasticBatchingHashTable:
         key = int(key)
         if key < 0:
             raise ValueError("keys must be non-negative integers")
+
+        # First: search ALL sub-arrays for an existing copy of the key.
+        # This is necessary because the primary/secondary probe phases
+        # only check their own sub-arrays; a key placed in an earlier
+        # sub-array (when it was primary) would be missed, creating a
+        # duplicate.  The full scan is O(total_capacity) but is only
+        # needed once per insert; the per-sub-array early-exit on
+        # _EMPTY_KEY keeps it fast for absent keys.
+        probes = 0
+        for i in range(len(self.subarray_sizes)):
+            size_i = self.subarray_sizes[i]
+            for j in range(size_i):
+                pos = self.offsets[i] + _hash2d(key, i, j, size_i)
+                probes += 1
+                k = self.keys[pos]
+                if k == _EMPTY_KEY:
+                    break
+                if k == key:
+                    self.values[pos] = value
+                    return True, probes
+
+        # Key not found: insert as new entry.
         if self.count >= self.capacity:
             return False, 0
 
-        probes = 0
         primary, secondary = self._insertion_subarrays()
 
         # 1) primary sub-array, bounded probe sequence
@@ -694,9 +809,6 @@ class ElasticBatchingHashTable:
         for j in range(min(limit, size_p)):
             pos = self.offsets[primary] + _hash2d(key, primary, j, size_p)
             probes += 1
-            if self.keys[pos] == key:
-                self.values[pos] = value
-                return True, probes
             if self._slot_free(pos):
                 self._fills[primary] += self._place(pos, key, value)
                 return True, probes
@@ -706,9 +818,6 @@ class ElasticBatchingHashTable:
         for j in range(size_s):
             pos = self.offsets[secondary] + _hash2d(key, secondary, j, size_s)
             probes += 1
-            if self.keys[pos] == key:
-                self.values[pos] = value
-                return True, probes
             if self._slot_free(pos):
                 self._fills[secondary] += self._place(pos, key, value)
                 return True, probes
@@ -719,9 +828,6 @@ class ElasticBatchingHashTable:
             for j in range(size_i):
                 pos = self.offsets[i] + _hash2d(key, i, j, size_i)
                 probes += 1
-                if self.keys[pos] == key:
-                    self.values[pos] = value
-                    return True, probes
                 if self._slot_free(pos):
                     self._fills[i] += self._place(pos, key, value)
                     return True, probes
@@ -733,6 +839,16 @@ class ElasticBatchingHashTable:
 
         Every inserted key is guaranteed findable as long as it has not
         been removed.
+
+        Cost-class honesty note: an absent-key lookup terminates early only
+        when it hits a never-occupied (_EMPTY_KEY) slot along a sub-array's
+        probe order. In a mostly-full table -- or one with many tombstones
+        from removals -- most slots are either occupied or tombstoned, so
+        the early-exit rarely fires and the lookup degrades to scanning the
+        full sub-array(s): worst-case O(total capacity) probes for an absent
+        key. Present-key lookups are unaffected (they stop at the matching
+        slot). Callers that probe for many absent keys against a full table
+        should keep load factor low or use a separate occupancy set.
         """
         key = int(key)
         probes = 0

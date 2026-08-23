@@ -2,7 +2,7 @@
 Comprehensive Benchmark & Publication Visualization Suite for Video Streaming Codecs
 =====================================================================================
 Benchmarks & Evaluates:
-1. Lock-Free Motion Estimation vs Hierarchical Diamond Search (AV1/HEVC).
+1. Hash-Accelerated Motion Estimation vs Hierarchical Diamond Search (AV1/HEVC).
 2. Vercidium-Style Greedy Macroblock Run-Length Merging vs Uniform Grid.
 3. 1€ Adaptive Gyro Deshake Filter vs Standard Fixed Low-Pass Filter.
 4. Perceptual Rate-Distortion & Spatial-Temporal AQ Delta-QP Optimization.
@@ -50,7 +50,7 @@ def run_video_codec_benchmarks():
     estimator.register_reference_frame(ref_frame)
     
     mvs, sads, stats_lf = estimator.estimate_motion(cur_frame)
-    print(f"[-] Lock-Free Hash ME Time:      {stats_lf['elapsed_ms']:.2f} ms ({stats_lf['throughput_fps']:.1f} FPS)")
+    print(f"[-] Hash-Accelerated ME Time:   {stats_lf['elapsed_ms']:.2f} ms ({stats_lf['throughput_fps']:.1f} FPS)")
     print(f"[-] Global Hash Hit Rate:        {stats_lf['hash_hit_rate']:.1f}%")
     print(f"[-] Mean Block SAD:              {stats_lf['mean_sad']:.1f}")
     
@@ -60,9 +60,12 @@ def run_video_codec_benchmarks():
         for dx in range(-16, 17, 2):
             _ = np.sum(np.abs(sample_block.astype(np.int32) - ref_frame[20+dy:36+dy, 20+dx:36+dx].astype(np.int32)))
     t_single_diamond = (time.perf_counter() - t0) * 1000.0
+    # MODELED baseline: a full per-block diamond search would repeat this single-
+    # block search across all blocks. The 0.35 factor is a modeled average over
+    # early-termination / adaptive-range behavior and is NOT a measurement.
     t_trad_me = t_single_diamond * (stats_lf['total_blocks']) * 0.35
-    print(f"[-] Traditional Diamond ME Est.: {t_trad_me:.2f} ms ({1000.0/t_trad_me:.1f} FPS)")
-    print(f"[-] Speedup over Diamond Search: {t_trad_me / stats_lf['elapsed_ms']:.1f}x")
+    print(f"[-] Traditional Diamond ME (modeled): {t_trad_me:.2f} ms ({1000.0/t_trad_me:.1f} FPS)")
+    print(f"[-] Speedup over Diamond Search (modeled): {t_trad_me / stats_lf['elapsed_ms']:.1f}x")
     
     # -------------------------------------------------------------
     # 2. Greedy Macroblock Run-Length Merging Benchmark
@@ -162,16 +165,18 @@ def run_video_codec_benchmarks():
     ax1 = axes[0, 0]
     resolutions = ['720p', '1080p', '4K (2160p)', '8K (4320p)']
     n_blks = [3600, 8160, 32640, 130560]
+    # Only 1080p is measured; 720p/4K/8K are EXTRAPOLATED by scaling the per-block
+    # count relative to the 1080p measurement (block count proportional to pixels).
     t_diamond_curve = [t_trad_me * (b / 8160) for b in n_blks]
     t_lockfree_curve = [stats_lf['elapsed_ms'] * (b / 8160) for b in n_blks]
-    
-    ax1.plot(resolutions, t_diamond_curve, 'o--', color='#FF4D4D', label='Diamond Search', linewidth=2)
-    ax1.plot(resolutions, t_lockfree_curve, '*-', color='#00FF88', label='Lock-Free Hash ME', linewidth=2.5)
+
+    ax1.plot(resolutions, t_diamond_curve, 'o--', color='#FF4D4D', label='Diamond Search (modeled, extrapolated)', linewidth=2)
+    ax1.plot(resolutions, t_lockfree_curve, '*-', color='#00FF88', label='Hash ME (1080p measured, rest extrapolated)', linewidth=2.5)
     ax1.axhline(16.6, color='#FFB800', linestyle=':', label='60 FPS Target (16.6 ms)')
     ax1.set_yscale('log')
-    ax1.set_title("1. Motion Estimation Latency vs Resolution", color=text_color, fontsize=11, fontweight='bold')
+    ax1.set_title("1. Motion Estimation Latency vs Resolution (extrapolated)", color=text_color, fontsize=11, fontweight='bold')
     ax1.set_ylabel("Search Latency (ms, log)", color=text_color, fontsize=10)
-    ax1.legend(facecolor=pane_color, edgecolor=border_color, labelcolor=text_color, fontsize=8)
+    ax1.legend(facecolor=pane_color, edgecolor=border_color, labelcolor=text_color, fontsize=7)
 
     # Panel 2: Macroblock Merging Reduction
     ax2 = axes[0, 1]
@@ -188,7 +193,7 @@ def run_video_codec_benchmarks():
     ax3 = axes[0, 2]
     ax3.plot(time_axis, noisy_camera_traj, color='#6B7280', lw=0.9, alpha=0.6, label='Raw Handheld Gyro Noise')
     ax3.plot(time_axis, ema_traj, color='#FF5555', lw=1.8, linestyle='--', label='Fixed EMA (Lag)')
-    ax3.plot(time_axis, one_euro_traj, color='#00FF88', lw=2.2, label='1€ Adaptive (Zero Lag)')
+    ax3.plot(time_axis, one_euro_traj, color='#00FF88', lw=2.2, label='1€ Adaptive (Low Lag)')
     ax3.plot(time_axis, true_pan, color='#00DDFF', lw=1.5, linestyle=':', label='True Pan')
     ax3.set_title("3. Camera Gyro Deshake: 1€ Filter vs EMA", color=text_color, fontsize=11, fontweight='bold')
     ax3.set_xlabel("Time (seconds)", color=text_color, fontsize=10)
@@ -206,26 +211,34 @@ def run_video_codec_benchmarks():
     # Panel 5: Parametric Stochastic Noise Field Bandwidth Efficiency
     ax5 = axes[1, 1]
     noise_stds = [2.0, 5.0, 8.0, 12.0, 18.0]
+    # MODELED savings formula min(55, sigma*4.5), NOT measured from an encoder.
     bitrate_savings = [min(55.0, s * 4.5) for s in noise_stds]
-    ax5.plot(noise_stds, bitrate_savings, 's-', color='#FFB86C', lw=2.5, label='Bandwidth Saved via Parametric Field')
+    ax5.plot(noise_stds, bitrate_savings, 's-', color='#FFB86C', lw=2.5, label='Bandwidth Saved (modeled, not measured)')
     ax5.fill_between(noise_stds, bitrate_savings, color='#FFB86C', alpha=0.2)
-    ax5.set_title("5. Parametric Stochastic Noise Field Efficiency", color=text_color, fontsize=11, fontweight='bold')
+    ax5.set_title("5. Parametric Noise Field Efficiency (modeled)", color=text_color, fontsize=11, fontweight='bold')
     ax5.set_xlabel("High-Frequency Noise Std Dev (Sigma)", color=text_color, fontsize=10)
     ax5.set_ylabel("Bandwidth Reduction (% vs Raw)", color=text_color, fontsize=10)
     ax5.legend(facecolor=pane_color, edgecolor=border_color, labelcolor=text_color, fontsize=8)
 
-    # Panel 6: Spatial DCT Codec Rate-Distortion (PSNR vs Quality)
+    # Panel 6: Spatial DCT Codec Rate-Distortion (PSNR vs Quality) — MEASURED
+    # by actually encoding the 720p test slice at each quality factor.
     ax6 = axes[1, 2]
     qualities = [30, 50, 70, 80, 95]
-    psnrs = [32.4, 36.8, 40.2, 42.4, 48.6]
-    ratios = [9.2, 6.8, 4.9, 4.2, 2.3]
-    
-    ax6.plot(qualities, psnrs, 'o-', color='#50FA7B', lw=2.2, label='Reconstruction PSNR (dB)')
+    rd_slice = test_frame[:720, :1280]
+    psnrs = []
+    ratios = []
+    for q in qualities:
+        rd_codec = SpatialDCTCodec(quality_factor=q)
+        rd_pkt = rd_codec.encode_frame(rd_slice)
+        psnrs.append(rd_pkt.psnr_db)
+        ratios.append(rd_pkt.compression_ratio)
+
+    ax6.plot(qualities, psnrs, 'o-', color='#50FA7B', lw=2.2, label='Reconstruction PSNR (dB, measured)')
     ax6_twin = ax6.twinx()
-    ax6_twin.plot(qualities, ratios, '^--', color='#FF79C6', lw=2.0, label='Compression Ratio (x)')
+    ax6_twin.plot(qualities, ratios, '^--', color='#FF79C6', lw=2.0, label='Compression Ratio (x, measured)')
     ax6_twin.set_ylabel("Compression Ratio (x)", color='#FF79C6', fontsize=10)
     ax6_twin.tick_params(colors='#FF79C6', labelsize=9)
-    ax6.set_title("6. Reference Spatial DCT Rate-Distortion Curve", color=text_color, fontsize=11, fontweight='bold')
+    ax6.set_title("6. Spatial DCT Rate-Distortion Curve (measured)", color=text_color, fontsize=11, fontweight='bold')
     ax6.set_xlabel("Quality Factor [1-100]", color=text_color, fontsize=10)
     ax6.set_ylabel("PSNR (dB)", color='#50FA7B', fontsize=10)
 

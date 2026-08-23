@@ -66,8 +66,10 @@ class MatrixFreeTalbotLaplaceInverter:
         """
         t_safe = max(float(t), 1e-12)
         # Scaled Talbot parameters for optimal exponential convergence
-        # As established by Weideman & Trefethen (2007)
-        r_scale = (2.0 * self.K) / (5.0 * t_safe)
+        # As established by Weideman & Trefethen (2007).
+        # The mu_scale parameter scales the contour radius, allowing users to
+        # tune the contour geometry (e.g. for stiff or multi-scale problems).
+        r_scale = self.mu * (2.0 * self.K) / (5.0 * t_safe)
         
         k_indices = np.arange(1, self.K + 1)
         theta_k = (k_indices - 0.5) * np.pi / self.K
@@ -184,16 +186,39 @@ class MatrixFreeTalbotLaplaceInverter:
     ) -> np.ndarray:
         """
         Evaluates u(t) = exp(t * L) * b via Matrix-Free Talbot Contour Inversion.
-        
+
         Args:
             matvec_fn: Linear operator L(v)
-            rhs_b: Initial condition vector b
+            rhs_b: Initial condition vector b (real or complex)
             t: Target time point (t > 0)
             tol: Solver tolerance
-            
+
         Returns:
-            u_t: (N,) real time-domain solution vector
+            u_t: (N,) time-domain solution vector (real if rhs_b is real,
+                 complex if rhs_b is complex)
         """
+        rhs_b = np.asarray(rhs_b)
+
+        # For real rhs, the Talbot contour symmetry gives u(t) = Re[contour sum].
+        # For complex rhs, the symmetry breaks: we split b = b_re + i*b_im and
+        # solve each part separately (valid because exp(t*L) is real-linear for
+        # a real operator L, so exp(t*L)*(b_re + i*b_im) = exp(t*L)*b_re
+        # + i*exp(t*L)*b_im).
+        if np.iscomplexobj(rhs_b) and np.any(np.imag(rhs_b) != 0):
+            u_re = self._invert_real(matvec_fn, np.real(rhs_b), t, tol)
+            u_im = self._invert_real(matvec_fn, np.imag(rhs_b), t, tol)
+            return u_re + 1j * u_im
+
+        return self._invert_real(matvec_fn, np.asarray(rhs_b, dtype=np.float64), t, tol)
+
+    def _invert_real(
+        self,
+        matvec_fn: Callable[[np.ndarray], np.ndarray],
+        rhs_b: np.ndarray,
+        t: float,
+        tol: float = 1e-5
+    ) -> np.ndarray:
+        """Core Talbot inversion for a real rhs (internal helper)."""
         s_nodes, weights = self.compute_talbot_nodes(t)
         u_accum = np.zeros(len(rhs_b), dtype=np.complex128)
 

@@ -2,6 +2,9 @@
 Module 7: TCR-pMHC Neoantigen Immunogenicity, CAR-T/TCR-T Affinity & Off-Target Cross-Reactivity Filter.
 Simulates T-cell receptor (CDR3 loops) engagement with peptide-MHC complexes (HLA-A*02:01),
 predicts neoantigen immunogenicity, and screens for off-target cross-reactivity against human self-peptides.
+
+Synthetic research prototype on self-generated data; not clinical; not diagnostic;
+no real patient or guideline data consumed.
 """
 
 from __future__ import annotations

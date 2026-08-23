@@ -20,8 +20,12 @@ By transforming PPR into a normalized Symmetric Diagonally Dominant (SDD) system
     [ alpha * I + (1 - alpha) * L_norm ] * x = alpha * D^{-1/2} * s
 where L_norm = I - D^{-1/2} * A * D^{-1/2} is the normalized graph Laplacian.
 
-We solve the SDD system via Preconditioned Conjugate Gradients (PCG) in O(|E|) operations,
-enabling sub-millisecond personalized graph search, link prediction, and localized community detection.
+We solve the SDD system via Preconditioned Conjugate Gradients (PCG). Each PCG
+iteration costs O(|E|) (one sparse matvec); the solver is capped at <=60
+iterations and stops on a residual tolerance, so the result is a
+residual-tolerance APPROXIMATION of the personalized steady-state, not an
+exact O(|E|) solution. This still enables sub-millisecond personalized graph
+search, link prediction, and localized community detection.
 """
 
 import time
@@ -32,8 +36,9 @@ import numpy as np
 class PersonalizedPageRankFMM:
     """
     Matrix-Free SDDM Solver for Personalized PageRank and Random Walk with Restart.
-    
-    Computes exact personalized steady-state distribution p in O(|E|) time.
+
+    Computes an approximate personalized steady-state distribution p via PCG
+    (<=60 iterations, residual-tolerance approximate), at O(|E|) per iteration.
     """
     def __init__(
         self,

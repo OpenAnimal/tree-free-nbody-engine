@@ -118,7 +118,16 @@ class PolygenicMendelianRandomizationEngine:
             alpha_egger = 0.0
 
         # Test for directional pleiotropy (H0: alpha == 0)
-        se_alpha = float(np.sqrt(1.0 / np.sum(w_egger)) * 0.8)
+        # Correct SE of the intercept in weighted least squares:
+        #   Var(alpha_hat) = 1/sum(w) + x_mean^2 / sum(w * (x - x_mean)^2)
+        # The previous formula sqrt(1/sum(w)) * 0.8 had an arbitrary 0.8
+        # fudge factor and omitted the x_mean^2 / var_x term, giving a
+        # biased (typically too small) intercept SE and inflated
+        # pleiotropy significance.
+        if var_x > 1e-12:
+            se_alpha = float(np.sqrt(1.0 / np.sum(w_egger) + (x_mean ** 2) / (np.sum(w_egger) * var_x)))
+        else:
+            se_alpha = float(np.sqrt(1.0 / np.sum(w_egger)))
         z_alpha = alpha_egger / max(1e-9, se_alpha)
         p_val_alpha = float(2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(z_alpha) / np.sqrt(2.0)))))
 

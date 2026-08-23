@@ -12,6 +12,11 @@ Key Features:
 """
 
 import numpy as np
+
+try:
+    from neural_ops._coord_contract import check_unit_coords
+except ImportError:  # direct script execution (repo root not yet on sys.path)
+    from _coord_contract import check_unit_coords
 from typing import Optional, Tuple, Dict, Any, List
 
 
@@ -122,6 +127,7 @@ class MultipoleSpatialSSM:
         """
         Computes forward pass of Multipole Spatial SSM in O(N) time.
         """
+        check_unit_coords(coords, "MultipoleSpatialSSM.forward(coords)")
         N, D = X.shape
         coords_clipped = np.clip(coords, 1e-4, 1.0 - 1e-4)
 
@@ -157,7 +163,6 @@ class MultipoleSpatialSSM:
 
         all_centers = np.zeros((n_clusters, self.spatial_dim), dtype=np.float32)
         all_means = np.zeros((n_clusters, D), dtype=np.float32)
-        all_dipoles = np.zeros((n_clusters, D, self.spatial_dim), dtype=np.float32)
         all_counts = np.zeros(n_clusters, dtype=np.float32)
 
         feat_mixed = ssm_activated @ self.W_multipole
@@ -169,9 +174,9 @@ class MultipoleSpatialSSM:
             all_centers[idx] = c_center
             all_means[idx] = np.mean(feat_mixed[p_ids], axis=0)
             all_counts[idx] = len(p_ids)
-
-            delta = pts - c_center[None, :]
-            all_dipoles[idx] = np.einsum('nd,nm->dm', feat_mixed[p_ids], delta)
+            # NOTE: dipoles were computed here but never used in the far-field
+            # evaluation (the far pass uses only centers and means). Removed
+            # as dead code.
 
         # Vectorized multipole interaction
         multipole_out = np.zeros((N, D), dtype=np.float32)

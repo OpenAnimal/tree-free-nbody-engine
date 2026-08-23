@@ -2,10 +2,10 @@
 
 Variants:
   standard             — exact direct O(N^2) summation (the reference)
-  +fmm (CGR88 adaptive) — TreeFreeElasticAdaptiveFMM(p=10), the funnel-hash
-                          indexed adaptive CGR88 engine
+  +fmm (adaptive FMM) — TreeFreeElasticAdaptiveFMM(p=10), the funnel-hash
+                          indexed adaptive FMM engine
   +fmm (flat vectorized) — FastVectorizedFMM(depth=5, order=8), single-level
-                           vectorized CGR88 expansions on the elastic hash
+                           vectorized adaptive FMM expansions on the elastic hash
   +quantized           — VoxelPackedTreeFreeFMM (32-bit coordinate packing);
                           the CALLER inputs are adapted to its
                           (positions, charges) -> (potentials, metrics) API;
@@ -26,7 +26,7 @@ from core.benchmark_kit import VariantBenchmark
 
 def _clustered_distribution(n: int = 2000, seed: int = 707):
     """Clustered, multi-scale distribution matching the spirit of
-    test_flat_fmm_elastic_hash_occupancy in core/test_cgr88_cross_validation.py:
+    test_flat_fmm_elastic_hash_occupancy in tests/core/test_adaptive_fmm_cross_validation.py:
     a few tight Gaussian clusters of different scales on a sparse background."""
     rng = np.random.default_rng(seed)
     # Cluster sizes chosen so the total rounds to `n`.
@@ -72,16 +72,16 @@ def run_core_fmm_variants(n: int = 2000):
         note="O(N^2) reference",
     )
     bench.add(
-        "+fmm (CGR88 adaptive)",
+        "+fmm (adaptive FMM)",
         lambda: adaptive.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="funnel-hash adaptive CGR88, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)",
+        note="funnel-hash adaptive FMM, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)",
     )
     bench.add(
         "+fmm (flat vectorized)",
         lambda: flat.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="single-level vectorized CGR88, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)",
+        note="single-level vectorized adaptive FMM, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)",
     )
     bench.add(
         "+quantized (32-bit packed)",
@@ -89,7 +89,24 @@ def run_core_fmm_variants(n: int = 2000):
         accuracy_vs="standard (exact direct)",
         note="VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)",
     )
-    return bench.run()
+    rows = bench.run()
+    # Regression gates: the table used to print accuracy without ever
+    # asserting, so a silent accuracy regression could not fail the run.
+    # Thresholds carry ~10x headroom above the measured values on this
+    # clustered N=2000 distribution (adaptive ~2e-7, flat ~7.5e-7).
+    by_name = {r["variant"]: r for r in rows}
+    adapt_row = by_name.get("+fmm (adaptive FMM)")
+    flat_row = by_name.get("+fmm (flat vectorized)")
+    if adapt_row is not None and "rel_l2" in adapt_row:
+        adapt_rel = float(adapt_row["rel_l2"])
+        assert np.isfinite(adapt_rel) and adapt_rel < 1e-6, (
+            f"adaptive FMM rel-L2 {adapt_rel:.3e} >= 1e-6 regression gate")
+    if flat_row is not None and "rel_l2" in flat_row:
+        flat_rel = float(flat_row["rel_l2"])
+        assert np.isfinite(flat_rel) and flat_rel < 1e-3, (
+            f"flat FMM rel-L2 {flat_rel:.3e} >= 1e-3 regression gate")
+    print("accuracy regression gates: PASS (adaptive < 1e-6, flat < 1e-3)")
+    return rows
 
 
 def _direct_chunked(positions, charges, softening=0.0, block=2048):
@@ -111,9 +128,12 @@ def _direct_chunked(positions, charges, softening=0.0, block=2048):
         dx = px[lo:hi, None] - px[None, :]
         dy = py[lo:hi, None] - py[None, :]
         r2 = dx * dx + dy * dy + eps2
-        # zero out self terms for the diagonal block
-        for k in range(lo, hi):
-            r2[k - lo, k] = 1.0
+        # zero out self terms for the diagonal block (vectorized: the self
+        # pair for target row (k-lo) is source column k, i.e. the diagonal
+        # of the submatrix r2[0:hi-lo, lo:hi]).
+        rows = np.arange(hi - lo)
+        cols = np.arange(lo, hi)
+        r2[rows, cols] = 1.0
         pot[lo:hi] = np.sum(charges[None, :] * 0.5 * np.log(r2), axis=1)
         # subtract the self term that was included as q_i * 0.5 * log(1) = 0,
         # so no correction needed beyond zeroing r2 above.
@@ -128,7 +148,7 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
       standard (direct)  -- chunked vectorized direct O(N^2)
       +fmm (flat vectorized) -- FastVectorizedFMM(depth=5, order=8)
 
-    The adaptive CGR88 engine is OMITTED at these N: its Python tree
+    The adaptive FMM engine is OMITTED at these N: its Python tree
     traversal is even slower than the flat scheme and would not change the
     crossover conclusion, only add wall-clock time to the benchmark run.
 
@@ -141,8 +161,14 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
 
     print(f"\n=== Core FMM scaling (clustered distribution; direct budget {direct_budget_s:.0f}s) ===")
     rows = []
-    ns = list(ns)
-    for n in ns:
+    # Index-based schedule so the budget guard can actually mutate it.
+    # (The previous `for n in ns:` form rebound `ns` inside the loop, which
+    # never affected the still-live iterator -- the guard was a no-op.)
+    schedule = list(ns)
+    i = 0
+    dropped = False
+    while i < len(schedule):
+        n = schedule[i]
         pts, q = _clustered_distribution(n=n)
         flat = FastVectorizedFMM(depth=5, order=8)
 
@@ -166,13 +192,16 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
               f"speedup={speedup:5.2f}x  rel_l2={rel_l2:.3e}")
 
         # Projection guard: if direct at this N already exceeds the budget,
-        # and this is not the last N, drop the remaining schedule to the
-        # plan's fallback (16000) once.
-        if t_direct > direct_budget_s and n != ns[-1]:
+        # and there are remaining (larger) Ns, drop the rest of the schedule
+        # to the plan's fallback (16000) once.
+        if (t_direct > direct_budget_s and i < len(schedule) - 1
+                and not dropped):
             print(f"  direct exceeded {direct_budget_s:.0f}s budget at N={n}; "
-                  f"dropping largest N to 16000 per plan")
-            ns = ns[:ns.index(n) + 1] + ([16000] if 16000 not in ns else [])
-            # continue with the new schedule
+                  f"dropping remaining schedule to [16000] per plan")
+            kept = schedule[:i + 1]
+            schedule = kept + ([] if 16000 in kept else [16000])
+            dropped = True
+        i += 1
 
     # Honest takeaway: state the observed crossover N (or its absence up to
     # N_max) with the per-N ratios so the trend is visible.
@@ -196,5 +225,17 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
 
 
 if __name__ == "__main__":
+    # Skippable via the SKIP_CORE_BENCH env var: the core benchmark runs the
+    # full scaling sweep (direct O(N^2) at N=32000, ~36s) plus the adaptive
+    # adaptive FMM engine on every invocation, which is wasteful in CI contexts
+    # that only need the lint+sync+unit-test matrix.  Set SKIP_CORE_BENCH=1
+    # to print "SKIP: ..." and exit 0 (tools/run_all.py treats this as a
+    # legitimate SKIP, not a failure).  The full BENCHMARKS.md tables are
+    # regenerated on demand by running without the env var.
+    if os.environ.get("SKIP_CORE_BENCH") == "1":
+        print("SKIP: SKIP_CORE_BENCH=1 set (core/benchmark_variants.py "
+              "omitted — full scaling sweep + adaptive FMM engine; "
+              "run directly to regenerate BENCHMARKS.md tables)")
+        sys.exit(0)
     run_core_fmm_variants()
     run_scaling()

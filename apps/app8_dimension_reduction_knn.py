@@ -1,6 +1,6 @@
 """
 Application 8: High-to-Low Dimensional Manifold Projection & Unfolding via Hash-Accelerated KNN.
-Powered by Farach-Colton / Krapivin / Kuszmaul (2025) Non-Reordering Open Addressing.
+Powered by Farach-Colton, Krapivin, & Kuszmaul (2025) Non-Reordering Open Addressing.
 
 Demonstrates the core intuitive concept:
 1. Projects an 8-dimensional non-linear manifold (Swiss Roll embedded in 8D) down to 2D.

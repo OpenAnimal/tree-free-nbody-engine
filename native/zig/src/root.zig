@@ -102,7 +102,7 @@ pub export fn zig_fmm_contact_forces(
 }
 
 // ----------------------------------------------------------------------------
-// 2D Complex Multipole Exports (Greengard-Rokhlin Laurent series)
+// 2D Complex Multipole Exports (Greengard & Rokhlin Laurent series)
 // ----------------------------------------------------------------------------
 
 pub export fn zig_fmm_2d_p2m(

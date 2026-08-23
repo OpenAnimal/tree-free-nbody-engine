@@ -28,6 +28,11 @@ class VideoMotionHeatmap:
     def accumulate_motion_vectors(self, motion_vectors: np.ndarray):
         """
         motion_vectors: (H_blocks, W_blocks, 2)
+
+        Bins the per-block motion magnitudes into the heatmap grid. When the input
+        grid is smaller than the heatmap grid (or not an exact multiple), the
+        binned array is cropped to the overlapping min-shape so the accumulation
+        never raises on a shape mismatch.
         """
         # Calculate velocity magnitude
         speed = np.linalg.norm(motion_vectors, axis=-1)
@@ -35,9 +40,13 @@ class VideoMotionHeatmap:
         h_in, w_in = speed.shape
         step_y = max(1, h_in // self.grid_h)
         step_x = max(1, w_in // self.grid_w)
-        
-        binned_speed = speed[::step_y, ::step_x][:self.grid_h, :self.grid_w]
-        self.heatmap += binned_speed
+
+        binned_speed = speed[::step_y, ::step_x]
+        # Guard: crop to the overlapping region so a too-small or non-multiple
+        # input grid cannot crash the += against the heatmap shape.
+        gh = min(binned_speed.shape[0], self.grid_h)
+        gw = min(binned_speed.shape[1], self.grid_w)
+        self.heatmap[:gh, :gw] += binned_speed[:gh, :gw]
 
 def run_heatmap_demo():
     print("==================================================================")

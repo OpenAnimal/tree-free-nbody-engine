@@ -1,6 +1,6 @@
 """
 Quantized & Bitpacked Tree-Free Fast Multipole Method (FMM) Module
-Inspired by Vercidium (2024) and Farach-Colton, Krapivin, Kuszmaul (2025).
+Inspired by Vercidium (2024) and Farach-Colton, Krapivin, & Kuszmaul (2025).
 
 Provides optional high-throughput fixed-point quantization, contiguous bit-packing,
 run-length greedy multipole aggregation, 64-bit Morton bitboards, and zero-probe

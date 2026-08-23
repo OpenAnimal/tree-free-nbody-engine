@@ -7,19 +7,67 @@ Key Architectural Innovations:
 - In-SRAM Online Softmax: Running max (m_i), running normalizer (l_i), and accumulator (O_i).
 - Zero HBM Matrix Reads/Writes: Never allocates intermediate QK^T tiles in Global Memory.
 - Dual Tile Fusion: Near-field exact softmax tile-pair dot products + Far-field multipole moments.
-- Strict O(N) Compute & Memory Scaling.
+
+Complexity note (Round-7 task T-D2 — far field restructured to cluster level):
+- The far branch now does ONE block per query tile against all K precomputed
+  cluster moments (via `_bucketing.compute_cluster_moments`), instead of
+  streaming all N/B_c KV tiles. Far work is O(N * K * D) where K = occupied
+  cells at grid_depth (K ∝ N^{1/3} for uniform 3D), so total far work is
+  O(N^{4/3} * D) — the flat single-level scheme class.
+- The near field uses an exact-once cell partition: for each query tile the
+  near set is the disjoint union of particles in clusters whose cells are
+  within Chebyshev ring-1 of any query cell in the tile, and the far set is
+  every other cluster. This replaces the old Morton tile-span heuristic,
+  which dropped near-cell pairs outside the window and double-counted window
+  tokens already summed into far cluster moments.
+- The true O(N) member of the repo is the multilevel adaptive FMM engine / GPU demo;
+  this flat scheme is O(N^{4/3})-class, stated honestly.
 """
 
 from __future__ import annotations
+import os
+import sys
 import numpy as np
+
+try:
+    from neural_ops._coord_contract import check_unit_coords
+except ImportError:  # direct script execution (repo root not yet on sys.path)
+    from _coord_contract import check_unit_coords
 import time
 from typing import Tuple, Dict, List, Optional, Any
+
+try:
+    from ._bucketing import build_cell_index, compute_cluster_moments
+except ImportError:
+    # Direct script execution fallback
+    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    from neural_ops._bucketing import build_cell_index, compute_cluster_moments
 
 
 class FlashMultipoleAttentionEngine:
     """
     Hardware-Fused Tile-Based Multipole Attention Engine (FlashMultipole).
     Evaluates streaming block-tiled Query-Key-Value attention with online softmax accumulation.
+    Cost is N^{4/3}-class for the multilevel far field (O(N) per fixed grid depth).
+
+    Shapes / dtypes
+    ---------------
+    Q, K, V : float32 (N, embed_dim)
+    coords  : float32 (N, spatial_dim), NORMALIZED to [0, 1)^d
+        (out-of-range values are clipped and trigger a RuntimeWarning)
+    returns : (out float32 (N, embed_dim), meta dict)
+
+    Example
+    -------
+    >>> import numpy as np
+    >>> from neural_ops.flash_multipole_kernel import FlashMultipoleAttentionEngine
+    >>> rng = np.random.default_rng(0)
+    >>> Q, K, V = (rng.standard_normal((256, 64)).astype(np.float32) for _ in range(3))
+    >>> coords = rng.random((256, 3)).astype(np.float32)
+    >>> eng = FlashMultipoleAttentionEngine()
+    >>> out, meta = eng.forward(Q, K, V, coords)
     """
     def __init__(
         self,
@@ -68,6 +116,7 @@ class FlashMultipoleAttentionEngine:
         Executes hardware-fused block-tiled online FlashMultipole forward pass.
         Returns: (output_tokens (N, D), metadata)
         """
+        check_unit_coords(coords, "FlashMultipoleAttentionEngine.forward(coords)")
         Q = np.asarray(Q, dtype=np.float32)
         K = np.asarray(K, dtype=np.float32)
         V = np.asarray(V, dtype=np.float32)
@@ -81,7 +130,7 @@ class FlashMultipoleAttentionEngine:
         N, D = Q.shape
         t0 = time.perf_counter()
         if N == 0:
-            return np.empty((0, D), dtype=np.float32), {"num_tokens": 0, "embed_dim": D, "complexity": "O(N) Fused SRAM"}
+            return np.empty((0, D), dtype=np.float32), {"num_tokens": 0, "embed_dim": D, "complexity": "O(N*K) far + O(N*w*B_c) near (flat single-level, N^{4/3}-class)"}
         coords_clipped = np.clip(coords, 1e-4, 1.0 - 1e-4).astype(np.float32)
 
         # 1. Spatial Hash Spatial Binning
@@ -94,116 +143,161 @@ class FlashMultipoleAttentionEngine:
         V_sorted = V[sort_order].astype(np.float32)
         coords_sorted = coords_clipped[sort_order]
 
-        # 2. Compute Far-Field Tile Summaries (P2M in SRAM Tiles)
-        num_kv_blocks = (N + self.b_c - 1) // self.b_c
-        
-        tile_centers = np.zeros((num_kv_blocks, self.spatial_dim), dtype=np.float32)
-        tile_k_means = np.zeros((num_kv_blocks, D), dtype=np.float32)
-        tile_v_sums = np.zeros((num_kv_blocks, D), dtype=np.float32)
-        tile_dipoles = np.zeros((num_kv_blocks, D, self.spatial_dim), dtype=np.float32)
-        tile_counts = np.zeros(num_kv_blocks, dtype=np.float32)
+        # 2. Build cluster moments at grid_depth (Round-7 task T-D2).
+        # This replaces the old tile-level moments with cluster-level moments,
+        # enabling a single far block per query tile instead of N/B_c far blocks.
+        idx, unique_keys, cluster_inverse = build_cell_index(
+            coords_sorted, self.spatial_dim, self.grid_res
+        )
+        cluster_centers, cluster_k_means, cluster_v_sums, cluster_dipoles, \
+            cluster_counts, key_to_idx = compute_cluster_moments(
+                coords_sorted, K_sorted, V_sorted, idx, cluster_inverse,
+                self.spatial_dim, D
+            )
+        K_clusters = len(unique_keys)
 
-        for b_idx in range(num_kv_blocks):
-            start = b_idx * self.b_c
-            end = min(N, start + self.b_c)
-            pts_tile = coords_sorted[start:end]
-            v_tile = V_sorted[start:end]
-            k_tile = K_sorted[start:end]
+        # Decode cluster cell coordinates for near/far classification.
+        # IMPORTANT: `unique_keys` from CellIndex are 10-bit Morton-interleaved
+        # keys (core/spatial_index.py), NOT row-major. Decoding them as
+        # key % res etc. misdecodes ~99.7% of cells. Use `idx.key_ints`
+        # (pattern from core/radial_taylor.py:265).
+        cluster_cell_coords = np.array(
+            [idx.key_ints(int(k)) for k in unique_keys], dtype=np.int64
+        )  # (K_clusters, 3)
 
-            c_center = np.mean(pts_tile, axis=0)
-            tile_centers[b_idx] = c_center
-            tile_k_means[b_idx] = np.mean(k_tile, axis=0)
-            tile_v_sums[b_idx] = np.sum(v_tile, axis=0)
-            tile_counts[b_idx] = end - start
+        # Precompute per-cluster member sorted-index lists. `idx` was built on
+        # `coords_sorted`, so `idx.bucket(key)` returns indices INTO the sorted
+        # arrays (used directly to gather K_sorted / V_sorted / coords_sorted).
+        # This is the exact-once partition substrate: every source particle
+        # belongs to exactly one cluster, so the near members are the disjoint
+        # union of near-cluster member lists (no double-count, no drop).
+        cluster_members = [idx.bucket(int(k)) for k in unique_keys]
 
-            delta = pts_tile - c_center[None, :]
-            tile_dipoles[b_idx] = np.einsum('nd,ns->ds', v_tile, delta)
-
-        # 3. Flash-Tiled Online Softmax Execution (Block-by-Block SRAM Streaming)
+        # 3. Flash-Tiled Online Softmax Execution
         num_q_blocks = (N + self.b_r - 1) // self.b_r
+        num_kv_blocks = (N + self.b_c - 1) // self.b_c
         O_sorted = np.zeros((N, D), dtype=np.float32)
 
-        # Tile-level near cutoff: spatial distance threshold
-        tile_near_cutoff_sq = (3.0 / self.grid_res) ** 2
+        total_near_evals = 0
+        total_far_evals = 0
 
         for q_b in range(num_q_blocks):
             q_start = q_b * self.b_r
             q_end = min(N, q_start + self.b_r)
             B_q = q_end - q_start
 
-            Q_tile = Q_sorted[q_start:q_end]       # (B_q, D) - Loaded into SRAM
+            Q_tile = Q_sorted[q_start:q_end]       # (B_q, D)
             coords_q_tile = coords_sorted[q_start:q_end] # (B_q, dim)
 
-            # Online Softmax Accumulators (FlashAttention style)
-            m_i = np.full((B_q, 1), -np.inf, dtype=np.float32) # Running max
-            l_i = np.zeros((B_q, 1), dtype=np.float32)         # Running normalizer sum
-            O_i = np.zeros((B_q, D), dtype=np.float32)         # Output accumulator
+            # Online Softmax Accumulators
+            m_i = np.full((B_q, 1), -np.inf, dtype=np.float32)
+            l_i = np.zeros((B_q, 1), dtype=np.float32)
+            O_i = np.zeros((B_q, D), dtype=np.float32)
 
-            q_center = np.mean(coords_q_tile, axis=0)
+            # --- Near/far partition (exact-once) ---
+            # A query tile may span multiple cells, so the partition is taken
+            # against the UNION of query cells in the tile. A cluster is "near"
+            # iff its cell is within Chebyshev ring-1 of ANY query cell; every
+            # other cluster is "far". Because each source particle belongs to
+            # exactly one cluster, this partitions all (target, source) pairs
+            # into disjoint near (exact P2P) and far (cluster-moment M2L) sets
+            # -- no pair dropped, no pair double-counted.
+            q_cell_coords = np.clip(
+                np.floor(coords_q_tile * self.grid_res).astype(np.int64),
+                0, self.grid_res - 1,
+            )
+            q_cells_unique = np.unique(q_cell_coords, axis=0)  # (n_q_cells, 3)
 
-            # Stream through all KV blocks in SRAM
-            for kv_b in range(num_kv_blocks):
-                kv_start = kv_b * self.b_c
-                kv_end = min(N, kv_start + self.b_c)
-                B_kv = kv_end - kv_start
+            # (n_q_cells, K_clusters, 3) -> all axes within 1 -> any query cell
+            cell_diff = np.abs(
+                cluster_cell_coords[None, :, :] - q_cells_unique[:, None, :]
+            )
+            is_near_cluster = np.all(cell_diff <= 1, axis=-1).any(axis=0)
+            far_indices = np.where(~is_near_cluster)[0]
+            near_indices = np.where(is_near_cluster)[0]
 
-                c_kv = tile_centers[kv_b]
-                dist_tiles_sq = np.sum((q_center - c_kv) ** 2)
+            # --- FAR-FIELD: ONE block against all far clusters (T-D2) ---
+            if len(far_indices) > 0:
+                far_centers = cluster_centers[far_indices]       # (K_far, dim)
+                far_k_means = cluster_k_means[far_indices]       # (K_far, D)
+                far_v_sums = cluster_v_sums[far_indices]         # (K_far, D)
+                far_dipoles = cluster_dipoles[far_indices]       # (K_far, D, dim)
+                far_counts = cluster_counts[far_indices]         # (K_far,)
 
-                if dist_tiles_sq <= tile_near_cutoff_sq or abs(q_b - kv_b) <= 1:
-                    # --- NEAR-FIELD TILE (P2P): Exact Softmax Attention in SRAM ---
-                    K_tile = K_sorted[kv_start:kv_end] # (B_kv, D)
-                    V_tile = V_sorted[kv_start:kv_end] # (B_kv, D)
-                    coords_kv_tile = coords_sorted[kv_start:kv_end]
+                # Distances from query tile points to far cluster centers: (B_q, K_far)
+                diff_far = coords_q_tile[:, None, :] - far_centers[None, :, :]
+                dist_far_sq = np.sum(diff_far ** 2, axis=-1)
+                spatial_w_far = np.exp(-dist_far_sq * self.inv_2_sigma_sq)
 
-                    # Pairwise spatial distance: (B_q, B_kv)
-                    diff_spatial = coords_q_tile[:, None, :] - coords_kv_tile[None, :, :]
-                    dist_sq = np.sum(diff_spatial ** 2, axis=-1)
-                    spatial_w = np.exp(-dist_sq * self.inv_2_sigma_sq)
+                # Dot products: (B_q, K_far)
+                dot_far = np.matmul(Q_tile, far_k_means.T) * self.scale
+                S_far = np.log(np.maximum(spatial_w_far, 1e-12)) + np.clip(dot_far, -30.0, 30.0)
 
-                    # QK^T dot product in SRAM: (B_q, B_kv)
-                    S_tile = np.matmul(Q_tile, K_tile.T) * self.scale
-                    S_tile_total = np.log(np.maximum(spatial_w, 1e-12)) + np.clip(S_tile, -30.0, 30.0)
+                # Far monopole + dipole contribution (same pattern as
+                # multipole_attention.py:198-206).  The dipole correction is a
+                # first-order Taylor expansion of the spatial Gaussian about the
+                # cluster center: with x_j = c_f + delta_j,
+                #   exp(-||x_i-x_j||^2/(2 sigma^2)) ≈ w_far*(1 + diff_far·delta_j/sigma^2)
+                # giving V_far = far_v_sums + (diff_far/sigma^2)·far_dipoles
+                # (POSITIVE sign; the previous -diff_far was wrong).
+                # dipole_corr: (B_q, K_far, D)
+                corr = np.einsum('qfd,fid->qfi', diff_far * self.inv_sigma_sq, far_dipoles)
+                V_far = far_v_sums[None, :, :] + corr  # (B_q, K_far, D)
 
-                    # Online Softmax update
-                    m_tile = np.max(S_tile_total, axis=-1, keepdims=True)
-                    m_new = np.maximum(m_i, m_tile)
-                    
-                    # Scaling factors
-                    alpha = np.exp(m_i - m_new)
-                    P_tile = np.exp(S_tile_total - m_new)
+                # Online softmax update with far block
+                m_far = np.max(S_far, axis=-1, keepdims=True)
+                m_new = np.maximum(m_i, m_far)
+                alpha = np.exp(m_i - m_new)
+                w_far_normed = np.exp(S_far - m_new)  # (B_q, K_far)
 
-                    l_new = alpha * l_i + np.sum(P_tile, axis=-1, keepdims=True)
-                    O_i = alpha * O_i + np.matmul(P_tile, V_tile)
+                l_new = alpha * l_i + np.sum(w_far_normed * far_counts[None, :], axis=-1, keepdims=True)
+                # O_i += w_far_normed @ V_far (with dipole)
+                O_contrib = np.einsum('qf,qfd->qd', w_far_normed, V_far)
+                O_i = alpha * O_i + O_contrib
 
-                    m_i = m_new
-                    l_i = l_new
+                m_i = m_new
+                l_i = l_new
+                total_far_evals += B_q * len(far_indices)
 
-                else:
-                    # --- FAR-FIELD TILE (M2L): Multipole Moment Update in SRAM ---
-                    diff_far = coords_q_tile - c_kv[None, :] # (B_q, dim)
-                    dist_far_sq = np.sum(diff_far ** 2, axis=-1, keepdims=True)
-                    spatial_w_far = np.exp(-dist_far_sq * self.inv_2_sigma_sq)
+            # --- NEAR-FIELD: exact P2P over all near-cluster members ---
+            # Replaces the old Morton tile-span heuristic, which (a) dropped
+            # near-cell pairs outside the tile window and (b) double-counted
+            # window tokens whose cells were far (already summed into far
+            # cluster moments). The new scheme evaluates exactly the disjoint
+            # union of near-cluster members, so every (target, source) pair is
+            # counted once: near pairs here, far pairs via cluster moments.
+            if len(near_indices) > 0:
+                near_member_idx = np.concatenate(
+                    [cluster_members[c] for c in near_indices]
+                )
+                K_near = K_sorted[near_member_idx]
+                V_near = V_sorted[near_member_idx]
+                coords_near = coords_sorted[near_member_idx]
 
-                    dot_far = np.matmul(Q_tile, tile_k_means[kv_b:kv_b+1].T) * self.scale # (B_q, 1)
-                    S_far = np.log(np.maximum(spatial_w_far, 1e-12)) + np.clip(dot_far, -30.0, 30.0)
+                diff_spatial = coords_q_tile[:, None, :] - coords_near[None, :, :]
+                dist_sq = np.sum(diff_spatial ** 2, axis=-1)
+                spatial_w = np.exp(-dist_sq * self.inv_2_sigma_sq)
 
-                    # Far monopole + dipole contribution
-                    # Monopole: tile_v_sums (1, D)
-                    # Dipole: - diff_far / sigma^2 @ dipole
-                    dip_corr = np.einsum('qs,ds->qd', -diff_far * self.inv_sigma_sq, tile_dipoles[kv_b]) # (B_q, D)
-                    V_far = tile_v_sums[kv_b:kv_b+1] + dip_corr # (B_q, D)
+                S_near = np.matmul(Q_tile, K_near.T) * self.scale
+                S_near_total = np.log(np.maximum(spatial_w, 1e-12)) + np.clip(S_near, -30.0, 30.0)
 
-                    m_tile = S_far
-                    m_new = np.maximum(m_i, m_tile)
-                    alpha = np.exp(m_i - m_new)
-                    w_far = np.exp(S_far - m_new)
+                m_near = np.max(S_near_total, axis=-1, keepdims=True)
+                m_new = np.maximum(m_i, m_near)
+                alpha = np.exp(m_i - m_new)
+                P_near = np.exp(S_near_total - m_new)
 
-                    l_new = alpha * l_i + w_far * tile_counts[kv_b]
-                    O_i = alpha * O_i + w_far * V_far
+                # Mask the j==i self-pair (the dense reference excludes self).
+                q_ids = sort_order[q_start:q_end]
+                near_ids = sort_order[near_member_idx]
+                self_mask = (q_ids[:, None] != near_ids[None, :]).astype(np.float32)
+                P_near = P_near * self_mask
 
-                    m_i = m_new
-                    l_i = l_new
+                l_new = alpha * l_i + np.sum(P_near, axis=-1, keepdims=True)
+                O_i = alpha * O_i + np.matmul(P_near, V_near)
+
+                m_i = m_new
+                l_i = l_new
+                total_near_evals += B_q * len(near_member_idx)
 
             # Final normalized output tile
             O_sorted[q_start:q_end] = O_i / (l_i + 1e-12)
@@ -219,8 +313,11 @@ class FlashMultipoleAttentionEngine:
             "block_size_kv": self.b_c,
             "num_q_blocks": num_q_blocks,
             "num_kv_blocks": num_kv_blocks,
+            "num_clusters": K_clusters,
+            "total_near_evals": total_near_evals,
+            "total_far_evals": total_far_evals,
             "elapsed_ms": elapsed_ms,
-            "complexity": "O(N) Fused SRAM",
+            "complexity": "O(N*K) far + O(N*w*B_c) near (flat single-level, N^{4/3}-class)",
         }
         return O_final, meta
 

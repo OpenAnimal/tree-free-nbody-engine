@@ -7,7 +7,7 @@
  * Kernels:
  *  1. `opencl_morton_encode_3d`: High-throughput bit-interleaving coordinate hash.
  *  2. `opencl_p2p_coulomb_nbody`: Block-tiled Local Memory (LDS) all-pairs potential and vector forces.
- *  3. `opencl_cgr88_fmm_2d`: Carrier, Greengard, & Rokhlin (1988) 2D Complex Multipole L2P & P2P evaluator.
+ *  3. `opencl_adaptive_fmm_2d`: Carrier, Greengard, & Rokhlin (1988) 2D Complex Multipole L2P & P2P evaluator.
  *  4. `opencl_volumetric_ao_sample`: High-speed ambient occlusion / density field evaluation.
  */
 
@@ -77,7 +77,9 @@ __kernel void opencl_morton_encode_3d(
 // ---------------------------------------------------------------------------
 // 2. Block-Tiled All-Pairs N-Body / P2P Kernel in AMD Local Data Share (__local)
 // ---------------------------------------------------------------------------
+#ifndef WORKGROUP_SIZE
 #define WORKGROUP_SIZE 256
+#endif
 
 __kernel void opencl_p2p_coulomb_nbody(
     __global const float* coords,       // (N, 3)
@@ -154,7 +156,7 @@ __kernel void opencl_p2p_coulomb_nbody(
 // ---------------------------------------------------------------------------
 // 3. Carrier, Greengard, & Rokhlin (1988) 2D Complex Multipole L2P & P2P Kernel
 // ---------------------------------------------------------------------------
-__kernel void opencl_cgr88_fmm_2d(
+__kernel void opencl_adaptive_fmm_2d(
     __global const float2* positions,           // (N,)
     __global const float* charges,              // (N,)
     __global const int* particle_cluster_ids,   // (N,)

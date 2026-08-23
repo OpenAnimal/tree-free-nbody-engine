@@ -2,6 +2,9 @@
 Module 1: Personalized Oncology & Patient Mutation Drug Resistance Profiling.
 Computes Delta-Delta-G binding free energies (ddG_bind), electrostatic desolvation penalties,
 and tumor microenvironment (TME) pH-dependent resistance shifts for patient NGS panels.
+
+Synthetic research prototype on self-generated data; not clinical; not diagnostic;
+no real patient or guideline data consumed.
 """
 
 from __future__ import annotations
@@ -271,9 +274,13 @@ class PersonalizedOncologyEngine:
         dist_sq = np.sum(diff**2, axis=-1)
         dist = np.sqrt(dist_sq + 1e-6)
 
-        # Screened Coulomb: q1 * q2 * exp(-kappa * r) / (eps_p * r)
+        # Screened Coulomb: q1 * q2 * exp(-kappa * r) / (eps_w * r)
+        # P19-3: the protein-ligand interaction occurs across solvent, so
+        # the water dielectric (eps_w ~ 78.5) is the correct effective
+        # dielectric — not the protein interior dielectric (eps_p ~ 4.0).
+        # Using eps_p overestimated the screened Coulomb term by ~20x.
         screened_coulomb = np.sum(
-            (p_charges[:, None] * l_charges[None, :]) * np.exp(-self.solvation_engine.kappa * dist) / (self.solvation_engine.eps_p * dist)
+            (p_charges[:, None] * l_charges[None, :]) * np.exp(-self.solvation_engine.kappa * dist) / (self.solvation_engine.eps_w * dist)
         ) * COULOMB_CONSTANT_KCAL
 
         # 3. Intermolecular steric clash / Lennard-Jones repulsion

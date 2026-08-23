@@ -55,18 +55,28 @@ class DiffFMMGuidanceEngine:
         cell_size: float = 6.0,
         kappa: float = 0.127,
         dielectric_pocket: float = 4.0,
+        dielectric_water: float = 78.5,
         steric_clash_radius: float = 2.0,
         guidance_scale_gamma: float = 0.25
     ):
         self.cell_size = float(cell_size)
         self.kappa = float(kappa)
         self.eps_p = float(dielectric_pocket)
+        # P21-1: the intermolecular ligand-receptor screened Coulomb
+        # interaction is mediated by solvent, so the effective dielectric is
+        # the water dielectric eps_w (~78.5), not the protein/pocket
+        # dielectric eps_p (~4.0). Using eps_p overestimates the screened
+        # Coulomb term by ~20x. Same bug pattern as P19-3
+        # (smart_biologics_designer.py, personalized_oncology_ddg.py) and
+        # P20-1 (polypharmacology_affinity_matrix.py).
+        self.eps_w = float(dielectric_water)
         self.clash_radius = float(steric_clash_radius)
         self.gamma = float(guidance_scale_gamma)
 
         self.fmm = TreeFreeBioFMM(
             cell_size=self.cell_size,
             kappa=self.kappa,
+            dielectric_water=self.eps_w,
             dielectric_protein=self.eps_p,
             kernel_type=ScreenedKernelType.DEBYE_HUCKEL
         )
@@ -92,7 +102,8 @@ class DiffFMMGuidanceEngine:
         dist_sq = np.sum(diff**2, axis=-1)
         dist = np.sqrt(dist_sq + 1e-6)
 
-        coulomb_factor = COULOMB_CONSTANT_KCAL / self.eps_p
+        # P21-1: intermolecular ligand-receptor Coulomb uses eps_w (solvent)
+        coulomb_factor = COULOMB_CONSTANT_KCAL / self.eps_w
         q_prod = ligand_charges[:, None] * receptor_charges[None, :]
         screened_pot = q_prod * np.exp(-self.kappa * dist) / dist
         e_coulomb = float(np.sum(screened_pot)) * coulomb_factor
@@ -104,20 +115,28 @@ class DiffFMMGuidanceEngine:
         f_coulomb_vec = np.sum(diff * (f_coulomb_mag[:, :, None] / (dist[:, :, None] + 1e-6)), axis=1)
 
         # 2. Steric Soft-Core Repulsion (Clash Avoidance)
+        # U_steric = 25 * overlap^3, F = -dU/dr = 75 * overlap^2 (repulsive).
+        # P21-2: the previous code divided f_steric_mag by dist, giving a
+        # force 75*overlap^2/dist instead of 75*overlap^2 — too weak by a
+        # factor of dist. Same bug pattern as P19-1 in
+        # biomolecular_condensate_engine.py and P21-2 in
+        # chromatin_expression_engine.py.
         min_dist = (ligand_radii[:, None] + receptor_radii[None, :]) * 0.85
         overlap = np.maximum(0.0, min_dist - dist)
         e_steric = float(np.sum(25.0 * (overlap**3)))
 
-        f_steric_mag = 75.0 * (overlap**2) / dist
+        f_steric_mag = 75.0 * (overlap**2)
         f_steric_vec = np.sum(diff * (f_steric_mag[:, :, None] / (dist[:, :, None] + 1e-6)), axis=1)
 
         # 3. Intramolecular Ligand Steric Self-Avoidance
+        # U_intra = 50/3 * intra_overlap^3, F = 50 * intra_overlap^2.
+        # P21-2: same extra 1/r division bug as above.
         if N_lig > 1:
             diff_intra = ligand_coords[:, None, :] - ligand_coords[None, :, :]
             dist_intra = np.sqrt(np.sum(diff_intra**2, axis=-1) + np.eye(N_lig) * 1e9)
             intra_min = (ligand_radii[:, None] + ligand_radii[None, :]) * 0.75
             intra_overlap = np.maximum(0.0, intra_min - dist_intra)
-            f_intra_mag = 50.0 * (intra_overlap**2) / dist_intra
+            f_intra_mag = 50.0 * (intra_overlap**2)
             np.fill_diagonal(f_intra_mag, 0.0)
             f_intra_vec = np.sum(diff_intra * (f_intra_mag[:, :, None] / (dist_intra[:, :, None] + 1e-6)), axis=1)
         else:

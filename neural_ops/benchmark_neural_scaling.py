@@ -4,6 +4,12 @@ Comprehensive Scaling & Performance Benchmark for `fmm_neural_ops`
 Benchmarks Tree-Free Multipole Attention & Continuous Meshfree GNNs
 against dense O(N^2) Transformer Attention and Dense Adjacency Matrix GNNs.
 Generates publication-quality scaling charts: `fmm_neural_scaling_benchmark.png`.
+
+Accuracy caveat: the TreeFreeMultipoleAttention layer is a spatially bucketed
+far-field approximation, NOT an exact O(N^2) softmax.  The benchmark measures
+LATENCY only; it does NOT verify output accuracy against the dense reference.
+For accuracy verification, see `test_farfield_error.py` (which reports the
+rel-L2 error law) and `test_fmm_neural_ops.py` (which checks shape/NaN/Inf).
 """
 
 import numpy as np

@@ -1,16 +1,17 @@
 """
-Low-Latency ABR Streaming Manifest & GOP-Aligned Chunk Segmenter (`adaptive_hls_dash_segmenter.py`)
+ABR Streaming Manifest & GOP-Aligned Chunk Segmenter (`adaptive_hls_dash_segmenter.py`)
 ===================================================================================================
-Provides zero-copy streaming chunk packaging and manifest synthesis for HTTP Live Streaming (HLS / m3u8)
+Provides in-memory chunk packaging and manifest synthesis for HTTP Live Streaming (HLS / m3u8)
 and MPEG-DASH (ISO/IEC 23009-1 / MPD) Adaptive Bitrate (ABR) networks.
 
 Key Capabilities & Architectural Innovations:
 1. Strict GOP-Aligned Multi-Rendition Slicing:
    - Slices video chunk boundaries precisely at IDR keyframes across all ladder rungs (1080p -> 360p).
    - Eliminates client decoding glitches, buffer underruns, and frame drops during seamless bitrate switching.
-2. Low-Latency HLS (LL-HLS) & Modern HLS v7 Manifest Generator:
-   - Generates Master Playlists and Variant Chunk Playlists with `#EXT-X-INDEPENDENT-SEGMENTS`,
-     `#EXT-X-TARGETDURATION`, and sub-second part/chunk tags.
+2. HLS VOD & MPEG-DASH Manifest Generator:
+   - Generates HLS Master Playlists and Variant (Media) Playlists with `#EXT-X-INDEPENDENT-SEGMENTS`,
+     `#EXT-X-TARGETDURATION`, and an `#EXT-X-ENDLIST` (i.e. plain HLS VOD, NOT Low-Latency HLS:
+     no `#EXT-X-PART`/`#EXT-X-PRELOAD-HINT`/`#EXT-X-SERVER-CONTROL` tags are emitted).
 3. Dynamic MPEG-DASH XML Manifest Generator:
    - Generates compliant Multi-Representation DASH `.mpd` descriptors with `<SegmentTemplate>` and `<AdaptationSet>`.
 4. In-Memory Streaming Packet Multiplexer:

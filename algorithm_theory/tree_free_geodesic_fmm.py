@@ -23,8 +23,6 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.elastic_hash import ElasticHashTable
-
 
 class DijkstraBaselineSSSP:
     """
@@ -79,9 +77,9 @@ class FrontierClusteredSSSP:
         else:
             self.delta = max(delta, 1e-6)
 
-    def compute(self, source: Union[int, List[int]], max_local_iters: int = 8) -> np.ndarray:
+    def compute(self, source: Union[int, List[int]], max_local_iters: Optional[int] = None) -> np.ndarray:
         dist = np.full(self.num_nodes, np.inf, dtype=np.float64)
-        
+
         # Multi-source support
         sources = [source] if isinstance(source, int) else source
         for s in sources:
@@ -91,13 +89,20 @@ class FrontierClusteredSSSP:
         buckets: Dict[int, set] = {}
         import bisect
         active_bucket_keys: List[int] = []
-        
+
         for s in sources:
             b_idx = int(dist[s] / self.delta)
             if b_idx not in buckets:
                 buckets[b_idx] = set()
                 bisect.insort(active_bucket_keys, b_idx)
             buckets[b_idx].add(s)
+
+        # Convergence guard: a single frontier cluster can require at most n local sweeps
+        # to fully propagate (each sweep strictly decreases at least one finite distance,
+        # and there are at most n nodes). This guarantees termination while never stranding
+        # nodes that improved on the final sweep (the old fixed cap of 8 left such nodes
+        # with their out-edges un-scanned, stuck at inf on long path graphs).
+        iter_cap = self.num_nodes if max_local_iters is None else int(max_local_iters)
 
         while active_bucket_keys:
             # Extract the earliest active frontier cluster
@@ -107,11 +112,15 @@ class FrontierClusteredSSSP:
             if not cluster_nodes:
                 continue
 
-            # Step 1: Selective Local Bellman-Ford sweeps over current frontier cluster
+            # Step 1: Selective Local Bellman-Ford sweeps over current frontier cluster.
+            # Iterate *while* there are newly-improved local nodes (with the iter_cap
+            # termination guard) so propagation inside the cluster runs to convergence.
             local_nodes = set(cluster_nodes)
             downstream_updates: Dict[int, set] = {}
 
-            for _ in range(max_local_iters):
+            sweeps = 0
+            while local_nodes and sweeps < iter_cap:
+                sweeps += 1
                 new_local = set()
                 for u in list(local_nodes):
                     d_u = dist[u]
@@ -126,8 +135,6 @@ class FrontierClusteredSSSP:
                                 if target_b not in downstream_updates:
                                     downstream_updates[target_b] = set()
                                 downstream_updates[target_b].add(v)
-                if not new_local:
-                    break
                 local_nodes = new_local
 
             # Step 2: Push all downstream discovered vertices into their respective buckets
@@ -261,7 +268,29 @@ def compute_meshfree_geodesic_field(
 
 if __name__ == "__main__":
     print("Testing Frontier-Clustered SSSP vs Dijkstra Baseline on 3D Manifold...")
-    
+
+    # --- Stranding regression test ---
+    # A path graph 0-1-2-...-20 with edge weight 0.04 and delta = 1.0 puts many nodes
+    # in the SAME frontier bucket (target_b = int(0.04*k/1.0) = 0 for k <= 24). The old
+    # fixed 8-sweep local Bellman-Ford cap left nodes 9..20 stranded at inf because they
+    # were improved on sweep 8+ but never had their out-edges scanned. With the
+    # convergence-guarded loop every node must reach its true Dijkstra distance.
+    n_path = 21
+    path_adj: List[List[Tuple[int, float]]] = [[] for _ in range(n_path)]
+    for i in range(n_path - 1):
+        w = 0.04
+        path_adj[i].append((i + 1, w))
+        path_adj[i + 1].append((i, w))
+    fc_path = FrontierClusteredSSSP(n_path, path_adj, delta=1.0).compute(0)
+    dk_path = DijkstraBaselineSSSP(n_path, path_adj).compute(0)
+    path_max_err = float(np.max(np.abs(fc_path - dk_path)))
+    path_finite = bool(np.all(np.isfinite(fc_path)))
+    print(f"Path-graph stranding regression: max|fc-dijkstra| = {path_max_err:.3e}, "
+          f"all finite = {path_finite}")
+    assert path_finite, "Frontier-Clustered SSSP stranded nodes at inf on path graph"
+    assert path_max_err == 0.0, \
+        f"Frontier-Clustered SSSP path-graph distances disagree with Dijkstra (max err {path_max_err:.3e})"
+
     # Generate a synthetic 3D Swiss Roll manifold
     np.random.seed(42)
     n_pts = 2000
@@ -281,8 +310,12 @@ if __name__ == "__main__":
     fc_dist = solver.solve_geodesic(0, method="frontier_clustered")
     t_fc = (time.perf_counter() - t0) * 1000.0
 
-    # Verification: check correlation and maximum absolute error on reachable nodes
-    valid_mask = np.isfinite(dijkstra_dist) & np.isfinite(fc_dist)
+    # Verification: assert max absolute error vs Dijkstra (not just correlation) on the
+    # set of nodes Dijkstra reaches. Frontier-Clustered SSSP must match Dijkstra exactly
+    # on every reachable node; any stranding would surface as inf in fc_dist.
+    valid_mask = np.isfinite(dijkstra_dist)
+    assert np.all(np.isfinite(fc_dist[valid_mask])), \
+        "Frontier-Clustered SSSP left reachable nodes stranded at inf"
     corr = np.corrcoef(dijkstra_dist[valid_mask], fc_dist[valid_mask])[0, 1]
     max_err = np.max(np.abs(dijkstra_dist[valid_mask] - fc_dist[valid_mask]))
 
@@ -292,4 +325,6 @@ if __name__ == "__main__":
     print(f"Distance Field Correlation: {corr:.6f}")
     print(f"Max Absolute Difference: {max_err:.6e}")
     assert corr > 0.999, "Frontier-Clustered SSSP failed correlation verification."
+    assert max_err < 1e-6, \
+        f"Frontier-Clustered SSSP max abs error {max_err:.3e} vs Dijkstra too large"
     print("Tree-Free Geodesic FMM Verification: SUCCESS!")

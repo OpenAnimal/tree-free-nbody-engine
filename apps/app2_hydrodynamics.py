@@ -2,7 +2,7 @@
 Application 2: Hydrodynamics / Vortex Particle Field (Biot-Savart Law)
 The streamfunction psi(p) = -(1/2*pi) * sum_j gamma_j ln|p - p_j| is
 evaluated on the probe grid by the flat tree-free FMM (FastVectorizedFMM,
-CGR88 logarithmic multipoles, funnel-hash cell index). The velocity field
+adaptive FMM logarithmic multipoles, funnel-hash cell index). The velocity field
 (u, v) = (dpsi/dy, -dpsi/dx) is then obtained by central finite
 differences of the FMM-evaluated psi -- no O(N_grid * N) Biot-Savart
 double loop. A direct Biot-Savart cross-check is printed and asserted.

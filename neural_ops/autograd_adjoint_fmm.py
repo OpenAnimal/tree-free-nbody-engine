@@ -4,9 +4,14 @@ Autograd Adjoint & Analytical VJP Fast Multipole Method (`autograd_adjoint_fmm.p
 Exact Analytical Vector-Jacobian Products (VJP) and Adjoint State Backpropagation for
 Tree-Free Multipole Attention.
 
-Features:
-- O(N) training memory: Evaluates backpropagation gradients via transposed FMM passes (L2M & M2P adjoints)
-  without storing intermediate N x N attention graphs.
+Honest scope (Round-7 audit, finding F-05):
+- This module is an *exact dense-adjoint reference*, NOT an O(N) FMM backward pass.
+  The implementation materializes five dense N x N arrays (`A`, `S`, `grad_A`,
+  `grad_dot`, and an (N, N, d) coords-diff chain) and is therefore O(N^2) in
+  both time and memory. It is finite-difference-verified to ~3.6e-10 and is
+  intended as ground truth for testing approximate backward passes (e.g. a
+  future transposed-FMM adjoint). The earlier "O(N) training memory" wording
+  was incorrect and has been removed.
 - Analytical VJP calculation for dL/dQ, dL/dK, dL/dV, and dL/d(coords).
 - Pure NumPy reference implementation with exact finite difference verification.
 - Optional PyTorch `torch.autograd.Function` wrapper when PyTorch is installed.

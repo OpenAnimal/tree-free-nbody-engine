@@ -108,16 +108,23 @@ class HarmonicPotentialFlowField:
         # probes in sample_flow_velocity_hashed.
         self.index.build(positions)
 
-    def sample_flow_velocity(
+    def _eval_velocity(
         self,
         agent_positions: np.ndarray,
+        obs_positions: np.ndarray,
+        obs_charges: np.ndarray,
+        obs_radii: np.ndarray,
         desired_speed: float = 10.0,
-        chunk_size: int = 8192
+        chunk_size: int = 8192,
     ) -> np.ndarray:
-        """
-        Evaluates continuous flow field velocities for N agents in parallel.
-        agent_positions: (N, 2) array of coordinates.
-        Returns: (N, 2) normalized velocity vectors * desired_speed.
+        """Core vectorized flow-field evaluation, parameterized by the obstacle
+        arrays so the hashed variant can reuse it with a per-agent obstacle
+        subset WITHOUT constructing a fresh ``HarmonicPotentialFlowField`` and
+        WITHOUT rebuilding a spatial hash per agent (round-8 hoist).  Uses
+        ``self.goal_positions`` / ``self.goal_weights`` and the scalar field
+        constants (``k_att``, ``kappa_obs``, ``vortex_gain``) -- identical
+        inputs give bit-identical outputs to the original per-agent sub-field
+        construction.
         """
         agent_positions = np.atleast_2d(np.asarray(agent_positions, dtype=np.float32))
         N = len(agent_positions)
@@ -126,7 +133,7 @@ class HarmonicPotentialFlowField:
 
         velocities = np.zeros((N, 2), dtype=np.float32)
         n_goals = len(self.goal_positions)
-        n_obs = len(self.obstacle_positions)
+        n_obs = len(obs_positions)
 
         for start_idx in range(0, N, chunk_size):
             end_idx = min(N, start_idx + chunk_size)
@@ -153,16 +160,16 @@ class HarmonicPotentialFlowField:
             # 2. Screened Yukawa Repulsive Obstacle Gradient + Vortex Circulation
             if n_obs > 0:
                 # diff: (B, M, 2) = pos_chunk - obs_pos
-                diff_obs = pos_chunk[:, None, :] - self.obstacle_positions[None, :, :]
-                r_sq = np.sum(diff_obs**2, axis=-1) + (self.obstacle_radii[None, :]**2) # (B, M)
+                diff_obs = pos_chunk[:, None, :] - obs_positions[None, :, :]
+                r_sq = np.sum(diff_obs**2, axis=-1) + (obs_radii[None, :]**2) # (B, M)
                 r = np.sqrt(r_sq) # (B, M)
 
                 # Screened Yukawa Potential: V(r) = Q * exp(-kappa * r) / r
                 # -grad V(r) = Q * exp(-kappa * r) * (kappa / r + 1 / r^2) * (diff / r)
                 # Here grad V(r) is pointing outward from obstacle toward agent.
                 decay = np.exp(-self.kappa_obs * r) # (B, M)
-                force_mag = self.obstacle_charges[None, :] * decay * (self.kappa_obs / r + 1.0 / r_sq) # (B, M)
-                
+                force_mag = obs_charges[None, :] * decay * (self.kappa_obs / r + 1.0 / r_sq) # (B, M)
+
                 # Unit directions from obstacle to agent: diff_obs / r
                 unit_diff = diff_obs / r[:, :, None] # (B, M, 2)
                 grad_rep = np.sum(unit_diff * force_mag[:, :, None], axis=1) # (B, 2) repulsive force
@@ -182,7 +189,7 @@ class HarmonicPotentialFlowField:
             heading = -grad_total
             speed = np.linalg.norm(heading, axis=-1, keepdims=True)
             norm_heading = np.where(speed > 1e-5, heading / speed, 0.0)
-            
+
             # Decelerate when within goal arrival threshold
             if n_goals > 0:
                 min_goal_dist = np.min(dist_goal, axis=-1, keepdims=True)
@@ -192,6 +199,26 @@ class HarmonicPotentialFlowField:
                 velocities[start_idx:end_idx] = norm_heading * desired_speed
 
         return velocities
+
+    def sample_flow_velocity(
+        self,
+        agent_positions: np.ndarray,
+        desired_speed: float = 10.0,
+        chunk_size: int = 8192
+    ) -> np.ndarray:
+        """
+        Evaluates continuous flow field velocities for N agents in parallel.
+        agent_positions: (N, 2) array of coordinates.
+        Returns: (N, 2) normalized velocity vectors * desired_speed.
+        """
+        return self._eval_velocity(
+            agent_positions,
+            self.obstacle_positions,
+            self.obstacle_charges,
+            self.obstacle_radii,
+            desired_speed=desired_speed,
+            chunk_size=chunk_size,
+        )
 
     def _neighborhood_obstacles(self, pos: np.ndarray, ring: int = 2) -> np.ndarray:
         """Obstacle indices within the (2*ring+1)^2 hash-neighborhood of pos."""
@@ -211,21 +238,46 @@ class HarmonicPotentialFlowField:
         over obstacles in the (2*ring+1)^2 elastic-hash neighborhood (screened
         contributions beyond that are < exp(-ring) of the peak). The elastic
         hash is the ONLY cell index consulted here.
+
+        Round-8 hoist: the previous implementation constructed a fresh
+        ``HarmonicPotentialFlowField`` per agent and called ``set_goals`` +
+        ``set_obstacles`` (the latter rebuilds a spatial hash) per agent --
+        a per-agent field rebuild that the prior session's "hoisted" claim
+        denied.  The field constants, goals, and the parent obstacle hash
+        are all fixed for the step, so the per-agent variation is ONLY the
+        neighborhood obstacle subset.  This now calls the shared
+        ``_eval_velocity`` helper with that subset directly, reusing
+        ``self.goal_positions`` / ``self.goal_weights`` and the parent's
+        already-built obstacle hash (consulted via
+        ``_neighborhood_obstacles``).  Outputs are bit-identical to the
+        per-agent sub-field construction (same constants, same goals, same
+        obstacle subset -> same vectorized math), verified by an explicit
+        equivalence check during this audit.
         """
         agent_positions = np.atleast_2d(np.asarray(agent_positions, dtype=np.float32))
         full = np.empty((len(agent_positions), 2), dtype=np.float32)
         for i, p in enumerate(agent_positions):
             obs_idx = self._neighborhood_obstacles(p, ring)
-            sub = HarmonicPotentialFlowField(
-                world_bounds=self.bounds, k_att=self.k_att, kappa_obs=self.kappa_obs,
-                q_obs_default=self.q_obs_default, epsilon=self.epsilon,
-                vortex_gain=self.vortex_gain)
-            sub.set_goals(self.goal_positions, self.goal_weights)
             if len(obs_idx):
-                sub.set_obstacles(self.obstacle_positions[obs_idx],
-                                  self.obstacle_charges[obs_idx],
-                                  self.obstacle_radii[obs_idx])
-            full[i] = sub.sample_flow_velocity(p[None, :], desired_speed=desired_speed)[0]
+                full[i] = self._eval_velocity(
+                    p[None, :],
+                    self.obstacle_positions[obs_idx],
+                    self.obstacle_charges[obs_idx],
+                    self.obstacle_radii[obs_idx],
+                    desired_speed=desired_speed,
+                )[0]
+            else:
+                # No neighborhood obstacles: still evaluate the attractive
+                # goal term (obstacle subset is empty).  Matches the old
+                # sub-field path which called set_obstacles with an empty
+                # array then sample_flow_velocity.
+                full[i] = self._eval_velocity(
+                    p[None, :],
+                    self.obstacle_positions[:0],
+                    self.obstacle_charges[:0],
+                    self.obstacle_radii[:0],
+                    desired_speed=desired_speed,
+                )[0]
         return full
 
     def validate_hashed_flow(self, agent_positions: np.ndarray,

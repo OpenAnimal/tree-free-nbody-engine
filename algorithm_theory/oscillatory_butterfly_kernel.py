@@ -91,6 +91,10 @@ class OscillatoryButterflyKernel:
         n_targets = len(targets)
         n_sources = len(sources)
 
+        # Edge case: no sources -> zero potential at all targets
+        if n_sources == 0:
+            return np.zeros(n_targets, dtype=np.complex128)
+
         source_center = np.mean(sources, axis=0)
         target_center = np.mean(targets, axis=0)
         center_disp = target_center - source_center

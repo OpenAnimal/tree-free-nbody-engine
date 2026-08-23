@@ -1,7 +1,7 @@
 """
 Unified Voxel-Packed Tree-Free Fast Multipole Method (FMM) Engine
 Combines:
-1. Farach-Colton / Kuszmaul (2025) Elastic Non-Reordering Spatial Addressing
+1. Farach-Colton, Krapivin, & Kuszmaul (2025) Elastic Non-Reordering Spatial Addressing
 2. Vercidium (2024) Quantized Coordinate Bit-Packing (64-bit / 32-bit words)
 3. Run-Length "Greedy Multipole Aggregation" (M2M Run Merging)
 4. 64-Bit Morton Bitboards with CTZ/POPCNT Hardware Fast-Forwarding
@@ -50,12 +50,23 @@ class VoxelPackedTreeFreeFMM:
         self.depth = depth
         self.order = order
         self.grid_res = 1 << depth
-        
+
         # Ablation flags
         self.enable_packing = enable_packing
         self.enable_greedy_aggregation = enable_greedy_aggregation
         self.enable_bitboard_skip = enable_bitboard_skip
         self.enable_direct_strides = enable_direct_strides
+
+        # The 32-bit 2D packing format allocates 6 bits per axis for grid
+        # coordinates (max index 63), so it only supports depth <= 6.
+        # Silently truncating coordinates at depth > 6 causes catastrophic
+        # accuracy loss; raise early instead.
+        if self.enable_packing and depth > 6:
+            raise ValueError(
+                f"enable_packing=True requires depth <= 6 (32-bit format uses "
+                f"6-bit grid coordinates, max index 63), but depth={depth} "
+                f"was requested. Use depth <= 6 or set enable_packing=False."
+            )
         
         # Sub-modules
         self.bitboard = MortonBitboard2D(macro_res=max(1, self.grid_res // 8))
@@ -195,9 +206,49 @@ class VoxelPackedTreeFreeFMM:
         # -------------------------------------------------------------
         t_stage = time.perf_counter()
         cluster_indices_list = [np.where(inverse_indices == c)[0] for c in range(num_clusters)]
-        dx = cluster_ix[:, None] - cluster_ix[None, :]
-        dy = cluster_iy[:, None] - cluster_iy[None, :]
-        near_cluster_pairs = np.argwhere((np.abs(dx) <= 1) & (np.abs(dy) <= 1))
+        if self.enable_direct_strides:
+            # Use the register-arithmetic neighbor table to find the 3x3
+            # neighbor set per cluster. The FMM engine's unique_keys are
+            # cartesian-packed (ix << 12 | iy), NOT real Morton-interleaved
+            # keys, so we convert to real Morton keys before calling the
+            # neighbor table, then convert the neighbor Morton keys back to
+            # cartesian-packed keys for lookup in the unique_keys array.
+            def _cart_to_morton(ix, iy, d):
+                m = 0
+                for b in range(d):
+                    m |= ((ix >> b) & 1) << (2 * b)
+                    m |= ((iy >> b) & 1) << (2 * b + 1)
+                return m
+            def _morton_to_cart(m, d):
+                ix = 0
+                iy = 0
+                for b in range(d):
+                    ix |= ((m >> (2 * b)) & 1) << b
+                    iy |= ((m >> (2 * b + 1)) & 1) << b
+                return ix, iy
+            real_morton = np.array([_cart_to_morton(int(cluster_ix[c]), int(cluster_iy[c]), self.depth)
+                                    for c in range(num_clusters)], dtype=np.int64)
+            real_morton_keys = (np.int64(self.depth) << 24) | real_morton
+            neighbor_keys = self.neighbor_table.get_all_neighbors_batch(real_morton_keys)
+            # Build a lookup from cartesian-packed key -> cluster index.
+            cart_key_to_idx = {int(unique_keys[c]): c for c in range(num_clusters)}
+            pair_set = set()
+            for c1 in range(num_clusters):
+                for nk in neighbor_keys[c1]:
+                    if nk < 0:
+                        continue
+                    # Convert neighbor Morton key back to cartesian-packed.
+                    nk_raw = int(nk) & 0xFFFFFF
+                    nx, ny = _morton_to_cart(nk_raw, self.depth)
+                    cart_key = (int(self.depth) << 24) | (nx << 12) | ny
+                    c2 = cart_key_to_idx.get(cart_key)
+                    if c2 is not None:
+                        pair_set.add((min(c1, c2), max(c1, c2)))
+            near_cluster_pairs = np.array(sorted(pair_set), dtype=np.int64) if pair_set else np.empty((0, 2), dtype=np.int64)
+        else:
+            dx = cluster_ix[:, None] - cluster_ix[None, :]
+            dy = cluster_iy[:, None] - cluster_iy[None, :]
+            near_cluster_pairs = np.argwhere((np.abs(dx) <= 1) & (np.abs(dy) <= 1))
 
         for c1, c2 in near_cluster_pairs:
             idx1 = cluster_indices_list[c1]

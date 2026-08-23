@@ -7,7 +7,7 @@ Inspired by:
 2. "Applied Koopmanism"
    I. Mezic (Chaos: An Interdisciplinary Journal of Nonlinear Science, 2019).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Non-linear dynamical systems dx/dt = F(x) are notoriously difficult to predict and control long-term.

@@ -1,6 +1,6 @@
 """
 Application 9: High-Dimensional Streaming Vector Database Engine.
-Powered by Random Hyperplane LSH + Farach-Colton / Krapivin / Kuszmaul Elastic Non-Reordering Hash.
+Powered by Random Hyperplane LSH + Farach-Colton, Krapivin, & Kuszmaul (2025) Elastic Non-Reordering Hash.
 
 Features:
 1. Simulates dynamic streaming ingestion of 128-dimensional dense vectors (e.g. LLM embeddings).
@@ -19,7 +19,7 @@ from core.elastic_hash import ElasticHashTable
 
 class StreamingVectorDB:
     """
-    Vector Database Engine backed by the Farach-Colton/Krapivin/Kuszmaul non-reordering
+    Vector Database Engine backed by the Farach-Colton, Krapivin, & Kuszmaul (2025) non-reordering
     funnel hash (single-process; atomic lock-free operation is a property of the
     table design, not claimed for this Python driver).
     """
@@ -182,7 +182,7 @@ def run_streaming_vector_db_demo():
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 9: High-Dimensional Vector DB Engine (Funnel Hash, Farach-Colton et al.)", 
+    fig.suptitle("Application 9: High-Dimensional Vector DB Engine (Funnel Hash, Farach-Colton, Krapivin, & Kuszmaul, 2025)", 
                  color='white', fontsize=13, fontweight='bold')
     plt.tight_layout()
     output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "app9_streaming_vector_db.png")

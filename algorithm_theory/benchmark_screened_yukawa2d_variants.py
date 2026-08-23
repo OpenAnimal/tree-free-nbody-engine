@@ -7,9 +7,11 @@ Variants:
                          documents, here adapted to the 2D K0 kernel so the
                          comparison is apples-to-apples on the SAME kernel.
                          Near field: exact direct over the 3x3 neighborhood.
-                         Far field: per-cell monopole + dipole (K0(R) +
-                         grad K0(R) . dipole).  ~1% rel-L2, as the old
-                         module's honesty note states.
+                         Far field: per-cell monopole + dipole
+                         (Q*K0(R) - grad K0(R) . dipole, the correct
+                         Taylor sign).  ~1.1e-3 rel-L2 at depth=5/N=2000
+                         after the dipole-sign fix (the old
+                         `+ grad K0 . dipole` sign gave ~2.4e-2).
   +fmm (Taylor K0)    -- 2D screened Yukawa Taylor FMM
                          (`core/screened_yukawa2d_fmm.py`, depth=6, p=8),
                          the true Taylor M2L engine on the K0 kernel.  This
@@ -17,9 +19,9 @@ Variants:
                          far field is a full order-p Taylor expansion, not
                          an order-0+1 centroid approximation.
 
-Accuracy vs `standard` on the per-particle potential (rel L2).  The old
-tree-code's ~1% error is shown in the table next to the new engine's
-~1e-8 error, not hidden in a note.
+Accuracy vs `standard` on the per-particle potential (rel L2).  The
+tree-code's ~1.1e-3 error (after the dipole-sign fix) is shown in the table
+next to the new engine's ~1e-8 error, not hidden in a note.
 
 Run standalone:  python -X utf8 algorithm_theory/benchmark_screened_yukawa2d_variants.py
 """
@@ -119,7 +121,15 @@ def _treecode_k0(pts, q, kappa, depth=5):
                 # grad K0(kappa*r) = -kappa * K1(kappa*r) * r_hat
                 #   = -kappa * K1(kappa*R) * Rvec / R
                 grad_K0 = -kappa * K1R * Rvec / R
-                acc += cq[c] * K0R + np.dot(grad_K0, dipoles[c])
+                # Taylor expansion of K0(|x_i - x_j|) about the cell centre C with
+                # R = x_i - C and dipole p = sum_j q_j (x_j - C):
+                #   K0(|R - delta_j|) ~ K0(R) - grad_K0(R) . delta_j
+                # so the dipole correction enters with a MINUS sign
+                # (Q*K0(R) - grad_K0 . p). The previous `+ grad_K0 . p` had the
+                # wrong sign; on this benchmark's depth=5 / N=2000 config the
+                # rel-L2 drops from ~2.4e-2 (wrong sign) to ~1.1e-3 (correct sign),
+                # a ~22x improvement.
+                acc += cq[c] * K0R - np.dot(grad_K0, dipoles[c])
         pot[i] = acc
     return pot
 
@@ -142,7 +152,8 @@ def run_screened_yukawa2d_variants(n=2000, kappa=1.0):
         accuracy_vs="standard (direct O(N^2))",
         note="honest order-0 monopole+dipole tree-code (the old "
              "algorithm_theory/screened_yukawa_fmm.py approach, adapted "
-             "to 2D K0); ~1% rel-L2 centroid approximation",
+             "to 2D K0); corrected dipole sign gives ~1.1e-3 rel-L2 at "
+             "depth=5/N=2000 (was ~2.4e-2 with the wrong sign, ~22x worse)",
     )
     bench.add(
         "+fmm (Taylor K0)",

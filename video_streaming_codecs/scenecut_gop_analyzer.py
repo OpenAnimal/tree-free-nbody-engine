@@ -7,12 +7,13 @@ Group of Pictures (GOP) keyframe (IDR/I-Frame) boundary scheduling.
 Key Ideas & Improvements for Video Compression:
 1. Multi-Scale Dual Fingerprinting:
    - Evaluates compact 64-bit perceptual hash (pHash) + 1D dual-axis spatial energy projections.
-   - Operates in $O(W+H)$ time, bypassing full-frame $O(W \times H)$ pixel-by-pixel comparisons.
+   - The 1D projections are O(W+H), but the 8x8 pHash reduction and the luma mean are O(W*H),
+     so overall per-frame analysis is O(W*H) (not sublinear).
 2. Shot Transition Classification:
    - `HARD_CUT`: Sudden scene discontinuity -> Forces instantaneous IDR Keyframe reset.
-   - `DISSOLVE_FADE`: Gradual cross-fade or luma transition -> Prevents premature I-frame thrashing.
-   - `FLASH_CUT`: Single-frame lighting burst (camera flash, explosion) -> Prunes false-positive scene cuts.
-   - `STABLE_MOTION`: Smooth panning / continuous motion -> Optimizes B-frame pyramid depth ($M=4, 8$).
+   - `DISSOLVE_FADE`: Sustained gradual luma/projection drift over several frames -> Prevents premature I-frame thrashing.
+   - `FLASH_SPIKE`: Single-frame lighting burst (camera flash, explosion) that returns to baseline within k frames -> Prunes false-positive scene cuts.
+   - `STABLE`: Smooth panning / continuous motion -> Optimizes B-frame pyramid depth ($M=4, 8$).
 3. Universal Video Encoder Interoperability:
    - Emits frame-accurate FFmpeg `-force_key_frames expr` strings, scene change timecodes,
      and x264/x265/SVT-AV1 keyframe lists.
@@ -109,7 +110,22 @@ class SceneCutGOPAnalyzer:
         self.prev_proj_x: Optional[np.ndarray] = None
         self.prev_proj_y: Optional[np.ndarray] = None
         self.prev_phash: Optional[int] = None
+        # Rolling window of recent scene_cut_scores (most-recent-last), used by the
+        # FLASH_SPIKE and DISSOLVE_FADE detectors.
         self.prev_scores: List[float] = []
+        self.flash_window = 4   # frames over which a flash must return to baseline
+        self.dissolve_window = 4  # frames of sustained drift -> DISSOLVE_FADE
+        # Causal flash filter state: when a score spike follows a low baseline we
+        # defer the cut decision by one frame and compare the next frame to the
+        # pre-spike baseline to distinguish a flash (returns to baseline) from a
+        # hard cut (new scene persists).
+        self.pending_spike_baseline_phash: Optional[int] = None
+        # Frame index (and metadata object) of a deferred spike, so a
+        # persistent-scene resolution can place the IDR retroactively at the
+        # SPIKE frame (frame-accurate) instead of one frame late.
+        self.pending_spike_frame: Optional[int] = None
+        self.pending_spike_meta: Optional["FrameSceneMetadata"] = None
+        self.last_meta: Optional["FrameSceneMetadata"] = None
 
         self.keyframe_indices: List[int] = []
 
@@ -207,43 +223,112 @@ class SceneCutGOPAnalyzer:
             norm_ham = np.clip(hamming_dist / 32.0, 0.0, 1.0)
             scene_cut_score = float(0.6 * norm_ham + 0.4 * norm_wass)
 
-            # Flash / lighting burst filter: check if score spikes and immediately returns
-            self.prev_scores.append(scene_cut_score)
-            if len(self.prev_scores) > 3:
-                self.prev_scores.pop(0)
-
             # Evaluate Scene Cut Conditions
             is_keyframe = False
             rec_frame_type = "P"
 
-            # Check for hard scene cut
-            if (scene_cut_score >= self.hard_cut_th or hamming_dist >= self.hash_th) and (self.frames_since_idr >= self.min_gop):
-                transition_type = SceneTransitionType.HARD_CUT
+            spike = (scene_cut_score >= self.hard_cut_th or hamming_dist >= self.hash_th)
+            flash_low_th = 0.5 * self.hard_cut_th
+            # A flash is a spike FROM a known baseline; with no prior score history
+            # we cannot claim a flash, so require at least one prior low score.
+            prior_is_low = (len(self.prev_scores) > 0) and (self.prev_scores[-1] < flash_low_th)
+
+            def _assign_b_p():
+                nonlocal rec_frame_type
+                rec_frame_type = "B" if (self.frames_since_idr % self.b_depth != 0) else "P"
+
+            def _force_idr():
+                nonlocal is_keyframe, rec_frame_type, transition_type
                 is_keyframe = True
                 rec_frame_type = "IDR"
                 self.keyframe_indices.append(self.frame_counter)
                 self.frames_since_idr = 0
                 self.gop_counter += 1
+
+            resolved_cut_here = False
+            if self.pending_spike_baseline_phash is not None:
+                # Resolve a deferred spike from the previous frame: compare the
+                # current frame to the pre-spike baseline.
+                baseline_phash = self.pending_spike_baseline_phash
+                self.pending_spike_baseline_phash = None
+                spike_frame = self.pending_spike_frame
+                spike_meta = self.pending_spike_meta
+                self.pending_spike_frame = None
+                self.pending_spike_meta = None
+                persist_hamming = self.hamming_distance_64(phash, baseline_phash)
+                gop_ok = (self.frames_since_idr >= self.min_gop)
+                if persist_hamming >= max(1, self.hash_th // 2) and gop_ok:
+                    # New scene persists -> the deferred spike WAS a real hard
+                    # cut. Place the IDR retroactively at the SPIKE frame
+                    # (frame-accurate), not one frame late: the ffmpeg expr
+                    # is generated after the whole stream is analyzed, and
+                    # the spike frame's metadata is patched in place.
+                    transition_type = SceneTransitionType.HARD_CUT
+                    self.keyframe_indices.append(
+                        spike_frame if spike_frame is not None else self.frame_counter
+                    )
+                    self.gop_counter += 1
+                    # The current (resolution) frame is the first ordinary
+                    # frame of the new scene, one frame after the IDR.
+                    self.frames_since_idr = 1
+                    if spike_meta is not None:
+                        spike_meta.is_keyframe = True
+                        spike_meta.recommended_frame_type = "IDR"
+                        spike_meta.transition_type = SceneTransitionType.HARD_CUT
+                    _assign_b_p()
+                else:
+                    # Current ≈ baseline -> the spike was a flash that
+                    # returned. Label this resolution frame STABLE when its
+                    # own score is low (the FLASH_SPIKE label belongs to the
+                    # spike frame, emitted last iteration).
+                    transition_type = (
+                        SceneTransitionType.FLASH_SPIKE
+                        if scene_cut_score >= flash_low_th
+                        else SceneTransitionType.STABLE
+                    )
+                    _assign_b_p()
+            elif spike and prior_is_low and (self.frames_since_idr >= self.min_gop):
+                # Spike from a low baseline: defer by one frame (tentative
+                # flash). Remember the spike frame so a persistent-scene
+                # resolution can place the IDR exactly there.
+                self.pending_spike_baseline_phash = self.prev_phash
+                self.pending_spike_frame = self.frame_counter
+                self.deferred_meta_needs_hook = True
+                transition_type = SceneTransitionType.FLASH_SPIKE
+                _assign_b_p()
+            elif spike and (self.frames_since_idr >= self.min_gop):
+                # Spike without a low baseline (e.g. cut during motion) -> hard cut.
+                transition_type = SceneTransitionType.HARD_CUT
+                _force_idr()
             elif self.frames_since_idr >= self.max_gop:
                 # Force keyframe at max GOP interval
                 transition_type = SceneTransitionType.STABLE
-                is_keyframe = True
-                rec_frame_type = "IDR"
-                self.keyframe_indices.append(self.frame_counter)
-                self.frames_since_idr = 0
-                self.gop_counter += 1
+                _force_idr()
             else:
-                # Hierarchical B-frame pattern assignment
-                if self.frames_since_idr % self.b_depth != 0:
-                    rec_frame_type = "B"
+                # DISSOLVE_FADE: sustained moderate drift (no single-frame spike)
+                # over the last `dissolve_window` frames -> gradual transition, do
+                # not thrash I-frames.
+                dissolve_low = 0.25 * self.hard_cut_th
+                recent = self.prev_scores[-(self.dissolve_window - 1):] + [scene_cut_score]
+                if (
+                    len(recent) >= (self.dissolve_window - 1)
+                    and all(dissolve_low <= s < self.hard_cut_th for s in recent)
+                ):
+                    transition_type = SceneTransitionType.DISSOLVE_FADE
                 else:
-                    rec_frame_type = "P"
+                    transition_type = SceneTransitionType.STABLE
+                _assign_b_p()
 
         # Update historical caches
         self.prev_luma = luma
         self.prev_proj_x = p_x
         self.prev_proj_y = p_y
         self.prev_phash = phash
+        # Rolling score history for the FLASH_SPIKE / DISSOLVE_FADE detectors.
+        if not is_first_frame:
+            self.prev_scores.append(scene_cut_score)
+            if len(self.prev_scores) > self.flash_window:
+                self.prev_scores.pop(0)
 
         t_elapsed = (time.perf_counter() - t0) * 1000.0
 
@@ -260,14 +345,45 @@ class SceneCutGOPAnalyzer:
             frames_since_last_keyframe=self.frames_since_idr,
             analysis_latency_ms=t_elapsed
         )
+        # A frame deferred this iteration must be patchable if the next
+        # frame resolves it as a real cut.
+        if getattr(self, "deferred_meta_needs_hook", False):
+            self.deferred_meta_needs_hook = False
+            self.pending_spike_meta = meta
+        self.last_meta = meta
         self.frame_counter += 1
         return meta
+
+    def finalize(self) -> None:
+        """Flush an unresolved deferred spike at end of stream.
+
+        A deferred spike is normally resolved when the NEXT frame arrives; if
+        the stream ends first, the pending decision would be dropped and the
+        final scene would be under-keyed. With no further evidence, treat the
+        spike as a persistent hard cut (the conservative choice for seeking:
+        an extra IDR costs bits, a missing IDR breaks decode of the tail).
+        """
+        if self.pending_spike_baseline_phash is None:
+            return
+        spike_frame = self.pending_spike_frame
+        spike_meta = self.pending_spike_meta
+        self.pending_spike_baseline_phash = None
+        self.pending_spike_frame = None
+        self.pending_spike_meta = None
+        if spike_frame is not None and spike_frame not in self.keyframe_indices:
+            self.keyframe_indices.append(spike_frame)
+            self.gop_counter += 1
+        if spike_meta is not None:
+            spike_meta.is_keyframe = True
+            spike_meta.recommended_frame_type = "IDR"
+            spike_meta.transition_type = SceneTransitionType.HARD_CUT
 
     def generate_ffmpeg_keyframe_expr(self) -> str:
         """
         Generates standard FFmpeg `-force_key_frames` expression based on detected keyframe timestamps.
         Example: `expr:gte(t,n_forced*2)` or comma-separated timestamps `0.0,2.4,5.8`.
         """
+        self.finalize()
         if not self.keyframe_indices:
             return "expr:gte(t,n_forced*2)"
         times = [f"{idx / self.fps:.3f}" for idx in self.keyframe_indices]

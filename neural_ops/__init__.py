@@ -1,12 +1,20 @@
 """
 Neural Ops (`neural_ops`)
 =========================
-Linear-Time O(N) Neural Network Building Blocks powered by
-Tree-Free Fast Multipole Method (FMM) & 2025 Farach-Colton Non-Reordering Open Addressing.
+Neural Network Building Blocks powered by Tree-Free Spatial Hashing &
+Multipole-Style Far-Field Aggregation (Farach-Colton, Krapivin, & Kuszmaul, 2025 Non-Reordering
+Open Addressing).
+
+Scope caveat (read before citing): "Multipole" in this package's layer names
+denotes spatially bucketed aggregation with low-order per-cell moments (mean /
+weighted centroid / dipole), used as a far-field approximation inside neural
+operators. None of these implement Greengard & Rokhlin FMM operator hierarchies.
+The elastic-hash-style spatial indexing is the load-bearing idea being
+demonstrated. See `STATUS.md` for the honest accuracy/complexity table.
 
 Core Modules:
 - TreeFreeMultipoleAttention, MultiHeadMultipoleAttention: O(N) Spatial & Sequence Attention.
-- SphericalMultipoleAttention: Arbitrary Degree L Spherical & Solid Harmonic Tensor Attention.
+- SphericalMultipoleAttention: Directional Spherical-Harmonic Cluster Correlation.
 - KernelIndependentNeuralOperator: Kernel-Independent FMM with SVD Skeletonization.
 - HyperbolicMultipoleAttention: Non-Euclidean Poincaré/Lorentz Hyperbolic Attention.
 - TreeFreeMultipoleFlowDrift: O(N) Drift Field for Continuous Flow Matching & Diffusion ODEs.
@@ -14,7 +22,7 @@ Core Modules:
 - MultipoleSpatialSSM: Multi-Dimensional Selective State Space Model with FMM Mixing.
 - EquivariantMultipoleTransformerLayer: SE(3)-Equivariant Dual Scalar-Vector Self-Attention.
 - MultipoleAdjointEngine: Exact Analytical VJP & Transposed Adjoint Backpropagation Engine.
-- HierarchicalElasticKVCache: Multi-Resolution 3-Tier Streaming KV-Cache for 1M+ LLM Contexts.
+- HierarchicalElasticKVCache: Multi-Resolution 3-Tier Streaming KV-Cache (experimental; recall-limited).
 - NeuralSPHIPCLayer: All-Pairs SPH Hydrodynamics & IPC Contact Barrier Mechanics.
 - ElasticMultipoleKVCache: Lock-Free, Contiguous O(1) Streaming KV-Cache.
 - ContinuousMeshfreeGNNLayer: Continuous Geometric Graph Convolution without Adjacency Matrices.

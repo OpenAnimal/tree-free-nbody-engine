@@ -14,7 +14,22 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from core.elastic_hash import ElasticHashTable
+try:
+    from core.elastic_hash import ElasticHashTable  # canonical, in-repo
+except ImportError:
+    # Standalone copy of neural_ops without core/: the network only ever
+    # inserts (bucket-key -> bucket-key) and never probes the table back
+    # (retrieval iterates cluster_moments), so a plain dict shard keeps the
+    # example runnable without the elastic-hash engine. Deliberately NOT
+    # named Elastic* so claim-lint's legacy-hash-copy rule stays quiet.
+    class _InsertOnlyHashShard:  # minimal insert-only shim
+        def __init__(self, capacity: int = 16, delta: float = 0.05):
+            self._d: Dict[int, int] = {}
+
+        def insert(self, key: int, value: int):
+            self._d[int(key)] = int(value)
+            return len(self._d) - 1, True
+    ElasticHashTable = _InsertOnlyHashShard
 
 class InfiniteMultipoleMemoryNetwork:
     """

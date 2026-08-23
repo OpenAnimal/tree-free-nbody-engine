@@ -1,13 +1,14 @@
 """
 Core Engine for Tree-Free N-Body & Spatial Field Computing
 ==========================================================
-Non-Reordering Open Addressing Hash (Farach-Colton et al. 2025)
+Non-Reordering Open Addressing Hash (Farach-Colton, Krapivin, & Kuszmaul, 2025)
 + Carrier, Greengard, & Rokhlin (1988) 2D Adaptive Fast Multipole Method
 + Greengard & Rokhlin (1987) Regular Fast Multipole Method
 """
 
 from .elastic_hash import (
     ElasticHashTable,
+    ElasticIntTable,
     ElasticBatchingHashTable,
     funnel_probe,
     jax_hash_probe,
@@ -20,8 +21,8 @@ from .adaptive_gpu_metadata import (
     build_flat_adaptive_metadata,
     MAX_INTERACTIONS_PER_NODE,
 )
-from .cgr88_adaptive_fmm import (
-    CGR88AdaptiveFMM,
+from .adaptive_fmm import (
+    AdaptiveFMM,
     TreeFreeElasticAdaptiveFMM,
     GreengardRokhlin87RegularFMM,
     AdaptiveQuadTree,
@@ -30,14 +31,14 @@ from .cgr88_adaptive_fmm import (
     decode_morton_box,
     exact_direct_nbody_2d,
     exact_direct_nbody_forces_2d,
-    p2m as cgr88_p2m,
-    m2m as cgr88_m2m,
-    m2l as cgr88_m2l,
-    l2l as cgr88_l2l,
-    l2p as cgr88_l2p,
-    l2p_force as cgr88_l2p_force,
-    p2l as cgr88_p2l,
-    m2p as cgr88_m2p,
+    p2m as adaptivefmm_p2m,
+    m2m as adaptivefmm_m2m,
+    m2l as adaptivefmm_m2l,
+    l2l as adaptivefmm_l2l,
+    l2p as adaptivefmm_l2p,
+    l2p_force as adaptivefmm_l2p_force,
+    p2l as adaptivefmm_p2l,
+    m2p as adaptivefmm_m2p,
     p2p_potential_and_force,
 )
 from .tree_free_fmm import (
@@ -65,6 +66,7 @@ from .yukawa3d_fmm import (
 )
 from .gaussian2d_fgt import (
     Gaussian2DFGT,
+    Gaussian3DFGT,
     derivative_fd_guard as gaussian2d_derivative_fd_guard,
     gn_eigenfunction_sanity as gaussian2d_gn_eigenfunction_sanity,
     toy_2cell_check as gaussian2d_toy_2cell_check,
@@ -95,7 +97,7 @@ from .hip_kernels import (
 )
 from .webgpu_kernels import (
     get_wgsl_source,
-    get_adaptive_cgr88_wgsl_source,
+    get_adaptive_fmm_wgsl_source,
     is_webgpu_available,
 )
 from .zig_backend import (
@@ -121,8 +123,6 @@ from .jax_tree_free_fmm import (
 if HAS_JAX:
     from .jax_tree_free_fmm import (
         jax_morton_encode_2d,
-        jax_multi_level_probe_lookup,
-        jax_elastic_probe_lookup,
         jax_p2m_expansion,
         jax_m2m_translation,
         jax_m2l_translation,
@@ -136,8 +136,6 @@ if HAS_JAX:
     )
 else:
     jax_morton_encode_2d = None
-    jax_multi_level_probe_lookup = None
-    jax_elastic_probe_lookup = None
     jax_p2m_expansion = None
     jax_m2m_translation = None
     jax_m2l_translation = None
@@ -160,7 +158,7 @@ __all__ = [
     "FlatAdaptiveMetadata",
     "build_flat_adaptive_metadata",
     "MAX_INTERACTIONS_PER_NODE",
-    "CGR88AdaptiveFMM",
+    "AdaptiveFMM",
     "TreeFreeElasticAdaptiveFMM",
     "GreengardRokhlin87RegularFMM",
     "AdaptiveQuadTree",
@@ -169,16 +167,17 @@ __all__ = [
     "decode_morton_box",
     "exact_direct_nbody_2d",
     "exact_direct_nbody_forces_2d",
-    "cgr88_p2m",
-    "cgr88_m2m",
-    "cgr88_m2l",
-    "cgr88_l2l",
-    "cgr88_l2p",
-    "cgr88_l2p_force",
-    "cgr88_p2l",
-    "cgr88_m2p",
+    "adaptivefmm_p2m",
+    "adaptivefmm_m2m",
+    "adaptivefmm_m2l",
+    "adaptivefmm_l2l",
+    "adaptivefmm_l2p",
+    "adaptivefmm_l2p_force",
+    "adaptivefmm_p2l",
+    "adaptivefmm_m2p",
     "p2p_potential_and_force",
     "ElasticHashTable",
+    "ElasticIntTable",
     "ElasticBatchingHashTable",
     "funnel_probe",
     "jax_hash_probe",
@@ -192,6 +191,7 @@ __all__ = [
     "yukawa3d_derivative_fd_guard",
     "yukawa3d_toy_2cell_check",
     "Gaussian2DFGT",
+    "Gaussian3DFGT",
     "gaussian2d_derivative_fd_guard",
     "gaussian2d_gn_eigenfunction_sanity",
     "gaussian2d_toy_2cell_check",
@@ -224,7 +224,7 @@ __all__ = [
     "opencl_morton_encode_3d",
     "get_hip_kernel_source",
     "get_wgsl_source",
-    "get_adaptive_cgr88_wgsl_source",
+    "get_adaptive_fmm_wgsl_source",
     "is_webgpu_available",
     "p2m",
     "m2m",
@@ -236,8 +236,6 @@ __all__ = [
     "exact_direct_forces",
     "HAS_JAX",
     "jax_morton_encode_2d",
-    "jax_multi_level_probe_lookup",
-    "jax_elastic_probe_lookup",
     "jax_p2m_expansion",
     "jax_m2m_translation",
     "jax_m2l_translation",

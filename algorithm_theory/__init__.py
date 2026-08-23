@@ -1,12 +1,19 @@
 """
 Theoretical & Algorithmic Foundations Suite (algorithm_theory).
 
-Translates frontier algorithmic breakthroughs into tree-free numerical kernels:
+Translates frontier algorithmic breakthroughs into tree-free numerical kernels.
+NOTE: many of the complexity claims below describe the IDEAL / asymptotic
+behaviour of the cited algorithms; the actual implementations here are
+research-grade Python prototypes whose measured cost can deviate from the
+asymptotic claim (e.g. dense matvecs where a sparse matvec would be needed
+for the asymptotic bound, monopole-only far fields, heuristic landmark
+elections without formal stretch guarantees, etc.). Per-module docstrings
+document the precise complexity and any deviations from the idealised claim.
 1. Frontier-Clustered Shortest Paths (Duan et al. STOC 2025 - Breaking the Sorting Barrier for SSSP)
-2. Asymmetric Low-Rank Tensor Multipole Contractions (Alman et al. 2024/2025 - Matrix Multiplication Laser Exponents)
-3. Spectral Meshfree Multi-Scale Laplacian Solvers (Nearly-linear time Spielman-Teng / Cohen SDDM preconditioners)
-4. Sublinear-Time Approximate Distance Oracles (Elastic-Hash multi-resolution metric embeddings)
-5. Non-Uniform Fast Fourier Transform (Barnett / Greengard NUFFT Type 1, 2, 3 via Elastic Gridding)
+2. Synthetic Low-Rank Tensor Contraction demo (Alman et al. 2024/2025 - matrix multiplication laser exponents; NOT a real FMM M2L operator)
+3. Spectral Meshfree Multi-Scale Laplacian Solvers (Spielman-Teng / Cohen SDDM preconditioners; coarse solve is diagonal-only here)
+4. Multi-Scale Landmark Distance Oracle (triangle-inequality upper bound; NO formal (1+eps) stretch guarantee)
+5. Non-Uniform Fast Fourier Transform (Barnett / Greengard NUFFT Type 1 and Type 2 via Elastic Gridding; Type 3 not implemented)
 6. Matrix-Free Talbot Contour Numerical Laplace Inversion (Talbot / Weideman complex contour resolvents)
 7. Directional Butterfly Oscillatory Wavefield Factorizations (Engquist & Ying high-frequency Helmholtz)
 8. Continuous Meshfree Wavelets & Multi-Resolution Filterbanks (Antoine et al. CWT on point manifolds)
@@ -14,21 +21,21 @@ Translates frontier algorithmic breakthroughs into tree-free numerical kernels:
 10. Constant-Potential Metal Electrode Boundary Element Method (Matrix-free GMRES capacitance BEM)
 11. Fast Entropic Optimal Transport (Sinkhorn-Knopp Gaussian kernel scaling in O(N + M))
 12. Matrix-Free Effective Resistance & Network Power Centrality (Spielman-Srivastava randomized projections)
-13. Neutral Spatial Graph Partitioning & Space Decomposition (ReCom MCMC Spanning Tree Partitions)
-14. Continuous Fast Multipole Fock Exchange (CFMM 2-Electron Coulomb & Exchange Integrals in O(N))
+13. Neutral Spatial Graph Partitioning & Space Decomposition (ReCom MCMC Spanning Tree Partitions; compactness score is a heuristic proxy, not true Polsby-Popper)
+14. Continuous Fast Multipole Fock Exchange (CFMM 2-Electron Coulomb J matrix; monopole-only far field; no exchange K matrix)
 15. Continuous Non-Local Opinion Dynamics (Hegselmann-Krause multi-agent bounded confidence & polarization)
 16. Continuous Spatial Voting Equilibrium (Downsian continuous multi-party policy Nash gradient flows)
 17. Co-Optimal Transport & Dual-Manifold Biclustering (COOT / Gromov-Wasserstein alternating Sinkhorn)
-18. Nearly-Linear Spectral Bipartite Biclustering (Dhillon normalized bipartite spectral partitioning)
-19. Sublinear Multi-Scale FastDTW Alignment (Salvador & Chan multi-resolution time series warping)
+18. Spectral Bipartite Biclustering (Dhillon normalized bipartite spectral partitioning; dense A matvec, not O(nnz(A)))
+19. Sublinear Multi-Scale FastDTW Alignment (Salvador & Chan multi-resolution time series warping; heuristic, no optimality guarantee)
 20. Continuous Koopman Spectral Operator (Williams & Mezic EDMD non-linear dynamical linearization)
-21. Fast Multipole Fractional Volterra Memory (Schadle & Lubich non-local Caputo memory convolution in O(T))
-22. Takens' Delay Embedding Phase Space Attractor & Anomaly Search (Chaotic attractor recurrence in O(T))
-23. Localized Ensemble Kalman Filter (Gaspari-Cohn spatial covariance tapering EnKF in O(N*M^2))
+21. Fast Multipole Fractional Volterra Memory (Schadle & Lubich non-local Caputo memory convolution in O(T log T))
+22. Takens' Delay Embedding Phase Space Attractor & Anomaly Search (recurrence density only; no Grassberger-Procaccia or motif discovery)
+23. Localized Ensemble Kalman Filter (Gaspari-Cohn spatial covariance tapering EnKF; cost depends on local obs count k_act, not purely N*M^2)
 24. Spielman-Srivastava Spectral Graph Sparsifier (Effective resistance leverage score edge sampling)
-25. Matrix-Free Personalized PageRank (PPR SDDM normalized random walk with restart resolvent)
+25. Matrix-Free Personalized PageRank (PPR SDDM normalized random walk with restart; PCG residual-tolerance approximate, <=60 iters)
 26. Fast Hilbert-Schmidt Independence & Causal Direction Discovery (RFF non-linear HSIC & ANM causal arrows)
-27. Matrix-Free Gaussian Process Regression & Uncertainty (Exact GP in O(N) time and memory)
+27. Matrix-Free Gaussian Process Regression & Uncertainty (sparse-truncated RBF PCG; cutoff tail ~2.2e-3 at default 3.5*ell, NOT ~1e-7)
 28. Functional ANOVA & Global Sobol Sensitivity Decomposition (Saltelli-Sobol non-linear variance attribution)
 29. Flat Multipole Range Tree (Pointerless multidimensional orthogonal range sums & prefix moments)
 30. Zero-Displacement Elastic Quotient Filter (Non-reordering lock-free approximate membership & frequency sketch)

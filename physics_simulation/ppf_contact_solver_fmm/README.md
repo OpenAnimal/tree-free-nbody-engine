@@ -129,6 +129,76 @@ Newton-PCG solve (~76–84%) is. The solver is still slower than the modeled
 DynCSRMat baseline (0.2×–1.8×) because that model assumes a GPU BVH + native
 CSR assembly, not single-threaded NumPy.
 
+> **⚠ X-P4 claim discipline — what these numbers are NOT:** the speedup
+> factors above are measured against a **naive $O(N^2)$ all-pairs baseline**
+> and a **hypothetical DynCSRMat model**, NOT against
+> `st-tech/ppf-contact-solver`. A same-scene benchmark against PPF HAS been
+> run (see the "Same-Scene Benchmark vs PPF" section below) — PPF is ~11×
+> faster in wall-clock per unit sim time, as expected for a GPU/CUDA solver
+> vs a CPU/NumPy solver. The algorithmic advantages claimed here — **no
+> per-step BVH rebuild** (flat spatial hash broadphase) and **no dynamic
+> CSR assembly** (matrix-free SpMV) — are mechanistic complexity arguments,
+> not measured speedup claims against PPF. They would need a GPU
+> implementation to manifest in wall-clock time.
+
+### Same-Scene Benchmark vs PPF (X-P4, measured 2026-08-21)
+
+A same-scene benchmark against `st-tech/ppf-contact-solver` was run on this
+machine (RTX 4070, 12GB VRAM, driver 591.86). This is the benchmark X-P4
+requires: not a comparison against our own naive baseline, but against the
+actual third-party solver on the same scene.
+
+**Scene:** PPF's `examples/headless.py` — 5 triangulated cloth sheets
+(res=64, ~4,096 verts each) pinned at one edge with strain-limit 0.05, plus
+a moving icosphere collider (r=0.5). dt=0.01, 60 frames.
+
+**Script:** `benchmark_vs_ppf.py` (our solver) / `headless.bat` (PPF native exe)
+
+| Metric | PPF (GPU/CUDA/Rust) | Our Solver (CPU/NumPy) |
+| :--- | :--- | :--- |
+| **Vertices** | 23,042 | 20,480 |
+| **Triangles** | 44,810 | 39,690 |
+| **Frames run** | 60 (sub-stepped to 102 via TOI) | 10 (no sub-stepping) |
+| **Sim time** | 0.60 sec | 0.10 sec |
+| **Total wall-clock** | **53 sec** | **101 sec** |
+| **Realtime factor** | **88×** (wall/sim) | **1,010×** (wall/sim) |
+| **Penetration guarantee** | Full CCD (100% penetration-free) | Vertex-vertex only (no CCD) |
+| **Barrier type** | Cubic (ACM TOG 2024) | Log-barrier (IPC 2020) |
+| **Sparse matrix alloc** | DynCSRMat (GPU) | 0 MB (matrix-free) |
+| **TOI sub-stepping** | Yes (60→102 steps) | No (fixed dt) |
+| **Pinning** | Dirichlet BCs in-solve | Post-hoc position restore |
+
+**Honest reading:** PPF is **~11× faster** in wall-clock per unit simulation
+time (88× realtime vs 1,010× realtime). This is expected and not surprising:
+PPF runs on GPU/CUDA with a compiled Rust solver; ours runs on CPU with
+single-threaded NumPy. The algorithmic advantages of our approach (no BVH
+rebuild, no CSR assembly, 0 MB sparse allocation) are **complexity arguments
+that have not yet been translated into a GPU implementation**. On CPU, the
+Newton-PCG solve dominates (~85% of step time) and is bottlenecked by NumPy's
+per-iteration overhead, not by matrix assembly.
+
+**Caveats that make the comparison imperfect:**
+1. Our solver ran only 10 frames (vs PPF's 60); a full 60-frame run may
+   change the ratio as contacts stabilize.
+2. Our pinning is post-hoc (restore position after solve), not in-solve
+   Dirichlet BCs — this inflates our CG iteration count.
+3. The moving sphere never reaches the sheets in 60 frames (it moves from
+   x=-1 to x=-0.04; sheets are at x=0..1.0). Both solvers only see sheet-
+   sheet gravity drape contacts.
+4. Material parameters are not matched (PPF uses FEM Young's modulus; we
+   use edge-spring + discrete hinge constants).
+
+**What would be needed to compete with PPF on wall-clock time:**
+1. A GPU/JAX or GPU/CUDA port of the matrix-free SpMV and broadphase
+2. Full point-triangle CCD (not just vertex-vertex) for parity on robustness
+3. TOI-based sub-stepping for large-deformation stability
+4. In-solve Dirichlet boundary conditions for pinned vertices
+
+Until those exist, the honest claim is: "our algorithm uses 0 MB of sparse
+matrix allocation and avoids per-step BVH rebuilds — these are algorithmic
+advantages that would need a GPU implementation to manifest as wall-clock
+speedup against PPF."
+
 ### Historical (per-key-loop broadphase, NOT reproducible on this machine)
 
 The table below is retained **only as history**. These numbers were measured
@@ -157,6 +227,14 @@ the regression and its fix, not to make any current performance claim.
 | **Cloth Elasticity** | Standard Global Sparse Stiffness Assembly | **Element-Wise PSD Projected Stretch + Bending SpMV** |
 | **Nonlinear Solver** | Newton-Raphson with Direct/Projected Sparse Solvers | **Matrix-Free Newton-PCG with Jacobi Preconditioning** |
 | **Penetration Guarantee** | Continuous Collision Detection (CCD) | **IPC Log-Barrier + Discrete Distance-Check Line Search ($d > 0$ on the frozen candidate set; vertex-vertex, no point-triangle CCD)** |
+
+> **Note:** this table compares **algorithmic mechanisms**, not measured
+> performance. A same-scene wall-clock benchmark against PPF HAS been run
+> (see the "Same-Scene Benchmark vs PPF" section above) — PPF is ~11×
+> faster in wall-clock per unit sim time. The algorithmic advantages (no
+> BVH rebuild, no CSR assembly) are complexity arguments that would require
+> a GPU implementation to translate into wall-clock speedup against PPF's
+> CUDA solver.
 
 ---
 
@@ -187,7 +265,7 @@ Generates the 4-panel benchmark figure: `fmm_contact_benchmark.png`.
 1. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH)*, 39(4), Article 49.
 2. **ZOZO's Contact Solver (PPF): A Contact Solver for Physics-Based Simulations.** ZOZO, Inc. (2024–2026). [st-tech/ppf-contact-solver](https://github.com/st-tech/ppf-contact-solver).
 3. **Discrete Shells.** Grinspun, Hirani, Desbrun, Schröder (2003). *ACM SIGGRAPH / Eurographics SCA*, 62–67.
-4. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+4. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, & Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
 
 ---
 

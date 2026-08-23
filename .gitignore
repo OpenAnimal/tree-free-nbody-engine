@@ -14,10 +14,22 @@ Thumbs.db
 # Zig native build outputs
 native/zig/zig-out/
 native/zig/.zig-cache/
+zig/.zig-cache/
+zig/zig-out/
 
 # Node.js
 node_modules/
+# (chromium-bidi/ws test deps for test_perf.js — see README)
 
 # Local HTML backups
 index.before-fmm.html
+
+# Local debug/scratch scripts (underscore-prefixed one-off tools)
+/_*.js
+/_*.py
+/_*.sh
+
+# Browser cross-benchmark artifacts (tools/browser_crossbench.js writes
+# adaptive screenshots next to the repo root; data lives in BENCHMARKS.md)
+/crossbench_*.png
 

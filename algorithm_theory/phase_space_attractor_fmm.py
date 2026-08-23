@@ -1,5 +1,11 @@
 """
-Takens' Phase Space Attractor Reconstruction & Motif Search (phase_space_attractor_fmm.py).
+Takens' Phase Space Attractor Reconstruction (phase_space_attractor_fmm.py).
+
+NOTE: the earlier "& Motif Search" title was retracted -- motif discovery
+(Matrix-Profile-style) and the Grassberger-Procaccia correlation dimension
+are NOT implemented in this module (see the "NOT implemented" list below).
+Only delay embedding + local recurrence density + anomaly scoring are
+provided.
 
 Inspired by:
 1. "Detecting Strange Attractors in Turbulence"
@@ -9,7 +15,7 @@ Inspired by:
 3. "Matrix Profile: A General Way to Search Time Series"
    Chin-Chia Michael Yeh et al. (IEEE ICDM 2016).
 4. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Given a single scalar observation stream x(t) from an unobserved complex system (e.g. turbine vibration,
@@ -18,10 +24,15 @@ that the reconstructed delay vectors:
     v(t) = [x(t), x(t - tau), x(t - 2*tau), ..., x(t - (d - 1)*tau)] in R^d
 form a smooth diffeomorphism to the true multi-dimensional chaotic state space attractor.
 
-Using Tree-Free Elastic Spatial Hashing on the d-dimensional attractor manifold:
-1. Fast Recurrence Density & Anomaly Score: Computes local manifold point density rho(v_i) in O(1) time.
-2. Grassberger-Procaccia Correlation Dimension: Evaluates pairwise correlation sums C(r) in O(N) time.
-3. Motif Discovery: Locates recurring behavioral patterns and anomalous regime shifts without O(N^2) pairwise comparisons.
+Using a uniform grid hash (dict-based) on the d-dimensional attractor manifold:
+1. Fast Recurrence Density & Anomaly Score: Computes local manifold point
+   density rho(v_i) via the 3^d-neighbourhood cell occupancy (implemented in
+   ``compute_local_recurrence_density`` / ``detect_attractor_anomalies``).
+
+NOT implemented (advertised in earlier drafts but absent from this module):
+- Grassberger-Procaccia correlation dimension / pairwise correlation sum C(r).
+- Matrix-Profile-style motif discovery.
+Only delay embedding + local recurrence density + anomaly scoring are provided.
 """
 
 import time
@@ -37,8 +48,11 @@ from core.spatial_index import CellIndex
 class PhaseSpaceAttractorFMM:
     """
     Takens' Delay Embedding & Spatial Hash Attractor Manifold Analyzer.
-    
-    Reconstructs chaotic phase space and extracts recurrent motifs in O(T) time.
+
+    Reconstructs the delay-embedded phase space and computes local recurrence
+    density / anomaly scores in O(T * 3^d) time (d = embedding dim). No
+    Grassberger-Procaccia correlation dimension or motif discovery is
+    implemented.
     """
     def __init__(
         self,

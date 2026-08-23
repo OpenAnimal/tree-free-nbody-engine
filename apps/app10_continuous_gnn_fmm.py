@@ -1,6 +1,6 @@
 """
 Application 10: Continuous Graph Neural Network (GNN) Message Passing without Adjacency Matrices.
-Cell index: Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash.
+Cell index: Farach-Colton, Krapivin, & Kuszmaul (2025) non-reordering funnel/elastic hash.
 
 Executes continuous spatial graph convolutions:
 h_i^(l+1) = ReLU( W_self * h_i + sum_{near} W_near * h_j + sum_{far} W_far * Centroid_k )
@@ -8,7 +8,7 @@ h_i^(l+1) = ReLU( W_self * h_i + sum_{near} W_near * h_j + sum_{far} W_far * Cen
 Method, stated honestly: near-field messages are exchanged exactly within
 the 3x3 funnel-hash neighborhood; far-field messages use per-cell
 centroid aggregation (a bucketed centroid scheme, not a multipole
-expansion -- the Gaussian message kernel is not the CGR88 log kernel).
+expansion -- the Gaussian message kernel is not the adaptive FMM log kernel).
 Scales without N x N adjacency matrices or stored edge lists. The
 approximation error vs a dense all-pairs message pass is measured and
 printed for a small graph.
@@ -23,8 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 from typing import Tuple, List, Dict
-from core.elastic_hash import ElasticHashTable
-from core.tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
+from core.spatial_index import CellIndex
 
 class ContinuousSpatialGNNLayer:
     """
@@ -48,81 +47,85 @@ class ContinuousSpatialGNNLayer:
 
     def forward(self, coords: np.ndarray, node_features: np.ndarray) -> np.ndarray:
         N = len(coords)
-        grid_res = self.grid_res
-        
-        # 1. Funnel hash = sole spatial index (cell key -> particle indices)
-        hash_table = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-        for i in range(N):
-            key = morton_encode_2d(coords[i, 0], coords[i, 1], depth=self.depth)
-            p_indices, _ = hash_table.lookup(key)
-            if p_indices is None:
-                hash_table.insert(key, [i])
-            else:
-                p_indices.append(i)
 
-        # 2. Far-field aggregation (per-cell centroid features)
-        cluster_h = {}
-        cluster_centers = {}
-        for key in [k for k, _ in hash_table.items()]:
-            p_indices = hash_table.lookup(key)[0]
-            _, ix, iy = decode_morton_2d(key)
-            cx, cy = get_box_center_2d(self.depth, ix, iy)
-            cluster_centers[key] = np.array([cx, cy])
-            cluster_h[key] = np.mean(node_features[p_indices], axis=0)  # Aggregated node representation
-            
-        # 3. Continuous Message Passing: self + near (direct) + far (centroid)
-        out_features = np.zeros((N, self.out_features))
-        
-        # Self-transformation: (N, out_features)
-        h_self = np.matmul(node_features, self.W_self)
-        
-        # Fast message aggregation
-        for i in range(N):
-            px, py = coords[i, 0], coords[i, 1]
-            m_key = morton_encode_2d(px, py, depth=self.depth)
-            _, ix, iy = decode_morton_2d(m_key)
-            
-            near_msg = np.zeros(self.in_features)
-            near_count = 0
-            
-            # Near-field search (3x3 adjacent buckets via O(1) hash probes)
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    nx, ny = ix + dx, iy + dy
-                    if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                        n_key = (self.depth << 24) | morton_encode_2d((nx+0.5)/grid_res, (ny+0.5)/grid_res, depth=self.depth) & 0xFFFFFF
-                        p_indices, _ = hash_table.lookup(n_key)
-                        if p_indices is not None:
-                            for j in p_indices:
-                                if i != j:
-                                    d = np.linalg.norm(coords[i] - coords[j]) + 1e-4
-                                    w = np.exp(-d**2 / 0.05)
-                                    near_msg += w * node_features[j]
-                                    near_count += 1
-                                    
-            if near_count > 0:
-                near_msg /= near_count
-                
-            # Far-field centroid message aggregation
-            far_msg = np.zeros(self.in_features)
-            far_count = 0
-            for f_key, c_center in cluster_centers.items():
-                _, fx, fy = decode_morton_2d(f_key)
-                if abs(fx - ix) > 1 or abs(fy - iy) > 1:
-                    d_c = np.linalg.norm(coords[i] - c_center) + 1e-4
-                    w_far = np.exp(-d_c**2 / 0.2)
-                    far_msg += w_far * cluster_h[f_key]
-                    far_count += 1
-                    
-            if far_count > 0:
-                far_msg /= far_count
-                
-            # Combine transformations
-            total_h = h_self[i] + np.matmul(near_msg, self.W_near) + np.matmul(far_msg, self.W_far) + self.bias
-            # ReLU activation
-            out_features[i] = np.maximum(0.0, total_h)
-            
-        return out_features
+        # 1. Build CellIndex (canonical spatial index; replaces manual
+        #    ElasticHashTable + per-node Python loops).
+        cell_index = CellIndex(dims=2, grid_res=self.grid_res)
+        unique_keys, inverse = cell_index.build(coords)
+        K = len(unique_keys)
+
+        # 2. Far-field aggregation: per-cell centroid features (vectorized
+        #    via bincount on the inverse mapping).
+        cluster_counts = np.bincount(inverse, minlength=K).astype(np.float64)
+        cluster_centers = np.zeros((K, 2))
+        for d in range(2):
+            cluster_centers[:, d] = np.bincount(inverse, weights=coords[:, d],
+                                                minlength=K) / np.maximum(cluster_counts, 1)
+        cluster_h = np.zeros((K, self.in_features))
+        for d in range(self.in_features):
+            cluster_h[:, d] = np.bincount(inverse, weights=node_features[:, d],
+                                          minlength=K) / np.maximum(cluster_counts, 1)
+
+        cell_ints = np.array([cell_index.key_ints(int(k)) for k in unique_keys])
+
+        # 3. Self-transformation
+        h_self = np.matmul(node_features, self.W_self)  # (N, out_features)
+
+        # 4. Near-field + far-field message passing (vectorized per cell).
+        near_msg_all = np.zeros((N, self.in_features))
+        far_msg_all = np.zeros((N, self.in_features))
+
+        for c, key in enumerate(unique_keys):
+            idx_t = cell_index.bucket(int(key))
+            if len(idx_t) == 0:
+                continue
+            pts_t = coords[idx_t]  # (nt, 2)
+
+            # --- Near-field: 3x3 CellIndex neighborhood ---
+            near_idx = cell_index.neighborhood_indices(int(key), ring=1)
+            if len(near_idx) > 0:
+                pts_s = coords[near_idx]          # (ns, 2)
+                feat_s = node_features[near_idx]  # (ns, in_features)
+
+                diff = pts_t[:, None, :] - pts_s[None, :, :]  # (nt, ns, 2)
+                d = np.linalg.norm(diff, axis=-1) + 1e-4      # (nt, ns)
+                w = np.exp(-d ** 2 / 0.05)                     # (nt, ns)
+
+                # Self-pair mask (exclude self, matching the original code)
+                id_t = idx_t[:, None]
+                id_s = near_idx[None, :]
+                self_mask = (id_t == id_s)
+                w = np.where(self_mask, 0.0, w)
+
+                # Mean of w*feat divided by count (matching original: /= near_count)
+                near_count = np.sum(~self_mask, axis=1)  # (nt,)
+                near_msg = np.where(
+                    near_count[:, None] > 0,
+                    (w[:, :, None] * feat_s[None, :, :]).sum(axis=1) / np.maximum(near_count[:, None], 1),
+                    0.0)
+                near_msg_all[idx_t] = near_msg
+
+            # --- Far-field: per-cell centroid message ---
+            cx, cy = cell_ints[c]
+            far_mask = (np.abs(cell_ints[:, 0] - cx) > 1) | \
+                       (np.abs(cell_ints[:, 1] - cy) > 1)
+            far_clusters = np.where(far_mask)[0]
+
+            if len(far_clusters) > 0:
+                far_centers = cluster_centers[far_clusters]  # (n_far, 2)
+                far_h = cluster_h[far_clusters]              # (n_far, in_features)
+
+                diff_c = pts_t[:, None, :] - far_centers[None, :, :]  # (nt, n_far, 2)
+                d_c = np.linalg.norm(diff_c, axis=-1) + 1e-4          # (nt, n_far)
+                w_far = np.exp(-d_c ** 2 / 0.2)                        # (nt, n_far)
+
+                # Mean of w_far*cluster_h divided by far_count (matching original)
+                far_msg = (w_far[:, :, None] * far_h[None, :, :]).sum(axis=1) / len(far_clusters)
+                far_msg_all[idx_t] = far_msg
+
+        # 5. Combine transformations + ReLU
+        total_h = h_self + np.matmul(near_msg_all, self.W_near) + np.matmul(far_msg_all, self.W_far) + self.bias
+        return np.maximum(0.0, total_h)
 
 
 def run_continuous_gnn_demo():
@@ -211,7 +214,7 @@ def run_continuous_gnn_demo():
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 10: Matrix-Free Continuous Graph Neural Network\nMessage Passing via Farach-Colton / Kuszmaul Funnel Hash (near exact / far centroid)", 
+    fig.suptitle("Application 10: Matrix-Free Continuous Graph Neural Network\nMessage Passing via Farach-Colton, Krapivin, & Kuszmaul (2025) Funnel Hash (near exact / far centroid)", 
                  color='white', fontsize=13, fontweight='bold')
     plt.tight_layout()
     output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "app10_continuous_gnn_fmm.png")

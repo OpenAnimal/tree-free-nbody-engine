@@ -13,6 +13,16 @@ Features:
 - Direct GPU staging for Volumetric Multipole Fields and Dynamic SH Irradiance Probes.
 - Vulkan / DX12 descriptor reflection metadata for direct engine bindings.
 - Automatic zero-copy CPU-GPU fallback when running without a discrete native GPU context.
+
+Honesty note: this module produces numpy arrays with GPU-friendly LAYOUTS
+(float4 alignment, structured buffer shapes, descriptor metadata).  It does
+NOT issue any actual CUDA / Vulkan / DX12 calls — there is no PyCUDA, no
+Vulkan bindings, no D3D12 interop here.  The "zero-copy" naming refers to
+the layout/packing strategy (contiguous float4 rows, host-pinned-style
+contiguity) that a downstream native renderer would consume; on the Python
+side the data lives in ordinary numpy host memory.  The GPUBackendAPI enum
+is a capability descriptor for what the layout targets, not a runtime
+backend selection — no GPU is initialized by this module.
 """
 
 from __future__ import annotations
@@ -470,7 +480,7 @@ class HardwareGraphicsBridge:
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("Hardware GPU Interop (CUDA / Vulkan / DirectX 12) Benchmark")
+    print("Hardware GPU Interop Layout Benchmark (numpy-side packing; no GPU calls)")
     print("=" * 70)
     
     bridge = HardwareGraphicsBridge(max_elements=50000, backend=GPUBackendAPI.CUDA)

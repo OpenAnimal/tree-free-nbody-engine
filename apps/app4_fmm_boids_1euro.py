@@ -1,6 +1,6 @@
 """
 Application 4: Elastic-Hash Spatial Boids with 1€ (One-Euro) Adaptive Filtering
-& Optimal Non-Reordering Spatial Hashing (Farach-Colton et al. 2025).
+& Optimal Non-Reordering Spatial Hashing (Farach-Colton, Krapivin, & Kuszmaul, 2025).
 
 Combines:
 1. Multilevel Boids:
@@ -19,8 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from core.elastic_hash import ElasticHashTable
-from core.tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
+from core.spatial_index import CellIndex
 
 # ----------------------------------------------------------------------
 # 1. High-Performance 1€ Filter (Casiez, Roussel, Vogel 2012)
@@ -91,96 +90,116 @@ class ElasticHashBoidSwarm:
         self.filtered_traj = []
 
     def step(self, dt: float = 0.05):
-        # 1. Non-reordering Spatial Hash Table indexing
-        hash_table = ElasticHashTable(capacity=self.grid_res * self.grid_res * 2, delta=0.05)
-        box_map = {}
-        for i in range(self.N):
-            key = morton_encode_2d(self.pos[i, 0], self.pos[i, 1], depth=self.depth)
-            if key not in box_map:
-                box_map[key] = []
-            box_map[key].append(i)
-            
-        for key, p_indices in box_map.items():
-            hash_table.insert(key, p_indices)
+        # 1. Build CellIndex (canonical spatial index; replaces manual
+        #    ElasticHashTable + box_map dict). Rebuilds the funnel-backed
+        #    occupancy table every call (append-only table cannot unlearn
+        #    stale keys).
+        grid_res = 1 << self.depth
+        cell_index = CellIndex(dims=2, grid_res=grid_res)
+        unique_keys, inverse = cell_index.build(self.pos)
+        K = len(unique_keys)
 
-        # 2. Far-field aggregation (per-cell centroid velocity & barycenters)
-        cluster_barycenters = {}
-        cluster_vel = {}
-        for key, p_indices in box_map.items():
-            cluster_barycenters[key] = np.mean(self.pos[p_indices], axis=0)
-            cluster_vel[key] = np.mean(self.vel[p_indices], axis=0)
+        # 2. Far-field aggregation: per-cell centroid velocity & barycenters.
+        #    Vectorized via bincount on the inverse mapping.
+        cluster_counts = np.bincount(inverse, minlength=K).astype(np.float64)
+        cluster_barycenters = np.zeros((K, 2))
+        cluster_vel = np.zeros((K, 2))
+        for d in range(2):
+            cluster_barycenters[:, d] = np.bincount(inverse, weights=self.pos[:, d], minlength=K) / np.maximum(cluster_counts, 1)
+            cluster_vel[:, d] = np.bincount(inverse, weights=self.vel[:, d], minlength=K) / np.maximum(cluster_counts, 1)
 
-        # 3. Compute Multilevel Boid Steer Forces
+        # Decode cell integer coords for near/far classification.
+        cell_ints = np.array([cell_index.key_ints(int(k)) for k in unique_keys])
+
+        # 3. Compute Multilevel Boid Steer Forces (vectorized per cell).
         acc = np.zeros_like(self.vel)
-        
-        # Boid weights
+
         w_sep = 1.8   # Near-field separation
         w_ali = 1.0   # Alignment
         w_coh = 0.8   # Cohesion (centroid far-field)
-        
-        for i in range(self.N):
-            p_i = self.pos[i]
-            v_i = self.vel[i]
-            m_key = morton_encode_2d(p_i[0], p_i[1], depth=self.depth)
-            _, ix, iy = decode_morton_2d(m_key)
-            
-            # --- Near-field (P2P Separation via 3x3 Hash Neighbors) ---
-            sep_force = np.zeros(2)
-            ali_force = np.zeros(2)
-            near_count = 0
-            
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    nx, ny = ix + dx, iy + dy
-                    if 0 <= nx < self.grid_res and 0 <= ny < self.grid_res:
-                        n_key = (self.depth << 24) | morton_encode_2d((nx+0.5)/self.grid_res, (ny+0.5)/self.grid_res, depth=self.depth) & 0xFFFFFF
-                        p_indices, _ = hash_table.lookup(n_key)
-                        if p_indices is not None and n_key in box_map:
-                            for j in p_indices:
-                                if i == j:
-                                    continue
-                                diff = p_i - self.pos[j]
-                                d = np.linalg.norm(diff) + 1e-6
-                                if d < 0.05:
-                                    sep_force += (diff / (d**2)) * 0.001
-                                    ali_force += self.vel[j]
-                                    near_count += 1
-                                    
-            if near_count > 0:
-                ali_force = (ali_force / near_count) - v_i
-                
-            # --- Far-field (centroid cohesion via cluster barycenters) ---
-            coh_force = np.zeros(2)
-            far_clusters = 0
-            for f_key, barycenter in cluster_barycenters.items():
-                _, fx, fy = decode_morton_2d(f_key)
-                if abs(fx - ix) > 1 or abs(fy - iy) > 1:
-                    diff_c = barycenter - p_i
-                    d_c = np.linalg.norm(diff_c) + 1e-4
-                    coh_force += (diff_c / d_c) * 0.02
-                    far_clusters += 1
-                    
-            if far_clusters > 0:
-                coh_force /= far_clusters
-                
-            # Center attraction to keep swarm inside domain
-            boundary_steer = (np.array([0.5, 0.5]) - p_i) * 0.05
-            
-            acc[i] = w_sep * sep_force + w_ali * ali_force + w_coh * coh_force + boundary_steer
+        near_radius = 0.05
+
+        for c, key in enumerate(unique_keys):
+            idx_t = cell_index.bucket(int(key))
+            if len(idx_t) == 0:
+                continue
+            nt = len(idx_t)
+
+            # --- Near-field (P2P separation + alignment via 3x3 CellIndex
+            #     neighborhood). Vectorized over all boids in this cell. ---
+            near_idx = cell_index.neighborhood_indices(int(key), ring=1)
+            if len(near_idx) > 0:
+                pts_t = self.pos[idx_t]       # (nt, 2)
+                pts_s = self.pos[near_idx]    # (ns, 2)
+                vel_s = self.vel[near_idx]    # (ns, 2)
+
+                diff = pts_t[:, None, :] - pts_s[None, :, :]  # (nt, ns, 2)
+                d = np.linalg.norm(diff, axis=-1) + 1e-6      # (nt, ns)
+
+                # Self-pair mask
+                id_t = idx_t[:, None]
+                id_s = near_idx[None, :]
+                self_mask = (id_t == id_s)
+
+                # Near-field mask: d < near_radius and not self
+                near_mask = (d < near_radius) & (~self_mask)   # (nt, ns)
+
+                # Separation: sum of (diff / d^2) * 0.001 for near pairs
+                sep_contrib = np.where(near_mask[:, :, None],
+                                       diff / (d[:, :, None] ** 2) * 0.001, 0.0)
+                sep_force = np.sum(sep_contrib, axis=1)        # (nt, 2)
+
+                # Alignment: mean of vel[j] for near pairs, minus v_i.
+                # A boid with NO near neighbors gets zero alignment force
+                # (an unconditional `- v_i` would brake isolated boids by a
+                # full w_ali*|v| every step).
+                ali_sum = np.where(near_mask[:, :, None],
+                                   vel_s[None, :, :], 0.0)
+                ali_sum = np.sum(ali_sum, axis=1)              # (nt, 2)
+                near_count = np.sum(near_mask, axis=1)         # (nt,)
+                ali_force = np.where(near_count[:, None] > 0,
+                                     ali_sum / np.maximum(near_count[:, None], 1)
+                                     - self.vel[idx_t],
+                                     0.0)                       # (nt, 2)
+
+                acc[idx_t] += w_sep * sep_force + w_ali * ali_force
+
+            # --- Far-field (centroid cohesion from far clusters).
+            #     Far = Chebyshev distance > 1 (outside the 3x3 box). ---
+            cx, cy = cell_ints[c]
+            far_mask = (np.abs(cell_ints[:, 0] - cx) > 1) | \
+                       (np.abs(cell_ints[:, 1] - cy) > 1)
+            far_clusters = np.where(far_mask)[0]
+
+            if len(far_clusters) > 0:
+                far_bary = cluster_barycenters[far_clusters]   # (n_far, 2)
+                pts_t = self.pos[idx_t]                        # (nt, 2)
+
+                diff_c = far_bary[None, :, :] - pts_t[:, None, :]  # (nt, n_far, 2)
+                d_c = np.linalg.norm(diff_c, axis=-1) + 1e-4      # (nt, n_far)
+
+                coh_contrib = (diff_c / d_c[:, :, None]) * 0.02   # (nt, n_far, 2)
+                coh_force = np.sum(coh_contrib, axis=1) / len(far_clusters)
+
+                acc[idx_t] += w_coh * coh_force
+
+        # Boundary attraction (vectorized)
+        boundary_steer = (np.array([0.5, 0.5]) - self.pos) * 0.05
+        acc += boundary_steer
 
         # 4. Integrate Raw Velocity & Apply 1€ Adaptive Low-Pass Filter
         raw_vel_next = self.vel + acc * dt
         # Speed limit
         v_norm = np.linalg.norm(raw_vel_next, axis=1, keepdims=True)
         raw_vel_next = np.where(v_norm > 0.08, raw_vel_next * (0.08 / (v_norm + 1e-6)), raw_vel_next)
-        
+
         # Apply 1€ Filter to eliminate micro-jitter while preserving dynamic agility
         filtered_vel = self.filter_1euro.filter(raw_vel_next, rate=1.0/dt)
-        
+
         self.vel = filtered_vel
         self.pos += self.vel * dt
         self.pos = np.clip(self.pos, 0.05, 0.95)
-        
+
         return self.pos, self.vel
 
 
@@ -251,7 +270,7 @@ def run_boids_demo(n_boids: int = 400, steps: int = 40):
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 4: Elastic-Hash Boid Swarms with 1€ Adaptive Filtering\nPowered by Farach-Colton / Krapivin / Kuszmaul Funnel Hashing", 
+    fig.suptitle("Application 4: Elastic-Hash Boid Swarms with 1€ Adaptive Filtering\nPowered by Farach-Colton, Krapivin, & Kuszmaul (2025) Funnel Hashing", 
                  color='white', fontsize=13, fontweight='bold')
     
     plt.tight_layout()

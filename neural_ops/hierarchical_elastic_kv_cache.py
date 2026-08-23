@@ -11,6 +11,7 @@ Combines 2025 Non-Reordering Elastic Open Addressing with Multi-Level Multipole 
 """
 
 import numpy as np
+from collections import deque
 from typing import Optional, Tuple, Dict, Any, List
 
 
@@ -33,16 +34,23 @@ class HierarchicalElasticKVCache:
         self.recent_window_size = recent_window_size
         self.n_hyperplanes = n_hyperplanes
         self.n_coarse_levels = n_coarse_levels
-        self.temperature = temperature or (1.0 / np.sqrt(d_k))
+        # temperature=0.0 must survive (falsy `or` clobbers it).
+        self.temperature = (1.0 / np.sqrt(d_k)) if temperature is None else float(temperature)
 
         # Random hyperplane projections for Locality Sensitive Hashing (LSH)
         rng = np.random.RandomState(42)
         self.hyperplanes = rng.randn(n_hyperplanes, d_k).astype(np.float32)
         self.hyperplanes /= np.linalg.norm(self.hyperplanes, axis=-1, keepdims=True)
 
-        # Tier 0: Recent Sliding Window Buffer
-        self.recent_k: List[np.ndarray] = []
-        self.recent_v: List[np.ndarray] = []
+        # Tier 0: Recent Sliding Window Buffer (deque for O(1) popleft).
+        # NOTE: no maxlen — the eviction in append_token manually poplefts when
+        # len > recent_window_size so the oldest token is compressed into
+        # tier 1 / tier 2. A maxlen here would silently cap the deque and the
+        # `len > recent_window_size` branch would NEVER fire (the deque drops
+        # the oldest element on append before len can exceed the cap), leaving
+        # tiers 1 and 2 permanently empty — the Round-7 retrieval bug.
+        self.recent_k: deque = deque()
+        self.recent_v: deque = deque()
 
         # Tier 1: Elastic Semantic LSH Hash Buckets
         # bucket_id -> { 'k_sum': (d_k,), 'v_sum': (d_v,), 'count': int, 'keys': [(d_k,)], 'vals': [(d_v,)] }
@@ -54,6 +62,9 @@ class HierarchicalElasticKVCache:
         self.coarse_counts = np.zeros(n_coarse_levels, dtype=np.float32)
 
         self.total_tokens_appended = 0
+        # Number of tokens compressed out of the recent window into tiers 1/2.
+        # Exposed in query meta so tests can assert eviction actually fired.
+        self.total_tokens_evicted = 0
 
     def _hash_key(self, key_vec: np.ndarray) -> int:
         """Projects key vector to discrete LSH bucket integer."""
@@ -75,8 +86,9 @@ class HierarchicalElasticKVCache:
 
         # When sliding window exceeds capacity, compress oldest token into Tier 1 & Tier 2
         if len(self.recent_k) > self.recent_window_size:
-            evicted_k = self.recent_k.pop(0)
-            evicted_v = self.recent_v.pop(0)
+            evicted_k = self.recent_k.popleft()
+            evicted_v = self.recent_v.popleft()
+            self.total_tokens_evicted += 1
 
             # Tier 1: Semantic LSH cluster
             bucket_id = self._hash_key(evicted_k)
@@ -87,16 +99,21 @@ class HierarchicalElasticKVCache:
                     'count': 1,
                     'k_mean': evicted_k.copy(),
                     'dipole': np.zeros((self.d_v, self.d_k), dtype=np.float32),
+                    # Per-level contributions for tier-2 dedup at query time.
+                    'level_k': {}, 'level_v': {}, 'level_c': {},
                 }
             else:
                 b = self.lsh_buckets[bucket_id]
+                old_mean = b['k_mean'].copy()
+                old_v_sum = b['v_sum'].copy()  # Σ v_j before this token
                 b['k_sum'] += evicted_k
                 b['v_sum'] += evicted_v
                 b['count'] += 1
                 b['k_mean'] = b['k_sum'] / b['count']
-                # Incremental dipole moment
+                # Incremental dipole with mean-shift correction:
+                # S_{n+1} = S_n + v(x)(k - mu_{n+1}) + (Σ v_j)(mu_n - mu_{n+1})
                 delta_k = evicted_k - b['k_mean']
-                b['dipole'] += np.outer(evicted_v, delta_k)
+                b['dipole'] += np.outer(evicted_v, delta_k) + np.outer(old_v_sum, old_mean - b['k_mean'])
 
             # Tier 2: Coarse Global Multipole Pyramid
             # Assign into dyadic level
@@ -104,6 +121,16 @@ class HierarchicalElasticKVCache:
             self.coarse_k_moments[level] += evicted_k
             self.coarse_v_moments[level] += evicted_v
             self.coarse_counts[level] += 1
+            # Track this bucket's per-level contribution for tier-2 dedup.
+            b = self.lsh_buckets[bucket_id]
+            if level not in b['level_k']:
+                b['level_k'][level] = evicted_k.copy()
+                b['level_v'][level] = evicted_v.copy()
+                b['level_c'][level] = 1
+            else:
+                b['level_k'][level] += evicted_k
+                b['level_v'][level] += evicted_v
+                b['level_c'][level] += 1
 
     def append_batch(self, K: np.ndarray, V: np.ndarray) -> None:
         """Appends a batch of tokens during prompt prefill."""
@@ -133,6 +160,7 @@ class HierarchicalElasticKVCache:
         q_bucket = self._hash_key(q)
         out_tier1 = np.zeros(self.d_v, dtype=np.float32)
         weight_tier1 = 0.0
+        probed_bucket_ids = set()
 
         # Probe candidate buckets (exact match + 1-bit Hamming neighbors)
         probed_buckets = [q_bucket]
@@ -153,22 +181,37 @@ class HierarchicalElasticKVCache:
                 val_0 = w_b * v_sum
                 # Dipole correction: w_b * (dipole @ q * temperature)
                 dip_corr = w_b * (b['dipole'] @ q) * self.temperature
-                
+
                 out_tier1 += val_0 + dip_corr
                 weight_tier1 += w_b * count
+                probed_bucket_ids.add(b_id)
 
         # 3. Tier 2: Coarse Global Multipole Summary
+        # Dedup: subtract probed buckets' per-level contributions from tier-2
+        # sums so evicted tokens evaluated in tier 1 are not double-counted.
         out_tier2 = np.zeros(self.d_v, dtype=np.float32)
         weight_tier2 = 0.0
 
         for lvl in range(self.n_coarse_levels):
             if self.coarse_counts[lvl] > 0:
-                k_mean_lvl = self.coarse_k_moments[lvl] / self.coarse_counts[lvl]
+                k_sum_lvl = self.coarse_k_moments[lvl].copy()
+                v_sum_lvl = self.coarse_v_moments[lvl].copy()
+                count_lvl = float(self.coarse_counts[lvl])
+                # Subtract probed buckets' contributions at this level.
+                for b_id in probed_bucket_ids:
+                    b = self.lsh_buckets[b_id]
+                    if lvl in b['level_k']:
+                        k_sum_lvl -= b['level_k'][lvl]
+                        v_sum_lvl -= b['level_v'][lvl]
+                        count_lvl -= b['level_c'][lvl]
+                if count_lvl <= 0:
+                    continue
+                k_mean_lvl = k_sum_lvl / count_lvl
                 dot_lvl = np.dot(q, k_mean_lvl) * self.temperature
                 w_lvl = np.exp(np.clip(dot_lvl, -30.0, 30.0))
 
-                out_tier2 += w_lvl * self.coarse_v_moments[lvl]
-                weight_tier2 += w_lvl * self.coarse_counts[lvl]
+                out_tier2 += w_lvl * v_sum_lvl
+                weight_tier2 += w_lvl * count_lvl
 
         total_out = out_recent + out_tier1 + out_tier2
         total_weight = weight_recent + weight_tier1 + weight_tier2 + 1e-12
@@ -181,8 +224,10 @@ class HierarchicalElasticKVCache:
 
         meta = {
             "total_tokens": self.total_tokens_appended,
+            "exact_tokens_evaluated": len(self.recent_k),
             "recent_window_size": len(self.recent_k),
             "lsh_active_buckets": len(self.lsh_buckets),
+            "total_tokens_evicted": self.total_tokens_evicted,
             "compression_ratio": float(compression_ratio),
         }
         return final_v, meta

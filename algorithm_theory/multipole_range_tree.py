@@ -6,10 +6,17 @@ Replaces pointer-chasing d-dimensional Range Trees, k-d trees, and multi-dimensi
 Fenwick/Segment trees with a flat, non-reordering multi-resolution spatial index.
 
 Capabilities:
-1. Orthogonal Range Counting & Range Sums in O(log delta^-1) amortized time.
-2. Contained-Subcell Multipole Aggregations (P2M / M2L box moments).
+1. Orthogonal Range Counting & Range Sums via a hierarchical Morton-prefix
+   traversal: a query visits O(2^D * depth) cells in the worst case plus the
+   individually matched points (no ``O(log delta^-1)`` bound is claimed -- the
+   structure is a flat dict-indexed hierarchy, not a balanced comparison tree).
+2. Box-aggregated potential evaluation (brute-force direct summation over the
+   points falling inside a query box -- NOT a hierarchical multipole expansion;
+   see ``compute_multipole_box_potential``).
 3. Range Min, Max, and Variance Aggregates.
-4. Fully contiguous SIMD memory layout with O(N) space complexity.
+4. O(N) space: sorted coordinate/value arrays plus a dict of per-level
+   (start, end, sum, count) tuples. This is a flat dict-indexed layout, not a
+   single contiguous SIMD slab.
 """
 
 from typing import Tuple, Optional, List, Dict, Union, Any
@@ -20,18 +27,32 @@ import time
 def morton_encode_nd(coords_quantized: np.ndarray, bits_per_dim: int = 16) -> np.ndarray:
     """
     Computes Morton (Z-order) codes for N points in D dimensions.
+
+    The interleaved code occupies ``bits_per_dim * D`` bits, which must fit in a
+    uint64 (i.e. ``bits_per_dim * D <= 64``). For ``D >= 4`` with the default
+    16 bits/dim this overflows 64 bits and the high bits silently wrap, so the
+    caller must keep ``bits_per_dim <= 64 // D`` (the range tree clamps
+    ``max_depth`` accordingly).
     """
     coords = np.asarray(coords_quantized, dtype=np.uint64)
     if coords.ndim == 1:
         coords = coords[:, None]
     N, D = coords.shape
-    
+
+    if bits_per_dim * D > 64:
+        raise ValueError(
+            f"morton_encode_nd: bits_per_dim*D = {bits_per_dim}*{D} = "
+            f"{bits_per_dim * D} > 64; the interleaved code overflows uint64 "
+            f"and high bits wrap silently. Reduce bits_per_dim to <= "
+            f"{64 // D} for D={D}."
+        )
+
     morton_codes = np.zeros(N, dtype=np.uint64)
     for b in range(bits_per_dim):
         for d in range(D):
             bit = (coords[:, d] >> np.uint64(b)) & np.uint64(1)
             morton_codes |= bit << np.uint64(b * D + d)
-            
+
     return morton_codes
 
 
@@ -72,7 +93,11 @@ class FlatMultipoleRangeTree:
             
         self.N, self.D = pts.shape
         self.leaf_capacity = max(2, int(leaf_capacity))
-        self.max_depth = max(1, min(18, int(max_depth)))
+        # The Morton code interleaves max_depth bits per dimension, so it
+        # occupies max_depth * D bits and must fit in uint64. Clamp to
+        # 64 // D (and the existing 18-level cap) to avoid silent high-bit
+        # wraparound in morton_encode_nd for D >= 4.
+        self.max_depth = max(1, min(18, int(max_depth), 64 // self.D))
         
         self.bbox_min = np.min(pts, axis=0) - 1e-6
         self.bbox_max = np.max(pts, axis=0) + 1e-6
@@ -114,25 +139,28 @@ class FlatMultipoleRangeTree:
         self.prefix_values = np.zeros((self.N + 1, self.val_dim), dtype=np.float64)
         np.cumsum(self.sorted_values, axis=0, out=self.prefix_values[1:])
         
-        # Multi-level cell dictionary mapping (depth, cell_morton_prefix) -> (start_idx, end_idx, sum_val, centroid, count)
-        self.level_nodes: Dict[Tuple[int, int], Tuple[int, int, np.ndarray, np.ndarray, int]] = {}
-        
+        # Multi-level cell dictionary mapping
+        # (depth, cell_morton_prefix) -> (start_idx, end_idx, sum_val, count).
+        # NOTE: a per-cell centroid is NOT stored -- the only potential
+        # evaluator (compute_multipole_box_potential) does brute-force direct
+        # summation over the box, not a centroid multipole expansion, so a
+        # precomputed centroid would be dead state.
+        self.level_nodes: Dict[Tuple[int, int], Tuple[int, int, np.ndarray, int]] = {}
+
         for depth in range(self.max_depth + 1):
             shift = (self.max_depth - depth) * self.D
             prefixes = self.sorted_morton >> np.uint64(shift)
-            
+
             # Find unique consecutive runs in the sorted prefix array
             diffs = np.where(prefixes[:-1] != prefixes[1:])[0]
             starts = np.concatenate(([0], diffs + 1))
             ends = np.concatenate((diffs + 1, [self.N]))
             unique_prefixes = prefixes[starts]
-            
+
             for p_val, s_idx, e_idx in zip(unique_prefixes, starts, ends):
                 cnt = e_idx - s_idx
                 val_sum = self.prefix_values[e_idx] - self.prefix_values[s_idx]
-                pts_slice = self.sorted_points[s_idx:e_idx]
-                centroid = np.mean(pts_slice, axis=0)
-                self.level_nodes[(depth, int(p_val))] = (s_idx, e_idx, val_sum, centroid, cnt)
+                self.level_nodes[(depth, int(p_val))] = (s_idx, e_idx, val_sum, cnt)
 
     def query_range(
         self,
@@ -188,7 +216,7 @@ class FlatMultipoleRangeTree:
             if node_key not in self.level_nodes:
                 continue
                 
-            s_idx, e_idx, val_sum, centroid, cnt = self.level_nodes[node_key]
+            s_idx, e_idx, val_sum, cnt = self.level_nodes[node_key]
             
             if is_fully_inside and not return_indices:
                 # Fast aggregate without touching individual points!
@@ -249,8 +277,16 @@ class FlatMultipoleRangeTree:
         softening: float = 1e-3
     ) -> np.ndarray:
         """
-        Computes 1/r potential from all charges located inside [box_min, box_max]
-        onto target_points using hierarchical multipole box centroid expansions.
+        Computes the 1/r potential from all charges located inside
+        [box_min, box_max] onto ``target_points`` by BRUTE-FORCE DIRECT
+        SUMMATION over every source point in the box (O(T * M) for T targets
+        and M in-box sources).
+
+        Despite the ``multipole`` in the class name, this method performs NO
+        hierarchical multipole / centroid expansion: it queries the box for
+        the source indices and forms the full pairwise 1/r kernel. It is a
+        convenience evaluator over the range-query result, not an FMM
+        acceleration. Cost is O(T * M); use it only when M is small.
         """
         tgts = np.asarray(target_points, dtype=np.float64)
         if tgts.ndim == 1:

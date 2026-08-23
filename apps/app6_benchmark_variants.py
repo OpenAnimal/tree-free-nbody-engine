@@ -63,39 +63,26 @@ def _brute_proximity(terrain, probes):
 
 
 def _hash_proximity(terrain, probes, grid_res=16):
-    """The app's path: 3x3 funnel-hash neighborhood nearest-point search."""
-    from core.elastic_hash import ElasticHashTable
-    ix = np.clip((terrain[:, 0] * grid_res).astype(np.int64), 0, grid_res - 1)
-    iy = np.clip((terrain[:, 1] * grid_res).astype(np.int64), 0, grid_res - 1)
-    keys = (ix << 12) | iy
-    ht = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-    box_map = {}
-    for i in range(len(terrain)):
-        k = int(keys[i])
-        box_map.setdefault(k, []).append(i)
-    for k, idx in box_map.items():
-        ht.insert(k, idx)
+    """The app's path: 3x3 CellIndex neighborhood nearest-point search.
+    Uses CellIndex (canonical spatial index) instead of raw ElasticHashTable."""
+    from core.spatial_index import CellIndex
+    cell_index = CellIndex(dims=2, grid_res=grid_res)
+    cell_index.build(terrain[:, :2])
     forces = np.zeros_like(probes)
     depths = np.zeros(len(probes))
     closest_pts = np.zeros_like(probes)
     for i, p in enumerate(probes):
-        c_ix = int(np.clip(p[0] * grid_res, 0, grid_res - 1))
-        c_iy = int(np.clip(p[1] * grid_res, 0, grid_res - 1))
+        key = cell_index.key_of(p[:2])
+        near_idx = cell_index.neighborhood_indices(int(key), ring=1)
         min_dist = 1e9
         closest = p.copy()
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                nx, ny = c_ix + dx, c_iy + dy
-                if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                    n_key = (nx << 12) | ny
-                    pidx, _ = ht.lookup(n_key)
-                    if pidx is not None and n_key in box_map:
-                        t = terrain[pidx]
-                        d = np.linalg.norm(t - p, axis=1)
-                        j = int(np.argmin(d))
-                        if d[j] < min_dist:
-                            min_dist = float(d[j])
-                            closest = t[j]
+        if len(near_idx) > 0:
+            t = terrain[near_idx]
+            d = np.linalg.norm(t - p, axis=1)
+            j = int(np.argmin(d))
+            if d[j] < min_dist:
+                min_dist = float(d[j])
+                closest = t[j]
         closest_pts[i] = closest
         depths[i] = max(0.0, 0.05 - min_dist)
         forces[i] = _contact_force(p, closest, min_dist)

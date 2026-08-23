@@ -49,7 +49,7 @@ from typing import Dict, List, Optional, Tuple, Union, Callable
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.spatial_index import CellIndex
+from neural_ops._core_deps import CellIndex
 
 
 @dataclass

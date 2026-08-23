@@ -3,7 +3,7 @@ Example 2: Streaming Long-Context LLM Key-Value Cache
 =====================================================
 Demonstrates ElasticMultipoleKVCache during autoregressive decoding.
 Prefills a 10,000-token historical context and executes fast O(1) probe decode steps
-with zero element reordering (Farach-Colton 2025 non-reordering open addressing).
+with zero element reordering (Farach-Colton, Krapivin, & Kuszmaul, 2025 non-reordering open addressing).
 """
 
 import numpy as np

@@ -24,7 +24,7 @@ Using the Spielman-Srivastava randomized incidence projection theorem:
         L * Z = B^T * W^{1/2} * R
     Then: E[ ||Z[u, :] - Z[v, :]||^2 ] = R_eff(u, v)
 
-The all-pairs effective resistance is then computed directly in O(1) query time:
+The all-pairs effective resistance is then computed directly in O(k_proj) query time:
     R_eff(u, v) \approx || Z[u, :] - Z[v, :] ||^2
 This drops all-pairs resistance estimation from O(|V|^3) to O(k * |E|).
 """
@@ -39,7 +39,7 @@ class NetworkPowerCentrality:
     Spielman-Srivastava Randomized Effective Resistance & Network Chokepoint Analyzer.
     
     Computes low-dimensional metric embeddings Z in R^{|V| x k} to evaluate
-    all-pairs effective resistance and power centrality in O(1) query time.
+    all-pairs effective resistance and power centrality in O(k_proj) query time.
     """
     def __init__(
         self,
@@ -126,7 +126,7 @@ class NetworkPowerCentrality:
         self.Z_embeddings = X
 
     def query_effective_resistance(self, u: int, v: int) -> float:
-        """Evaluates R_eff(u, v) in O(k_proj) = O(1) query time."""
+        """Evaluates R_eff(u, v) in O(k_proj) query time (constant w.r.t. |V|)."""
         diff = self.Z_embeddings[u] - self.Z_embeddings[v]
         return float(np.sum(diff ** 2))
 

@@ -74,7 +74,8 @@ class HyperbolicMultipoleAttention:
         self.radial_depth = radial_depth
         self.angular_depth = angular_depth
         self.hyperbolic_sigma = hyperbolic_sigma
-        self.temperature = temperature or (1.0 / np.sqrt(embed_dim))
+        # temperature=0.0 must survive (falsy `or` clobbers it).
+        self.temperature = (1.0 / np.sqrt(embed_dim)) if temperature is None else float(temperature)
 
     def _hyperbolic_hash(self, point: np.ndarray) -> int:
         """
@@ -124,17 +125,16 @@ class HyperbolicMultipoleAttention:
         n_clusters = len(cluster_keys)
         key_to_idx = {k: idx for idx, k in enumerate(cluster_keys)}
 
-        # 2. Compute Hyperbolic Fréchet Centroids & Tangent Space Multipole Moments (P2M)
+        # 2. Compute Hyperbolic Fréchet Centroids & Monopole Moments (P2M)
         all_centroids = np.zeros((n_clusters, self.spatial_dim), dtype=np.float32)
         all_mean_k = np.zeros((n_clusters, D), dtype=np.float32)
         all_sum_v = np.zeros((n_clusters, D), dtype=np.float32)
         all_counts = np.zeros(n_clusters, dtype=np.float32)
-        all_tangent_dipoles = np.zeros((n_clusters, D, self.spatial_dim), dtype=np.float32)
 
         for idx, k in enumerate(cluster_keys):
             p_ids = bucket_map[k]
             pts = coords_clipped[p_ids]
-            
+
             # Approximate Fréchet centroid via Einstein midpoint in Poincaré ball
             tangent_pts = log_map_zero(pts, c=self.c)
             mean_tangent = np.mean(tangent_pts, axis=0)
@@ -144,10 +144,9 @@ class HyperbolicMultipoleAttention:
             all_mean_k[idx] = np.mean(K[p_ids], axis=0)
             all_sum_v[idx] = np.sum(V[p_ids], axis=0)
             all_counts[idx] = len(p_ids)
-
-            # Tangent space displacement relative to centroid
-            delta_tangent = tangent_pts - mean_tangent[None, :] # (M, dim)
-            all_tangent_dipoles[idx] = np.einsum('nd,nm->dm', V[p_ids], delta_tangent)
+            # NOTE: tangent-space dipoles were computed here but never used in
+            # the far-field evaluation (the far pass uses only monopole
+            # moments: centroid, mean_k, sum_v, count). Removed as dead code.
 
         # 3. Vectorized Evaluation (Near exact geodesic + Far hyperbolic multipole)
         out_v = np.zeros((N, D), dtype=np.float32)
@@ -182,6 +181,16 @@ class HyperbolicMultipoleAttention:
             spatial_w_near = np.exp(-(geo_dists ** 2) * inv_2_sigma_sq)
             dot_near = np.matmul(q_src, k_near.T) * self.temperature
             attn_near = spatial_w_near * np.exp(np.clip(dot_near, -30.0, 30.0))
+
+            # Mask self-pairs (target i == source i) so each token is not
+            # attended to itself.  Pass-30 fix: the original code had no
+            # self-masking, adding a spurious self-attention contribution
+            # (weight 1.0 at geodesic distance 0) to every near-field
+            # evaluation.
+            id_t = p_src_arr[:, None]
+            id_s = near_arr[None, :]
+            self_mask = (id_t == id_s)
+            attn_near = np.where(self_mask, 0.0, attn_near)
 
             val_near = np.matmul(attn_near, v_near)
             weight_near = np.sum(attn_near, axis=-1, keepdims=True) + 1e-9

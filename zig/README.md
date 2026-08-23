@@ -1,7 +1,7 @@
 # Zig funnel-hash microbenchmark (round-4 task 4.10)
 
 A faithful Zig port of `core/elastic_hash.py:ElasticHashTable` (the
-Farach-Colton / Krapivin / Kuszmaul 2025 funnel hash) plus a microbenchmark
+Farach-Colton, Krapivin, & Kuszmaul, 2025 funnel hash) plus a microbenchmark
 comparing insert/lookup throughput against the Python reference.
 
 ## Files

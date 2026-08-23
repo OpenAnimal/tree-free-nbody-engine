@@ -11,11 +11,13 @@ from typing import Tuple, Dict, List, Optional, Any
 try:
     from .pdb_loader import MolecularSystem
     from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+    from core._csr import build_csr
 except (ImportError, ValueError):
     import os, sys
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from bioinformatics.pdb_loader import MolecularSystem
     from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
+    from core._csr import build_csr
 
 
 class BindingPocketDetector:
@@ -35,15 +37,22 @@ class BindingPocketDetector:
         self.min_pocket_points = int(min_pocket_points)
         self.num_rays = ray_directions
 
-        # Stencil ray directions (Cartesian cube faces, edges, corners)
-        dirs = []
+        # Stencil ray directions, ordered faces -> corners -> edges so that
+        # every prefix is as isotropic as possible. (R10-D2: the previous
+        # enumeration ordered by dx, so dirs[:14] held 9 rays toward -x and
+        # none toward +x — a mirror-biased concavity score. The default 14 is
+        # exactly the 6 face + 8 corner directions, a symmetric set.)
+        faces, edges, corners = [], [], []
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
                     if dx == 0 and dy == 0 and dz == 0:
                         continue
                     v = np.array([dx, dy, dz], dtype=np.float64)
-                    dirs.append(v / np.linalg.norm(v))
+                    v /= np.linalg.norm(v)
+                    nz = (dx != 0) + (dy != 0) + (dz != 0)
+                    (faces if nz == 1 else edges if nz == 2 else corners).append(v)
+        dirs = faces + corners + edges
         self.ray_vectors = np.array(dirs[:ray_directions], dtype=np.float64)
 
     def detect_pockets(self, system: MolecularSystem) -> Dict[str, Any]:
@@ -62,11 +71,13 @@ class BindingPocketDetector:
         _, unique_keys, inverse = atom_hash.build_from_coords(coords, origin=origin)
         K = len(unique_keys)
 
-        # Precompute cell-to-atoms list to avoid O(N) np.where calls inside probe loop
-        cell_to_atom_indices = [np.where(inverse == c_i)[0] for c_i in range(K)]
+        # Build cluster -> atom indices lookup via CSR (replaces the
+        # per-cluster np.where(inverse == c) O(N*K) scans with an O(N)
+        # argsort + prefix sum).
+        cell_start, cell_particles, _ = build_csr(inverse, K)
 
-        # Precompute key-to-atoms dictionary for O(1) integer dict lookups
-        cell_key_to_atoms = {int(unique_keys[c_i]): cell_to_atom_indices[c_i] for c_i in range(K)}
+        # O(1) integer dict lookup: morton key -> cluster index (for CSR slice)
+        cell_key_to_cluster = {int(unique_keys[c_i]): c_i for c_i in range(K)}
 
         # 2. Fast Surface Shell Point Generation
         # Generate candidate probe points around a representative subsample of atoms
@@ -107,18 +118,22 @@ class BindingPocketDetector:
                         if nz < 0:
                             continue
                         k_n = int(morton_encode_3d(np.array([nx]), np.array([ny]), np.array([nz]))[0])
-                        if k_n in cell_key_to_atoms:
-                            local_atom_list.append(cell_key_to_atoms[k_n])
+                        c_n = cell_key_to_cluster.get(k_n)
+                        if c_n is not None:
+                            local_atom_list.append(cell_particles[cell_start[c_n]:cell_start[c_n + 1]])
 
             if not local_atom_list:
                 continue
 
             local_atoms = np.concatenate(local_atom_list)
 
-            # Check distance to local atoms
+            # Check distance to local atoms. A water probe sphere of radius
+            # `probe_radius` must not clash with any atom, so the clearance
+            # test is d >= vdw + probe_radius (R10-D3: probe_radius used to be
+            # stored but never applied, comparing against bare vdW radii).
             d_local = np.linalg.norm(coords[local_atoms] - pt, axis=1)
-            # Must not clash with local atoms (d > vdw)
-            if np.any(d_local < vdw[local_atoms]):
+            # Must not clash with local atoms (d > vdw + probe_radius)
+            if np.any(d_local < vdw[local_atoms] + self.probe_radius):
                 continue
 
             # Concavity Test: Count how many rays hit surrounding protein atoms

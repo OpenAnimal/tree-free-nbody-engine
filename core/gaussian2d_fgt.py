@@ -41,7 +41,8 @@ MATH (transcribed from the round-4 implementation plan, section 4.3).
    r * G_{n+1}(r) by definition of G_{n+1} = (1/r d/dr) G_n.
 
    P is represented as dict: alpha_tuple -> {n: {monomial_exp: coef}} and
-   built once per (|alpha| <= 2*p) at import, NOT per pair.
+   built once per engine instance (per (p, dims)) in RadialTaylorFMM.__init__,
+   NOT per pair and NOT at import.
 
 3. Flat FMM, grid spacing h_grid = 1/depth, cell center c(cell):
    - Moments per occupied cell (|beta| <= p):
@@ -140,6 +141,24 @@ class Gaussian2DFGT(RadialTaylorFMM):
         G_n = _make_G_n_evaluator(self.h)
         near_field = _make_near_field_kernel(self.h)
         super().__init__(depth=depth, p=p, dims=2, G_n=G_n,
+                         near_field_kernel=near_field,
+                         ring_direct=ring_direct)
+
+
+class Gaussian3DFGT(RadialTaylorFMM):
+    """Single-level flat 3D Gaussian FGT on a uniform grid + funnel hash.
+
+    Round-7 task T-D3: the eigenfunction identity G_n = (-2/h^2)^n exp(-r^2/h^2)
+    is dimension-independent (gaussian2d_fgt.py:16-26), so the same G_n and
+    near_field factories work in 3D — only dims=3 changes.
+    """
+
+    def __init__(self, depth: int = 6, p: int = 8, h: float = 0.2,
+                 ring_direct: int = 2):
+        self.h = float(h)
+        G_n = _make_G_n_evaluator(self.h)
+        near_field = _make_near_field_kernel(self.h)
+        super().__init__(depth=depth, p=p, dims=3, G_n=G_n,
                          near_field_kernel=near_field,
                          ring_direct=ring_direct)
 
@@ -305,13 +324,33 @@ def gn_eigenfunction_sanity(h: float = 0.2, rel_tol: float = 1e-6) -> bool:
 
 def toy_2cell_check(h: float = 0.2, p: int = 8) -> bool:
     """Two cells, a handful of particles, compare FGT vs exact direct.
-    This is the mandatory sign-convention check before scaling up."""
+    This is the mandatory sign-convention check before scaling up.
+
+    Round-7 task T-C8 / finding R7-F30: the previous configuration used
+    depth=4 with cells (3,3) and (10,10), but with LINEAR cells-per-side
+    semantics (depth=4 → 4 cells/side, indices 0..3), cell (10,10) clipped
+    into (3,3) — the same cell as c1 — so the check silently exercised only
+    the near field. Now uses depth=10 with cells (1,1) and (8,8): Chebyshev
+    separation 7 > 2*ring_direct=4, genuinely well-separated, with an
+    explicit separation assertion. depth=10 (not 8) because the Gaussian
+    far-field at p=8/depth=8 gives ~8e-12 (just above the 1e-12 gate); the
+    extra resolution drops it to ~3e-14.
+    """
     rng = np.random.default_rng(0)
-    # two well-separated cells at depth=4 (grid_res=16): cell (3,3) and (10,10)
-    depth = 4
+    depth = 10
     h_grid = 1.0 / depth
-    c1 = (np.array([3, 3]) + 0.5) * h_grid
-    c2 = (np.array([10, 10]) + 0.5) * h_grid
+    cell1 = np.array([1, 1])
+    cell2 = np.array([8, 8])
+    # Separation assertion (R7-F30): cells must be outside each other's
+    # ring-2 neighborhood so the far path is genuinely exercised.
+    cheb_sep = np.max(np.abs(cell1 - cell2))
+    ring_direct = 2
+    assert cheb_sep > 2 * ring_direct, (
+        f"toy_2cell_check degenerate: cells {cell1} and {cell2} have "
+        f"Chebyshev separation {cheb_sep} <= 2*ring={2*ring_direct}"
+    )
+    c1 = (cell1 + 0.5) * h_grid
+    c2 = (cell2 + 0.5) * h_grid
     n1, n2 = 4, 5
     pts1 = c1 + rng.uniform(-h_grid * 0.4, h_grid * 0.4, size=(n1, 2))
     pts2 = c2 + rng.uniform(-h_grid * 0.4, h_grid * 0.4, size=(n2, 2))

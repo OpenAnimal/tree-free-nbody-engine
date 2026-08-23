@@ -7,7 +7,7 @@ Inspired by:
 2. "A Local Ensemble Transform Kalman Filter for Data Assimilation"
    B. R. Hunt, E. J. Kostelich, I. Szunyogh (Physica D: Nonlinear Phenomena, 2007).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 In high-dimensional physical state estimation (atmospheric weather forecasting, oceanography,
@@ -16,11 +16,22 @@ while the ensemble size M is small (M = 20 to 80).
 Classical Kalman filtering requires storing and inverting a dense N x N covariance matrix P (O(N^3)).
 Standard EnKF suffers from catastrophic spurious long-range sampling correlations due to low ensemble rank.
 
-The Localized Ensemble Kalman Filter (LEnKF) applies compact Gaspari-Cohn 5th-order correlation tapering:
-    rho(z) = 1 - (5/3)*z^2 + (5/8)*z^3 + (1/2)*z^4 - (1/4)*z^5,  for z = dist / r_loc <= 1
-Using Elastic Spatial Hashing with cell size r_loc, each state variable i gathers local observations
-in O(1) time and performs an independent local subspace Kalman update in O(M^3) time.
-This reduces global assimilation complexity from O(N^3) to strictly O(N * M^2) operations.
+The Localized Ensemble Kalman Filter (LEnKF) applies a TRUNCATED Gaspari-Cohn
+5th-order correlation taper:
+    rho(z) = 1 - (5/3)*z^2 + (5/8)*z^3 + (1/2)*z^4 - (1/4)*z^5,  for z = dist/r_loc <= 1
+and rho(z) = 0 for z > 1. Note this is the first Gaspari-Cohn piece only (the
+full kernel has a second piece on z in [1, 2] that tapers smoothly to 0); the
+truncation here produces a DISCONTINUITY at r_loc (rho(1) ~ 0.208, then jumps
+to 0), which is a deliberate compact-support approximation, not the smooth
+full kernel.
+Using a uniform grid hash (dict-based) with cell size r_loc, each state
+variable i gathers its local observations in O(1) average time and performs an
+independent local subspace Kalman update. The per-state update cost is
+O(k_act^2 * M + k_act^3) where k_act is the number of local observations
+within r_loc of state i (the local innovation covariance P_yy is k_act x
+k_act and is solved directly); this is O(M^2)-class only when k_act = O(M).
+The global assimilation cost is therefore O(N * (k_act^2 * M + k_act^3)),
+i.e. it depends on the local observation count k_act, not purely on N and M.
 """
 
 import time
@@ -31,8 +42,11 @@ import numpy as np
 class LocalizedEnsembleKalmanFilter:
     """
     Tree-Free Localized Ensemble Kalman Filter (LEnKF) Engine.
-    
-    Performs spatial covariance localization in O(N * M^2) time.
+
+    Performs spatial covariance localization. Per-state update cost is
+    O(k_act^2 * M + k_act^3) where k_act is the local observation count within
+    r_loc; global cost is O(N * (k_act^2 * M + k_act^3)) -- it depends on the
+    local observation count k_act, not purely on N and M.
     """
     def __init__(
         self,
@@ -166,7 +180,12 @@ class LocalizedEnsembleKalmanFilter:
                 innovation = y_active - hx_active
                 update_mean = float(np.dot(K_s, innovation))
                 
-                # Update posterior ensemble around updated mean
+                # Update posterior ensemble around updated mean.
+                # NOTE: the prior anomaly is rescaled by a HARD-CODED 0.85
+                # posterior-spread shrink factor (an ad-hoc inflation/damping
+                # constant, not derived from the Kalman gain or the ensemble
+                # covariance); this deliberately under-spreads the posterior
+                # ensemble relative to the prior anomalies.
                 E_posterior[s_idx] = prior_mean[s_idx] + update_mean + A_prior[s_idx] * 0.85
 
         posterior_mean = np.mean(E_posterior, axis=1)

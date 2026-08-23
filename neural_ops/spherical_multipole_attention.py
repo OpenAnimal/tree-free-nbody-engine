@@ -6,7 +6,15 @@ Powered by real spherical harmonic multipole expansions ($Y_l^m$) up to degree L
 and non-reordering open addressing spatial hashing.
 
 Key Features:
-- Exact arbitrary degree L spherical harmonic multipole moments (monopole, dipole, quadrupole, octupole).
+- Directional spherical-harmonic cluster correlation: per-cluster moments are
+  formed from real $Y_l^m$ of the *unit* displacement directions (no $r^l$
+  radial factor), so the far field is a direction-only correlator, NOT a
+  full multipole expansion of the Gaussian kernel.  The $l=0$ channel
+  recovers the monopole (mean-value) term; higher-$l$ channels add
+  directional correlation but omit the radial decay that a true solid
+  harmonic expansion would carry.  Treat the name "multipole" as a brand
+  name for "directional SH cluster correlation," not a Greengard & Rokhlin
+  expansion.
 - O(N) complexity with zero quadratic N x N memory allocation.
 - Steerable representation for 3D molecular conformations, particle fields, and point clouds.
 """
@@ -72,11 +80,24 @@ def compute_real_spherical_harmonics(points: np.ndarray, l_max: int = 2) -> np.n
 
     if l_max >= 3:
         # l = 3 (Octupole)
+        # P23-1: the P22-1 "fix" was itself wrong. The standard orthonormal
+        # REAL spherical harmonics (Cartesian form, Wikipedia
+        # "Table_of_spherical_harmonics#Real_spherical_harmonics", l=3) are:
+        #   Y_{3,-3} = (1/4) sqrt(35/(2pi)) * y(3x^2-y^2)/r^3
+        #   Y_{3,-2} = (1/2) sqrt(105/pi)   * xyz/r^3
+        #   Y_{3,-1} = (1/4) sqrt(21/(2pi)) * y(5z^2-r^2)/r^3
+        #   Y_{3,0}  = (1/4) sqrt(7/pi)     * z(5z^2-3r^2)/r^3
+        #   Y_{3,1}  = (1/4) sqrt(21/(2pi)) * x(5z^2-r^2)/r^3
+        #   Y_{3,2}  = (1/4) sqrt(105/pi)   * (x^2-y^2)z/r^3
+        #   Y_{3,3}  = (1/4) sqrt(35/(2pi)) * x(x^2-3y^2)/r^3
+        # The P22-1 fix used c3_1 = (1/4)sqrt(21/pi) (off by sqrt(2)) and
+        # c3_3 = (1/2)sqrt(35/pi) (off by 2*sqrt(2)). Corrected here against
+        # the Wikipedia real-SH table. c3_0 and c3_2 were already correct.
         c3_0 = 0.25 * np.sqrt(7.0 / np.pi)
         c3_1 = 0.25 * np.sqrt(21.0 / (2.0 * np.pi))
-        c3_2 = 0.25 * np.sqrt(105.0 / np.pi)
+        c3_2 = 0.5 * np.sqrt(105.0 / np.pi)
         c3_3 = 0.25 * np.sqrt(35.0 / (2.0 * np.pi))
-        
+
         # m = -3, -2, -1, 0, 1, 2, 3
         Y[:, 9]  = c3_3 * (3.0 * (ux**2) * uy - uy**3)
         Y[:, 10] = c3_2 * (ux * uy * uz)
@@ -108,7 +129,8 @@ class SphericalMultipoleAttention:
         self.num_sh = (self.l_max + 1) ** 2
         self.grid_depth = grid_depth
         self.spatial_sigma = spatial_sigma
-        self.temperature = temperature or (1.0 / np.sqrt(embed_dim))
+        # temperature=0.0 must survive (falsy `or` clobbers it).
+        self.temperature = (1.0 / np.sqrt(embed_dim)) if temperature is None else float(temperature)
         self.grid_res = 1 << grid_depth
 
     def _encode_3d(self, x: float, y: float, z: float) -> int:
@@ -223,6 +245,15 @@ class SphericalMultipoleAttention:
             dot_near = np.matmul(q_src, k_near.T) * self.temperature
             attn_near = spatial_w_near * np.exp(np.clip(dot_near, -30.0, 30.0))
 
+            # Mask self-pairs (target i == source i) so each token is not
+            # attended to itself.  Pass-29 fix: the original code had no
+            # self-masking, adding a spurious self-attention contribution
+            # (weight 1.0 at distance 0) to every near-field evaluation.
+            id_t = p_src_arr[:, None]
+            id_s = near_arr[None, :]
+            self_mask = (id_t == id_s)
+            attn_near = np.where(self_mask, 0.0, attn_near)
+
             val_near = np.matmul(attn_near, v_near)
             weight_near = np.sum(attn_near, axis=-1, keepdims=True) + 1e-9
             total_near_evals += M_src * len(near_arr)
@@ -249,9 +280,21 @@ class SphericalMultipoleAttention:
                 Y_diff = Y_diff_flat.reshape(M_src, len(far_indices), self.num_sh)
 
                 # Far value contraction: sum_k M_{f, d, k} * Y_diff_{i, f, k}
-                # Normalized by zero-degree coefficient for scale consistency
+                # Normalized by c00^2 so the l=0 channel recovers the monopole
+                # (sum of values).  M_{v,00} = c00 * sum_j V_j and Y_00(diff) =
+                # c00, so M * Y / c00^2 = sum_j V_j for l=0.  Higher-l channels
+                # add directional correlation scaled by 1/c00^2 relative to the
+                # monopole (a design choice — this is a directional SH cluster
+                # correlator, not a Greengard & Rokhlin expansion; see docstring).
+                #
+                # Pass-29 fix: the original /c00 gave val_far = c00 * sum V for
+                # l=0 (off by factor c00 ≈ 0.282).  The /c00^2 normalization
+                # recovers the correct monopole sum V.  The remaining gap vs
+                # dense attention is from the cluster-center approximation
+                # (w_far uses cluster centers, not per-particle distances),
+                # which is the intended O(N) approximation, not a bug.
                 c00 = 0.5 * np.sqrt(1.0 / np.pi)
-                val_far_components = np.einsum('fdk,ifk->ifd', far_moments, Y_diff) / (c00 + 1e-9)
+                val_far_components = np.einsum('fdk,ifk->ifd', far_moments, Y_diff) / (c00 * c00 + 1e-9)
                 val_far = np.einsum('if,ifd->id', w_far, val_far_components)
 
                 weight_far = np.matmul(w_far, far_counts[:, None])

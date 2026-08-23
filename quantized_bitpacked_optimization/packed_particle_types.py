@@ -1,7 +1,7 @@
 """
 Quantized Fixed-Point Particle Structures & Extreme Bit-Packing
 Inspired by Vercidium (2024) "I Optimised My Game Engine Up To 12000 FPS"
-and Farach-Colton, Krapivin, Kuszmaul (2025) Non-Reordering Spatial Architecture.
+and Farach-Colton, Krapivin, & Kuszmaul (2025) Non-Reordering Spatial Architecture.
 
 Compresses standard float64 particles (x, y, z, q, m) [32-48 bytes]
 down to single 64-bit uint64 (8 bytes) or 32-bit uint32 (4 bytes) words.
@@ -13,12 +13,13 @@ import numpy as np
 from typing import Tuple, Dict
 
 # Bitfield layout for 64-bit Quantized Particle (uint64):
-# [63..40] (24 bits) : Integer Morton Grid Coordinates (8 bits X, 8 bits Y, 8 bits Z)
+# [63..40] (24 bits) : Integer Grid Coordinates (8 bits X, 8 bits Y, 8 bits Z) —
+#                      packed separately per axis, NOT Morton-interleaved.
 # [39..16] (24 bits) : Sub-Cell High-Precision Fractional Offset (8 bits dx, 8 bits dy, 8 bits dz)
 # [15..0]  (16 bits) : Quantized Signed Charge/Potential Weight (Float16 representation)
 
 # Bitfield layout for 32-bit Quantized 2D Particle (uint32):
-# [31..20] (12 bits) : Morton Grid Coordinates (6 bits X, 6 bits Y)
+# [31..20] (12 bits) : Grid Coordinates (6 bits X, 6 bits Y) — packed separately, NOT Morton.
 # [19..8]  (12 bits) : Sub-Cell Fractional Offset (6 bits dx, 6 bits dy)
 # [7..0]   (8 bits)  : Quantized Signed Charge (-128 to 127)
 
@@ -29,6 +30,15 @@ def pack_particles_64bit_3d(positions: np.ndarray, charges: np.ndarray, depth: i
     """
     N = len(positions)
     grid_res = 1 << depth  # e.g., 256 for depth 8
+
+    # The 64-bit layout allocates 8 bits per axis, so only depth <= 8 fits.
+    # Silently truncating (ix & 0xFF) at depth > 9 wrapped coordinates
+    # (pack(0.9) at depth=9 unpacked to 0.4); raise instead (R10-E3).
+    if depth > 8:
+        raise ValueError(
+            f"pack_particles_64bit_3d requires depth <= 8 (8-bit per-axis "
+            f"grid fields), but depth={depth} was requested."
+        )
     
     # 1. Quantize grid coordinates [0, grid_res - 1]
     scaled_pos = np.clip(positions * grid_res, 0.0, grid_res - 1e-6)

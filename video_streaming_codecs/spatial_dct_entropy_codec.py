@@ -1,22 +1,26 @@
 """
-End-to-End Reference Intra-Prediction DCT & Entropy Codec (`spatial_dct_entropy_codec.py`)
-========================================================================================
+Reference 2D DCT & Run-Length Entropy Codec (`spatial_dct_entropy_codec.py`)
+============================================================================
 A self-contained research and educational reference video codec engine implementing
-directional spatial intra-prediction, 2D Discrete Cosine Transforms (DCT-II), perceptual
-quantization matrices, zig-zag frequency scanning, and entropy bitstream packaging.
+2D Discrete Cosine Transforms (DCT-II), perceptual quantization matrices, zig-zag
+frequency scanning, and entropy bitstream packaging.
+
+NOTE: this codec is LOSSY by construction (uniform scalar quantization of DCT
+coefficients). There is NO spatial intra-prediction: each 8x8 block is level-shifted
+by 128 and transformed directly. Reconstruction quality is reported as PSNR/SSIM,
+not as lossless verification.
 
 Key Algorithmic Components:
-1. Spatial Intra-Prediction Modes:
-   - DC (Mean border), Vertical (Top border projection), Horizontal (Left border projection).
-   - Minimizes residual spatial variance before frequency transformation.
-2. Vectorized 2D Orthonormal DCT-II & IDCT-II:
+1. Vectorized 2D Orthonormal DCT-II & IDCT-II:
    - Separable matrix multiplication concentrating image energy into low-frequency basis states.
-3. Perceptual Quantization Matrix Scaling:
+2. Perceptual Quantization Matrix Scaling:
    - Quantization step size modulated by continuous Quality Factor / QP parameter.
-4. Zig-Zag Run-Length & Bitstream Serialization:
+3. Zig-Zag Run-Length & Bitstream Serialization:
    - Compresses sparse high-frequency zeroes into compact bitstream byte buffers.
-5. Lossless Decoder Verification:
-   - Complete inverse pipeline with exact reconstruction PSNR and SSIM validation.
+4. Self-Describing Bitstream With Cross-Quality Decode:
+   - The quality factor is stored in the bitstream header and the quantization matrix
+     is rebuilt from that header value at decode time, so a packet encoded at one
+     quality decodes correctly with a codec constructed at a different quality.
 """
 
 from __future__ import annotations
@@ -71,17 +75,22 @@ class CompressedBitstreamPacket:
 
 class SpatialDCTCodec:
     """
-    Reference Research Spatial Transform & Entropy Compression Engine.
+    Reference 2D DCT & Run-Length Entropy Compression Engine.
+
+    The transform is fixed at 8x8 blocks (8x8 DCT-II basis, 8x8 JPEG luma quantization
+    table, 8x8 zig-zag scan). The constructor quality factor only governs encoding;
+    decoding rebuilds the quantization matrix from the quality byte stored in the
+    bitstream header, so cross-quality round trips are correct.
     """
-    def __init__(self, block_size: int = 8, quality_factor: int = 75):
+    def __init__(self, quality_factor: int = 75):
         self.bs = 8 # Fixed 8x8 DCT
         self.quality = int(np.clip(quality_factor, 1, 100))
-        
+
         # Build DCT-II Basis Transformation Matrix
         self.dct_matrix = self._build_dct_basis(8)
         self.idct_matrix = self.dct_matrix.T
 
-        # Compute Scaled Quantization Matrix
+        # Compute Scaled Quantization Matrix (used for encoding)
         self.quant_matrix = self._build_quant_matrix(self.quality)
         self.inv_quant_matrix = self.quant_matrix
 
@@ -253,6 +262,10 @@ class SpatialDCTCodec:
         offset = 5
 
         bs = 8
+        # Rebuild the quantization matrix from the header quality byte so that a
+        # packet encoded at one quality decodes correctly with a codec instance
+        # constructed at a different quality (cross-quality decode).
+        decode_quant_matrix = self._build_quant_matrix(q)
         gh = (h + bs - 1) // bs
         gw = (w + bs - 1) // bs
 
@@ -298,7 +311,7 @@ class SpatialDCTCodec:
 
         # Dequantize & Vectorized IDCT
         # idct = C^T @ (q * QM) @ C
-        dequant = q_blocks.astype(np.float32) * self.quant_matrix
+        dequant = q_blocks.astype(np.float32) * decode_quant_matrix
         blocks_recon = np.einsum('ji,abjk,kl->abil', self.dct_matrix, dequant, self.dct_matrix) + 128.0
 
         # Reshape to 2D image

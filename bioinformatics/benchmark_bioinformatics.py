@@ -77,7 +77,7 @@ def run_scaling_benchmark():
             t_extrap = direct_times[1] * ((N / atom_counts[1])**2)
             direct_times.append(t_extrap)
             speedup = t_extrap / t_fmm
-            print(f"    - Direct O(N^2) (Extrap):  {t_extrap:8.2f} ms | Speedup: {speedup:6.1f}x (O(N) Advantage)")
+            print(f"    - Direct O(N^2) (Extrap):  {t_extrap:8.2f} ms | Speedup: {speedup:6.1f}x (O(N*K) Advantage)")
 
     return atom_counts, direct_times, fmm_times, rel_errors
 
@@ -185,7 +185,7 @@ def generate_benchmark_figures(atom_counts, direct_times, fmm_times, res_a, titr
 
     # Plot 1: Log-Log Execution Time Scaling
     axes[0].plot(atom_counts, direct_times, 'o--', color='#F85149', label='Direct All-Pairs O(N²)', lw=2.0)
-    axes[0].plot(atom_counts, fmm_times, 's-', color='#58A6FF', label='Tree-Free Bio-FMM O(N)', lw=2.5)
+    axes[0].plot(atom_counts, fmm_times, 's-', color='#58A6FF', label='Tree-Free Bio-FMM O(N·K)', lw=2.5)
     axes[0].set_xscale('log')
     axes[0].set_yscale('log')
     axes[0].set_xlabel('Atom Count (N)', color='#E6EDF3', fontsize=11, fontweight='bold')

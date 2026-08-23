@@ -7,7 +7,7 @@ Inspired by:
 2. "Computational Optimal Transport"
    Gabriel Peyre and Marco Cuturi (Foundations and Trends in Machine Learning, 2019).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Solving optimal transport between continuous probability distributions a on sources X (N points)
@@ -151,8 +151,20 @@ class FastEntropicOptimalTransport:
             if err_u < self.tol:
                 break
 
-        w2_cost = float(-self.gamma * (np.sum(a * np.log(np.maximum(u, 1e-15))) + np.sum(b * np.log(np.maximum(v, 1e-15)))))
-        return u, v, w2_cost, n_iters
+        # Transport cost <P, C> = sum_{i,j} u_i * K_ij * v_j * C_ij
+        # where C_ij = ||x_i - y_j||^2 and P = diag(u) K diag(v).
+        # The previous formula -gamma*(sum(a*log(u)) + sum(b*log(v))) was the
+        # NEGATIVE of the entropic regularized cost (<P,C> - gamma*H(P) + gamma),
+        # giving a negative value for a quantity that must be non-negative.
+        # Compute the actual transport cost from the sparse blocks instead.
+        w2_cost = 0.0
+        for t_idx, s_idx, k_mat in forward_blocks:
+            pts_t = x_src[t_idx]
+            pts_s = y_tgt[s_idx]
+            diff = pts_t[:, None, :] - pts_s[None, :, :]
+            r_sq = np.sum(diff ** 2, axis=-1)
+            w2_cost += np.sum(u[t_idx][:, None] * k_mat * v[s_idx][None, :] * r_sq)
+        return u, v, float(w2_cost), n_iters
 
 
 def direct_sinkhorn_baseline(

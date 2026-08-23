@@ -8,6 +8,13 @@ implemented cost is O(N^2 + M^2) per iteration. Aligns heterogeneous multi-modal
 differing dimensions and metric geometries without allocating dense 4-way N x N x M x M
 interaction tensors.
 
+Round-7 task X-A13 — honest scoping: this is a REFERENCE IMPLEMENTATION of entropic GW/FGW
+with dense cost matrices. Gromov-Wasserstein with dense cost matrices is inherently O(N^2)
+per iteration; FMM does not apply here (the GW quadratic form is not a radial kernel sum).
+A fast path would require restricting to the entropic-Sinkhorn COOT mode with a Gaussian
+kernel cutoff (same pattern as ``optimal_transport_fmm.py``), which is NOT implemented in
+this module. Do not cite this module as "linear-time" — the asymptotic cost is quadratic.
+
 Key Applications:
 - Multi-Omics Cross-Modal Alignment (e.g., 20,000-gene scRNA-seq to 3D Spatial Transcriptomics).
 - Heterogeneous Graph & Manifold Matching (Cross-species protein interactomes, 3D shape morphing).
@@ -37,9 +44,12 @@ def compute_pairwise_distances(X: np.ndarray, metric: str = "sqeuclidean") -> np
 
 class FastGromovWasserstein:
     """
-    Fast Entropic Gromov-Wasserstein (GW) and Fused Gromov-Wasserstein (FGW) Solver.
-    Uses separable tensor contractions and spatial hash Gaussian convolutions to drop
-    gradient evaluation complexity from O(N^2 M^2) down to O(k_iter * (N^2 + M^2)).
+    Reference Entropic Gromov-Wasserstein (GW) and Fused Gromov-Wasserstein (FGW) Solver.
+    Uses separable tensor contractions to avoid the 4-way N x N x M x M tensor, but the
+    implemented cost is O(k_iter * (N^2 + M^2)) per iteration due to dense N x N matmuls
+    (X-A13: this is a reference implementation, not a linear-time fast path — see module
+    docstring). The "spatial hash Gaussian convolutions" phrase in earlier versions was
+    aspirational and has been removed.
     """
     def __init__(
         self,

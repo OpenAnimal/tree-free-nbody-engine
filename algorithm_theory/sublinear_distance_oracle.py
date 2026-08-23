@@ -7,15 +7,21 @@ Inspired by:
 2. "(1 + eps)-Approximate Distance Oracles for Doubling Metrics"
    Sariel Har-Peled, Manor Mendel (SODA 2006).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martín Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / 2025).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024.
 
 Key Algorithmic Principle:
 Evaluating pairwise geodesic or manifold distances among N points typically requires O(N^2) storage
 for an all-pairs distance matrix, or O(m + n log n) Dijkstra queries per online pair.
-This module constructs an Approximate Distance Oracle (ADO) with O(N log(1/eps)) preprocessing space
-and O(log(1/eps)) sublinear query time. Using Elastic Spatial Hashing across dyadic multi-scale levels,
-we elect hierarchical landmark pivots and route online distance queries through local and multi-scale
-bipartite anchors, guaranteeing bounded (1 + eps) stretch.
+This module constructs a multi-scale landmark Approximate Distance Oracle (ADO). At each dyadic
+level it elects one landmark per spatial-hash bucket (the FIRST point falling into each bucket --
+a simple election heuristic, not a Thorup-Zwick / Har-Peled-Mendel sampling) and precomputes a
+full single-source shortest-path vector from that landmark. Online queries combine the
+triangle-inequality upper bounds d(u,v) <= d(u,lm) + d(lm,v) across levels; this yields a valid
+upper bound but NO formal (1+eps) stretch guarantee is claimed (the first-point-per-bucket
+election has no stretch bound). Query time is O(num_levels) = O(log(diameter / base_radius)).
+Preprocessing space is dominated by the level-0 landmark SSSP tables: with cell_size = base_radius
+there can be O(N) buckets, each storing an N-length distance vector, giving O(N^2)-class memory
+at level 0 (not O(N log(1/eps))).
 """
 
 import time
@@ -41,7 +47,6 @@ class MultiScaleLandmarkOracle:
         self,
         points: np.ndarray,
         adj_list: Optional[List[List[Tuple[int, float]]]] = None,
-        eps: float = 0.15,
         base_radius: Optional[float] = None
     ):
         self.points = np.asarray(points, dtype=np.float64)
@@ -50,9 +55,6 @@ class MultiScaleLandmarkOracle:
         self.n_points = len(self.points)
         if self.n_points == 0:
             raise ValueError("points must contain at least one point")
-        if not 0.0 < eps < 1.0:
-            raise ValueError("eps must be in the interval (0, 1)")
-        self.eps = float(eps)
 
         p_min = self.points.min(axis=0)
         p_max = self.points.max(axis=0)
@@ -63,7 +65,9 @@ class MultiScaleLandmarkOracle:
         else:
             self.base_radius = float(base_radius)
 
-        # Number of dyadic levels L = ceil(log2(diameter / (eps * base_radius)))
+        # Number of dyadic levels L = ceil(log2(diameter / base_radius)).
+        # (The previous code/comment referenced an `eps` factor here, but eps
+        # was never actually used in the level count and has been removed.)
         self.num_levels = max(2, int(np.ceil(np.log2(max(2.0, self.diameter / self.base_radius)))))
         
         # Build proximity graph if not provided
@@ -111,8 +115,10 @@ class MultiScaleLandmarkOracle:
 
     def query_distance(self, u: int, v: int) -> float:
         """
-        Answers approximate distance between u and v in O(log(1/eps)) operations.
-        Triangulates through the lowest common landmark hierarchy.
+        Answers an approximate distance between u and v in O(num_levels)
+        operations by triangulating through the per-level elected landmarks
+        (triangle-inequality upper bound d(u,v) <= d(u,lm)+d(lm,v)). This is
+        an upper bound, NOT a (1+eps)-stretch guarantee.
         """
         if not (0 <= u < self.n_points and 0 <= v < self.n_points):
             raise IndexError("query vertex index out of range")
@@ -124,7 +130,6 @@ class MultiScaleLandmarkOracle:
             if neigh == v:
                 return float(weight)
 
-        best_dist = float(np.linalg.norm(self.points[u] - self.points[v]))
         best_cand = np.inf
 
         # Test landmarks across multi-scale levels
@@ -197,9 +202,9 @@ class SublinearDistanceOracle:
     """
     Unified High-Level Interface for Sublinear Distance Queries.
     """
-    def __init__(self, points: np.ndarray, eps: float = 0.15):
+    def __init__(self, points: np.ndarray, base_radius: Optional[float] = None):
         self.points = points
-        self.oracle = MultiScaleLandmarkOracle(points, eps=eps)
+        self.oracle = MultiScaleLandmarkOracle(points, base_radius=base_radius)
         self.embedding = ElasticMetricEmbedding(self.oracle, embedding_dim=16)
 
     def query_pair(self, u: int, v: int, method: str = "landmark_oracle") -> float:
@@ -252,7 +257,7 @@ if __name__ == "__main__":
     z = cos_phi * 10.0
     pts = np.stack([x, y, z], axis=-1).astype(np.float64)
 
-    ado = SublinearDistanceOracle(pts, eps=0.2)
+    ado = SublinearDistanceOracle(pts)
 
     # Sample test query pairs
     n_queries = 2000

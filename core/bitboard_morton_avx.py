@@ -1,13 +1,20 @@
 """
-64-Bit Bitboard Morton Traversal & SIMD Neighborhood Engine (`bitboard_morton_avx.py`)
-====================================================================================
-Hardware-Level Bitboard Spatial Indexing and Vectorized 27-Neighborhood Masking.
-Replaces octree pointer dereferencing with bitwise SIMD shifts and population counts.
+64-Bit Bitboard Morton Traversal & Neighborhood Engine (`bitboard_morton_avx.py`)
+==================================================================================
+Bitboard Spatial Indexing with 27-Neighborhood Masking.
+
+This is a SCALAR PYTHON REFERENCE implementation: occupancy is stored as
+64-bit bitboards (one uint64 word per 4x4x4 macro cell) and the 27-neighbor
+gather is a triple-nested Python loop over the (dx,dy,dz) offsets that tests
+the occupancy bit of each neighbor micro-cell. There is no SIMD/AVX here --
+the bitboard occupancy test is O(1) per neighbor, but the loop is plain
+Python. (The earlier module docstring claimed "bitwise SIMD shifts" and
+"50M+ Spatial Queries/sec"; both were false for this code path and have
+been removed.)
 
 Key Primitives:
 - 64-Bit Subgrid Bitboards: 4x4x4 (64 sub-cells) per word.
-- Bitwise 27-Neighbor Masks: Direct bit shifts for +X, -X, +Y, -Y, +Z, -Z and diagonals.
-- 50M+ Spatial Queries/sec on modern CPU SIMD / GPU SIMT pipelines.
+- Bitwise 27-Neighbor Occupancy Test: bit test per neighbor micro-cell.
 """
 
 from __future__ import annotations
@@ -83,7 +90,7 @@ class BitboardMorton3D:
         occupied_micro_cells = sum(int(b).bit_count() for b in self.bitboards)
         return occupied_micro_cells
 
-    def query_adjacent_neighbors_fast(self, query_coords: np.ndarray) -> List[List[int]]:
+    def query_adjacent_neighbors(self, query_coords: np.ndarray) -> List[List[int]]:
         """
         Fast 27-neighborhood particle gather using bitboard spatial indexing.
         """
@@ -126,7 +133,7 @@ class BitboardMorton3D:
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("64-Bit Bitboard Morton SIMD Neighborhood Engine Benchmark")
+    print("64-Bit Bitboard Morton Neighborhood Engine Benchmark (scalar Python)")
     print("=" * 70)
 
     N_particles = 100000
@@ -150,7 +157,7 @@ if __name__ == "__main__":
     query_pts = coords[:N_queries]
 
     t0 = time.perf_counter()
-    nbr_results = bitboard_grid.query_adjacent_neighbors_fast(query_pts)
+    nbr_results = bitboard_grid.query_adjacent_neighbors(query_pts)
     t_query = (time.perf_counter() - t0) * 1000.0
     qps = N_queries / (t_query / 1000.0)
 

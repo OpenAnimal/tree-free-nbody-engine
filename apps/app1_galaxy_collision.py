@@ -1,8 +1,8 @@
 """
 Application 1: Dynamic N-Body Galaxy Collision Simulation
 Forces computed each step by the flat tree-free FMM (FastVectorizedFMM):
-CGR88 2D logarithmic multipoles on a uniform cell grid whose occupied-cell
-index is the non-reordering funnel hash (Farach-Colton/Krapivin/Kuszmaul,
+adaptive FMM 2D logarithmic multipoles on a uniform cell grid whose occupied-cell
+index is the non-reordering funnel hash (Farach-Colton, Krapivin, & Kuszmaul, 2025,
 arXiv:2501.02305). A direct-summation accuracy check runs at start-up.
 """
 

@@ -11,13 +11,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 try:
-    from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d
+    from .core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
     from .pdb_loader import COULOMB_CONSTANT_KCAL
+    from core._csr import build_csr
 except (ImportError, ValueError):
     import os, sys
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d
+    from bioinformatics.core.elastic_spatial_hash import ElasticSpatialHash3D, morton_encode_3d, morton_decode_3d
     from bioinformatics.pdb_loader import COULOMB_CONSTANT_KCAL
+    from core._csr import build_csr
 
 
 @dataclass
@@ -154,6 +156,15 @@ class BiomolecularCondensateEngine:
         """
         O(N) Morton-accelerated evaluation of screened electrostatics, sticker-spacer
         attractive contact wells, and excluded volume.
+
+        Round-7 fix (finding E): the previous implementation evaluated pairwise
+        physics ONLY within each Morton cell, so two beads 1 nm apart across a
+        cell boundary silently never interacted.  We now gather the full
+        3x3x3 (27-cell) neighborhood for each cell (pattern from
+        fast_multipole_kernel.py:263), so adjacent-cell pairs interact.  The
+        per-pair arithmetic is unchanged; the 0.5 energy factor absorbs the
+        resulting double-count of cross-cell pairs (each pair is visited from
+        both cells), and forces are accumulated per-target without halving.
         """
         N = len(coords)
         forces = np.zeros_like(coords)
@@ -166,56 +177,104 @@ class BiomolecularCondensateEngine:
         iz = np.clip((coords[:, 2] / self.cell_size).astype(np.int64), 0, 1023)
         morton_keys = morton_encode_3d(ix, iy, iz)
         unique_keys, inverse = np.unique(morton_keys, return_inverse=True)
+        K = len(unique_keys)
+
+        # CSR cell lists (drop-in replacement for per-cluster np.where scans).
+        cell_start, cell_particles, _ = build_csr(inverse, K)
+
+        # grid coord -> cluster index map for 27-neighborhood enumeration
+        cluster_grid = np.array([morton_decode_3d(int(k)) for k in unique_keys], dtype=np.int64)
+        grid_to_cluster = {}
+        for c in range(K):
+            grid_to_cluster[(int(cluster_grid[c, 0]),
+                             int(cluster_grid[c, 1]),
+                             int(cluster_grid[c, 2]))] = c
 
         coulomb_factor = COULOMB_CONSTANT_KCAL / self.dielectric
 
-        # For nearby pairs, evaluate potentials
-        for k_idx in range(len(unique_keys)):
-            cell_members = np.where(inverse == k_idx)[0]
-            if len(cell_members) == 0:
+        # For each cell, gather the 27-cell neighborhood and evaluate pairs.
+        for c1 in range(K):
+            idx1 = cell_particles[cell_start[c1]:cell_start[c1 + 1]]
+            if len(idx1) == 0:
                 continue
 
-            # Also check adjacent cells if needed; within-cell exact interaction
-            pts = coords[cell_members]
-            qs = charges[cell_members]
-            rs = radii[cell_members]
-            ts = types[cell_members]
-            n_c = len(cell_members)
+            # Gather 27-neighborhood cluster indices
+            cx, cy, cz = int(cluster_grid[c1, 0]), int(cluster_grid[c1, 1]), int(cluster_grid[c1, 2])
+            neighbor_clusters = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        key = (cx + dx, cy + dy, cz + dz)
+                        nc = grid_to_cluster.get(key)
+                        if nc is not None:
+                            neighbor_clusters.append(nc)
+            idx2 = np.concatenate([cell_particles[cell_start[nc]:cell_start[nc + 1]]
+                                   for nc in neighbor_clusters])
+            if len(idx2) == 0:
+                continue
 
-            diff = pts[:, None, :] - pts[None, :, :]
-            r_mat = np.linalg.norm(diff, axis=-1) + np.eye(n_c) * 1e9
+            pts = coords[idx1]
+            qs = charges[idx1]
+            rs = radii[idx1]
+            ts = types[idx1]
+            n_c = len(idx1)
+
+            p2 = coords[idx2]
+            q2 = charges[idx2]
+            r2 = radii[idx2]
+            t2 = types[idx2]
+
+            diff = pts[:, None, :] - p2[None, :, :]      # (n_c, n_nb, 3)
+            r_mat = np.linalg.norm(diff, axis=-1)
+
+            # Self-pair mask: only the diagonal of the self-cell block (i == i).
+            # Build a boolean mask of shape (n_c, n_nb) that is True where the
+            # target index equals the source index.
+            self_mask = (idx1[:, None] == idx2[None, :])
+            r_mat = np.where(self_mask, 1e9, r_mat)
 
             # 1. Screened Debye-Huckel
-            screened_pot = (qs[:, None] * qs[None, :]) * np.exp(-self.kappa * r_mat) / (r_mat + 1e-6)
+            screened_pot = (qs[:, None] * q2[None, :]) * np.exp(-self.kappa * r_mat) / (r_mat + 1e-6)
             total_energy += float(np.sum(screened_pot)) * 0.5 * coulomb_factor
             f_elec_mag = coulomb_factor * screened_pot * (self.kappa + 1.0 / (r_mat + 1e-6))
 
             # 2. Excluded volume
-            sigma = rs[:, None] + rs[None, :]
+            # U_ev = 40/3 * overlap^3, F = -dU/dr = 40 * overlap^2 (repulsive).
+            # P19-1: the previous code divided f_ev_mag by r, giving a force
+            # 40*overlap^2/r instead of 40*overlap^2 — too weak by a factor
+            # of r (typically 3-15x for nm-scale beads).
+            sigma = rs[:, None] + r2[None, :]
             overlap = np.maximum(0.0, sigma - r_mat)
-            f_ev_mag = 40.0 * (overlap**2) / (r_mat + 1e-6)
+            f_ev_mag = 40.0 * (overlap**2)
             total_energy += float(np.sum(40.0 / 3.0 * (overlap**3))) * 0.5
 
             # 3. Sticker-Sticker Short-Range Attractive Well (Pi-Pi / Cation-Pi)
             is_sticker_pos = (ts == "IDR_STICKER_POS")[:, None]
-            is_aromatic = (ts == "IDR_AROMATIC")[None, :]
-            is_rna = (ts == "RNA_POLYANION")[None, :]
+            is_aromatic = (t2 == "IDR_AROMATIC")[None, :]
+            is_rna = (t2 == "RNA_POLYANION")[None, :]
 
-            # Attractive interaction matrix
             attractive_mask = (is_sticker_pos & (is_aromatic | is_rna))
-            well_depth = 1.5 # kcal/mol
+            well_depth = 1.5  # kcal/mol
             r_well = sigma * 1.3
             in_well = attractive_mask & (r_mat < r_well) & (r_mat > sigma)
+            # P19-2: triangular well U(r) = -well_depth*(r_well-r)/(r_well-sigma)
+            # gives -dU/dr = -well_depth/(r_well-sigma) (constant attractive
+            # force). The previous code used U(r) itself as the force
+            # magnitude (zero at r_well, -well_depth at sigma) and a constant
+            # -well_depth energy, making the force and energy inconsistent.
             f_attr_mag = np.zeros_like(r_mat)
-            f_attr_mag[in_well] = -well_depth * ((r_well[in_well] - r_mat[in_well]) / (r_well[in_well] - sigma[in_well] + 1e-6))
-            total_energy -= float(np.sum(well_depth * in_well)) * 0.5
+            f_attr_mag[in_well] = -well_depth / (r_well[in_well] - sigma[in_well] + 1e-6)
+            # Triangular well energy: U = -well_depth * (r_well - r) / (r_well - sigma)
+            tri_u = np.zeros_like(r_mat)
+            tri_u[in_well] = -well_depth * (r_well[in_well] - r_mat[in_well]) / (r_well[in_well] - sigma[in_well] + 1e-6)
+            total_energy += float(np.sum(tri_u)) * 0.5
 
             total_f_mag = f_ev_mag + f_elec_mag + f_attr_mag
-            np.fill_diagonal(total_f_mag, 0.0)
+            total_f_mag = np.where(self_mask, 0.0, total_f_mag)
 
             f_vec = diff * (total_f_mag[:, :, None] / (r_mat[:, :, None] + 1e-6))
             local_forces = np.sum(f_vec, axis=1)
-            forces[cell_members] += local_forces
+            forces[idx1] += local_forces
 
         return forces, total_energy
 

@@ -7,7 +7,7 @@ Every domain benchmark reports the same variant axes where applicable:
   +elastichash— the same computation restricted through the elastic-hash
                 CellIndex neighborhood (near-field exact, far-field skipped
                 or cluster-approximated)
-  +fmm        — the core CGR88 / flat FMM engines (only where the 2D log
+  +fmm        — the core adaptive FMM / flat FMM engines (only where the 2D log
                 kernel applies; otherwise this column is omitted with reason)
   +quantized  — quantized/bit-packed variant (where the module has one)
 

@@ -50,54 +50,12 @@ def _dense_spatial_attention(points, Q, K, V, sigma=0.15):
 
 
 def _hash_near_far_attention(points, V, sigma=0.15, depth=4):
-    """The app's compute path: near-field exact (3x3 funnel-hash) + far-field
-    per-cell centroid. Reuses the app's ElasticHashTable + morton helpers."""
-    from core.elastic_hash import ElasticHashTable
-    from core.tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
-    n, d = V.shape
-    grid_res = 1 << depth
-    ht = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-    for i in range(n):
-        key = morton_encode_2d(points[i, 0], points[i, 1], depth=depth)
-        pidx, _ = ht.lookup(key)
-        if pidx is None:
-            ht.insert(key, [i])
-        else:
-            pidx.append(i)
-    cluster_centers, cluster_v = {}, {}
-    for key in [k for k, _ in ht.items()]:
-        pidx = ht.lookup(key)[0]
-        _, ix, iy = decode_morton_2d(key)
-        cx, cy = get_box_center_2d(depth, ix, iy)
-        cluster_centers[key] = np.array([cx, cy])
-        cluster_v[key] = np.sum(V[pidx], axis=0)
-    out = np.zeros_like(V)
-    for i in range(n):
-        m_key = morton_encode_2d(points[i, 0], points[i, 1], depth=depth)
-        _, ix, iy = decode_morton_2d(m_key)
-        acc_v = np.zeros(d)
-        acc_w = 1e-9
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                nx, ny = ix + dx, iy + dy
-                if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                    n_key = (depth << 24) | morton_encode_2d(
-                        (nx + 0.5) / grid_res, (ny + 0.5) / grid_res, depth=depth) & 0xFFFFFF
-                    pidx, _ = ht.lookup(n_key)
-                    if pidx is not None:
-                        d2 = np.sum((points[i] - points[pidx]) ** 2, axis=-1)
-                        w = np.exp(-d2 / (2 * sigma ** 2))
-                        acc_v += np.sum(w[:, None] * V[pidx], axis=0)
-                        acc_w += np.sum(w)
-        for f_key, c_center in cluster_centers.items():
-            _, fx, fy = decode_morton_2d(f_key)
-            if abs(fx - ix) > 1 or abs(fy - iy) > 1:
-                d_c2 = np.sum((points[i] - c_center) ** 2)
-                w_far = np.exp(-d_c2 / (2 * sigma ** 2))
-                acc_v += w_far * cluster_v[f_key]
-                acc_w += w_far * len(ht.lookup(f_key)[0])
-        out[i] = acc_v / acc_w
-    return out
+    """The app's compute path: near-field exact (3x3 CellIndex) + far-field
+    per-cell centroid. Delegates to the app's vectorized hash_spatial_attention
+    (CellIndex + per-cell NumPy, replaces the old ElasticHashTable + per-point
+    Python loops)."""
+    from apps.app3_spatial_attention import hash_spatial_attention
+    return hash_spatial_attention(points, V, sigma=sigma, depth=depth)
 
 
 def _fgt_spatial_attention(points, V, sigma=0.15, depth=6, p=8):

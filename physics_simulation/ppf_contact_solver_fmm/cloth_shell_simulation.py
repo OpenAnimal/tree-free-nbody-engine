@@ -3,8 +3,10 @@
 Powered by Matrix-Free Tree-Free IPC Solver.
 
 Simulates authentic multilayer cloth draping, discrete shell bending,
-self-collision, and obstacle contact with strict 100% penetration-free guarantees
-and 0 MB allocated for DynCSRMat sparse matrices.
+self-collision, and obstacle contact.  The IPC log-barrier prevents
+penetration of the checked candidate set under successful line search
+(vertex-vertex; no point-triangle CCD), with 0 MB allocated for DynCSRMat
+sparse matrices.
 """
 
 import numpy as np
@@ -48,13 +50,15 @@ def run_cloth_simulation():
     )
     
     # Layer 2: Top fabric sheet (cyan velvet, slightly offset and rotated angle)
+    # Uses the SAME material params as layer 1: combine_cloth_meshes stores a
+    # single material set, so per-layer params would be silently discarded.
     cloth2 = create_cloth_grid(
         nx=grid_res, ny=grid_res,
         width=width * 0.95, height=height * 0.95,
         center=(0.505, 0.495, 0.67),
-        k_stretch=1600.0,
-        k_bend=0.05,
-        density=0.22
+        k_stretch=1800.0,
+        k_bend=0.06,
+        density=0.25
     )
     
     cloth = combine_cloth_meshes([cloth1, cloth2])
@@ -74,7 +78,6 @@ def run_cloth_simulation():
     solver = MatrixFreeIPCSolver(
         dhat=dhat,
         stiffness=4e3,
-        cell_size=0.035,
         max_newton_iters=4,
         cg_max_iters=16,
         cg_tol=1e-4,
@@ -117,7 +120,14 @@ def run_cloth_simulation():
         
         e_k = 0.5 * np.sum(cloth.masses[:, None] * (velocities**2))
         e_el, _ = solver.compute_elastic_energy_and_forces(positions, cloth)
-        
+
+        # NOTE: this rebuilds the broadphase at the final positions for
+        # reporting (e_bar and min_c).  The step's own candidate count
+        # (m['active_candidates']) was computed at x_tilde (the predicted
+        # step), not at the final positions, so reusing it here would give
+        # stale pairs.  This rebuild is reporting-only (not physics) and
+        # costs one extra broadphase per frame; it is kept for accuracy
+        # of the reported barrier energy and clearance.
         cand_pairs = solver.find_broadphase_candidates(positions, cloth)
         e_bar, _ = solver.compute_barrier_energy_and_forces(positions, cand_pairs)
         
@@ -142,7 +152,7 @@ def run_cloth_simulation():
 
     total_sim_time = time.perf_counter() - t_sim_start
     print(f"\nSimulation finished in {total_sim_time:.2f}s (Average: {np.mean(latencies):.2f} ms/step).")
-    print(f"Minimum clearance recorded: {min(min_clearances)*100:.3f} cm (Strictly > 0 mm, 0 penetrations).")
+    print(f"Minimum clearance recorded: {min(min_clearances)*100:.3f} cm (> 0 mm; barrier prevents penetration of the checked candidate set under successful line search).")
 
     # Compute per-vertex engineering strain
     vertex_strains = np.zeros(N)
@@ -260,7 +270,7 @@ def run_cloth_simulation():
     ax3.axhline(0.0, color="#FF4D4D", linestyle="--", linewidth=1.5, label="Penetration Barrier ($0.0$ cm)")
     ax3.axhline(dhat * 100.0, color="#00F0FF", linestyle=":", linewidth=1.5, label=f"IPC Activation Threshold $\\hat{{d}} = {dhat*100:.1f}$ cm")
     
-    ax3.set_title("3. Strict Penetration-Free Barrier Guarantee", color=text_color, fontsize=11, fontweight="bold")
+    ax3.set_title("3. Penetration-Free Barrier (Line Search)", color=text_color, fontsize=11, fontweight="bold")
     ax3.set_xlabel("Simulation Timestep", color=text_color, fontsize=9.5)
     ax3.set_ylabel("Clearance Distance (cm)", color=text_color, fontsize=9.5)
     ax3.legend(facecolor=pane_color, edgecolor=border_color, labelcolor=text_color, fontsize=8, loc="upper right")

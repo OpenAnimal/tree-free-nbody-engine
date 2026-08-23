@@ -3,11 +3,15 @@ Comprehensive Scalability & Verification Benchmark Suite for algorithm_theory.
 
 Benchmarks:
 1. Frontier-Clustered SSSP vs Dijkstra Baseline on 3D Manifolds (Duan et al. STOC 2025).
-2. Asymmetric Low-Rank Tensor M2L vs Naive Dense Contraction (Alman Laser MM Exponents).
+2. Synthetic Low-Rank Tensor contraction vs the SAME factorisation's dense
+   reconstruction (Alman laser MM exponents; NOT a real FMM M2L operator --
+   the "Rel Error" between the two paths is round-off, not an approximation
+   error of a true M2L kernel).
 3. Non-Uniform FFT Type 1 vs Direct O(N*M) Exponential Sum (Barnett / Greengard NUFFT).
 4. Screened Yukawa / Debye-Hückel Electrolyte FMM vs Exact Coulomb (Greengard & Huang).
 5. Fast Entropic Optimal Transport (Matrix-Free Sinkhorn) vs Dense Reference.
-6. Sublinear Metric Distance Oracle & Effective Resistance Query Throughput.
+6. Multi-Scale Landmark Distance Oracle query throughput (triangle-inequality
+   upper bound; NO formal (1+eps) stretch guarantee).
 
 Outputs:
 - Generates publication-ready figure: algorithm_theory/algorithm_theory_benchmark.png
@@ -180,7 +184,7 @@ def run_comprehensive_benchmark():
     np.random.seed(42)
     n_oracle_pts = 8000
     pts_surface = np.random.randn(n_oracle_pts, 3) * 5.0
-    oracle = SublinearDistanceOracle(pts_surface, eps=0.15)
+    oracle = SublinearDistanceOracle(pts_surface)
     
     n_query_pairs = [1000, 5000, 20000, 50000]
     oracle_latencies = []
@@ -205,7 +209,7 @@ def run_comprehensive_benchmark():
     # Panel 1: SSSP
     ax = axes[0, 0]
     ax.plot(n_nodes_list, t_dijkstra, 'o--', color='#d9534f', linewidth=2, markersize=7, label="Dijkstra O(m + n log n)")
-    ax.plot(n_nodes_list, t_fc_sssp, 's-', color='#0275d8', linewidth=2.5, markersize=7, label="Frontier-Clustered (O(n))")
+    ax.plot(n_nodes_list, t_fc_sssp, 's-', color='#0275d8', linewidth=2.5, markersize=7, label="Frontier-Clustered (sub-sorting)")
     ax.set_title("A. Breaking the SSSP Sorting Barrier\n(Duan et al. STOC 2025)", fontsize=11, fontweight="bold")
     ax.set_xlabel("Number of Manifold Nodes (N)", fontsize=10)
     ax.set_ylabel("Execution Time (ms)", fontsize=10)
@@ -214,9 +218,9 @@ def run_comprehensive_benchmark():
 
     # Panel 2: Tensor M2L
     ax = axes[0, 1]
-    ax.plot(coeffs_count, t_dense_m2l, 'o--', color='#d9534f', linewidth=2, markersize=7, label="Dense M2L O(P²)")
-    ax.plot(coeffs_count, t_lowrank_m2l, 's-', color='#5cb85c', linewidth=2.5, markersize=7, label="Low-Rank Tensor M2L")
-    ax.set_title("B. Asymmetric Tensor M2L Contraction\n(Alman Laser Exponent Methods)", fontsize=11, fontweight="bold")
+    ax.plot(coeffs_count, t_dense_m2l, 'o--', color='#d9534f', linewidth=2, markersize=7, label="Dense reconstruction O(P²)")
+    ax.plot(coeffs_count, t_lowrank_m2l, 's-', color='#5cb85c', linewidth=2.5, markersize=7, label="Low-Rank contraction O(P*R)")
+    ax.set_title("B. Synthetic Low-Rank Tensor Contraction\n(same factorisation; NOT a real M2L operator)", fontsize=11, fontweight="bold")
     ax.set_xlabel("Expansion Coefficients P = (p + 1)³", fontsize=10)
     ax.set_ylabel("Contraction Time (ms)", fontsize=10)
     ax.set_yscale("log")
@@ -257,7 +261,7 @@ def run_comprehensive_benchmark():
     ax = axes[1, 2]
     qps_rates = [q / (t / 1000.0) / 1e6 for q, t in zip(n_query_pairs, oracle_latencies)]
     bars = ax.bar([f"{q:,}" for q in n_query_pairs], qps_rates, color='#17a2b8', width=0.55, edgecolor='black', alpha=0.85)
-    ax.set_title("F. Sublinear Metric Distance Oracle\n(Thorup-Zwick / Elastic Landmark Routing)", fontsize=11, fontweight="bold")
+    ax.set_title("F. Multi-Scale Landmark Distance Oracle\n(triangle-inequality upper bound; no (1+eps) stretch guarantee)", fontsize=11, fontweight="bold")
     ax.set_xlabel("Batch Query Size", fontsize=10)
     ax.set_ylabel("Throughput (Million Queries / sec)", fontsize=10)
     for bar in bars:

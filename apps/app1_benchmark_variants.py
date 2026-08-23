@@ -6,7 +6,7 @@ Variants (axes from the repo-wide `core.benchmark_kit` protocol):
   +elastichash  -- near-field-only forces through the elastic-hash CellIndex
                    3x3 neighborhood (near-field exact, far-field SKIPPED --
                    the cheap "hash-truncated" baseline)
-  +fmm          -- the app's actual compute path: FastVectorizedFMM (CGR88 2D
+  +fmm          -- the app's actual compute path: FastVectorizedFMM (adaptive FMM 2D
                    log multipoles on the funnel-hash cell index)
 
 Accuracy vs `standard` on the per-particle force vector (rel L2). The note
@@ -75,13 +75,18 @@ def _hash_near_field_forces(pos, masses, depth=4, eps=1e-4):
 
 
 def _fmm_forces(pos, masses, depth=4, order=6, eps=1e-4):
-    """The app's actual path: FastVectorizedFMM forces."""
+    """The app's actual path: FastVectorizedFMM forces.
+
+    No force-magnitude clamping (unlike the simulation's
+    compute_fmm_gravitational_forces which clamps to 50.0 for stability):
+    the benchmark measures raw FMM accuracy vs the unclamped direct
+    reference, so clamping only the FMM path would inject a false
+    discrepancy on any particle whose direct force exceeds 50.0.
+    """
     from core.fast_vectorized_fmm import FastVectorizedFMM
     fmm = FastVectorizedFMM(depth=depth, order=order, softening=eps)
     _, fx, fy = fmm.evaluate(pos, masses, compute_forces=True)
-    f = np.stack([fx, fy], axis=1)
-    n = np.linalg.norm(f, axis=1, keepdims=True)
-    return np.where(n > 50.0, f * (50.0 / (n + 1e-6)), f)
+    return np.stack([fx, fy], axis=1)
 
 
 def run_app1_variants(n_per_galaxy: int = 250):
@@ -106,9 +111,23 @@ def run_app1_variants(n_per_galaxy: int = 250):
         "+fmm (FastVectorizedFMM)",
         lambda: _fmm_forces(pos, masses, depth=4, order=6),
         accuracy_vs="standard (exact direct)",
-        note="CGR88 flat FMM, depth=4 order=6 (the app's compute path)",
+        note="adaptive FMM flat FMM, depth=4 order=6 (the app's compute path)",
     )
-    return bench.run()
+    bench.run()
+
+    # Scaling table: show FMM crossover at larger N (Class D honesty —
+    # FMM is not faster at small N, but wins decisively past N~1000).
+    print("\n  Scaling table (depth=4, order=6):")
+    print(f"  {'N':>6s}  {'direct (ms)':>12s}  {'fmm (ms)':>12s}  {'speedup':>8s}  {'rel L2':>10s}")
+    print(f"  {'-'*6}  {'-'*12}  {'-'*12}  {'-'*8}  {'-'*10}")
+    import time as _time
+    for nper in (250, 500, 1000, 2000):
+        p, m = _two_galaxies(n_per_galaxy=nper)
+        nn = len(p)
+        t0 = _time.perf_counter(); ref = _direct_forces(p, m); td = (_time.perf_counter() - t0) * 1000
+        t0 = _time.perf_counter(); fmm = _fmm_forces(p, m, depth=4, order=6); tf = (_time.perf_counter() - t0) * 1000
+        rel = float(np.linalg.norm(fmm - ref) / (np.linalg.norm(ref) + 1e-30))
+        print(f"  {nn:6d}  {td:12.1f}  {tf:12.1f}  {td/tf:8.2f}x  {rel:10.2e}")
 
 
 if __name__ == "__main__":

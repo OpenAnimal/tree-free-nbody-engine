@@ -1,11 +1,35 @@
 """
 Comprehensive Scaling & Performance Benchmark for Matrix-Free IPC Cloth Solver
 Compares:
-  1. Naive All-Pairs IPC O(N^2)
-  2. Standard Dynamic CSR Sparse Matrix IPC (DynCSRMat + GPU BVH Rebuilding)
-  3. Matrix-Free Tree-Free IPC Solver (Elastic Hashing + Linear Matrix-Free SpMV)
+  1. Naive All-Pairs IPC O(N^2) — measured for N <= 2100, extrapolated beyond
+  2. Standard Dynamic CSR Sparse Matrix IPC — an ANALYTIC MODEL (not measured):
+     t_bvh = 0.0032*N, t_csr = 0.0115*N + 12.0; no DynCSRMat implementation
+     exists in this repo, so these numbers are a modeled baseline, not data.
+  3. Matrix-Free Tree-Free IPC Solver (vectorized canonical-half-offset
+     broadphase + Matrix-Free SpMV)
 
 Validates scalability on triangulated cloth meshes from N = 500 to N = 20,000 vertices.
+
+RE-MEASURED 2026-08-21 (vectorized broadphase): the broadphase was rewritten
+from a per-key Python loop over occupied cells (which emitted all triu pairs
+of each 27-cell neighborhood and deduped with np.unique, ~98% of step time)
+to a fully-vectorized canonical-half-offset scheme (13 Chebyshev-1 offsets +
+49 Chebyshev-2 closure offsets with an occupied-midpoint check, each pair
+emitted exactly once, no dedup).  The broadphase share of total step time
+dropped from ~98% to ~28-38% (re-measured 2026-08-22 on the current working
+tree; the 2026-08-21 figure of ~15-25% predates the Newton-PCG geometry
+caching + np.bincount scatter, which sped up PCG and thereby RAISED the
+broadphase fraction), and the matrix-free solver is now FASTER than
+naive O(N^2) at every scale N >= 2025 (measured 4.4x-11.2x on 2026-08-22;
+the earlier 1.7x-4.0x figure is retained below as the conservative 2026-08-21
+measurement).  At N=484 it is still
+slower (0.5x) because the O(N^2) distance matrix is cheap at small N while
+the fixed Newton-PCG overhead dominates.  The bottleneck moved from the
+broadphase to the Newton-PCG solve (~61-72% of step time on the 2026-08-22
+re-measure).  The pre-vectorization
+per-key-loop numbers (408 / 2650 / 12579 / 33249 / 86476 ms, 0.01x-0.09x vs
+naive) are retained only as history in the README.  See the README "Scaling &
+Performance Benchmarks" section for the full re-measured table.
 """
 
 import numpy as np
@@ -24,7 +48,7 @@ from matrix_free_ipc import (
 def run_contact_benchmarks():
     print("=" * 85)
     print("SCALING BENCHMARK: MATRIX-FREE TREE-FREE IPC vs DYNAMIC CSR & NAIVE IPC")
-    print("Inspired by ZOZO PPF Contact Solver & Farach-Colton, Krapivin, Kuszmaul (2025)")
+    print("Inspired by ZOZO PPF Contact Solver & Farach-Colton, Krapivin, & Kuszmaul (2025)")
     print("=" * 85)
 
     scales = [484, 2025, 5041, 10000, 19881]
@@ -64,27 +88,33 @@ def run_contact_benchmarks():
         
         print(f"\nEvaluating Scale N = {N:,} Vertices (M = {M_tris:,} Triangles)...")
         
-        # 1. Naive All-Pairs IPC (O(N^2))
+        # 1. Naive All-Pairs IPC (O(N^2)) — measured for N <= 2100,
+        #    quadratic extrapolation beyond (labeled "(extrapolated)").
+        naive_extrapolated = False
         if N <= 2100:
             t0 = time.perf_counter()
             diff = positions[:, None, :] - positions[None, :, :]
             dists = np.linalg.norm(diff, axis=-1)
             active_mask = (dists < 0.02) & (dists > 1e-6)
             _ = np.sum(active_mask)
-            t_naive = (time.perf_counter() - t0) * 1000.0 * 2.0
+            t_naive = (time.perf_counter() - t0) * 1000.0
         else:
             base_t = results["naive_ipc_ms"][1]
             base_n = results["N"][1]
             t_naive = base_t * ((N / base_n) ** 2)
-            
+            naive_extrapolated = True
+
         results["naive_ipc_ms"].append(t_naive)
-        
-        # 2. Standard DynCSRMat IPC (Simulated dynamic CSR assembly & BVH overhead)
+
+        # 2. Standard DynCSRMat IPC — ANALYTIC MODEL (not measured; no
+        #    DynCSRMat implementation exists in this repo).  The linear
+        #    model t = 0.0032*N + 0.0115*N + 12.0 is a hypothetical
+        #    baseline for comparison, NOT empirical data.
         avg_nnz_per_vertex = 14
         total_nnz_blocks = N * avg_nnz_per_vertex
         mem_dyncsr = (total_nnz_blocks * (9 * 8 + 8)) / (1024.0 * 1024.0)
         results["dyncsr_mem_mb"].append(mem_dyncsr)
-        
+
         t_bvh = 0.0032 * N
         t_csr_assembly = 0.0115 * N + 12.0
         t_dyncsr = t_bvh + t_csr_assembly
@@ -95,7 +125,6 @@ def run_contact_benchmarks():
         solver = MatrixFreeIPCSolver(
             dhat=0.015,
             stiffness=5e3,
-            cell_size=0.04,
             max_newton_iters=2,
             cg_max_iters=6
         )
@@ -114,10 +143,13 @@ def run_contact_benchmarks():
         
         speedup_csr = t_dyncsr / max(1e-3, t_mf_total)
         speedup_naive = t_naive / max(1e-3, t_mf_total)
-        
-        print(f"  -> Naive All-Pairs IPC:      {t_naive:8.2f} ms")
-        print(f"  -> Standard DynCSRMat IPC:    {t_dyncsr:8.2f} ms (CSR Alloc: {mem_dyncsr:.2f} MB)")
-        print(f"  -> Matrix-Free Tree-Free IPC: {t_mf_total:8.2f} ms (0 MB CSR Alloc, {speedup_csr:.1f}x vs DynCSR, {speedup_naive:.1f}x vs Naive)")
+
+        naive_label = " (extrapolated)" if naive_extrapolated else ""
+        bp_ms = m_fmm["broadphase_ms"]
+        bp_frac = 100.0 * bp_ms / max(1e-6, t_mf_total)
+        print(f"  -> Naive All-Pairs IPC:      {t_naive:8.2f} ms{naive_label}")
+        print(f"  -> Standard DynCSRMat IPC:    {t_dyncsr:8.2f} ms (modeled, not measured; CSR Alloc: {mem_dyncsr:.2f} MB)")
+        print(f"  -> Matrix-Free Tree-Free IPC: {t_mf_total:8.2f} ms (broadphase {bp_ms:.2f} ms / {bp_frac:.1f}%, 0 MB CSR Alloc, {speedup_csr:.1f}x vs DynCSR model, {speedup_naive:.1f}x vs Naive)")
 
     # -------------------------------------------------------------
     # Render Publication Figure: fmm_contact_benchmark.png
@@ -139,9 +171,9 @@ def run_contact_benchmarks():
 
     # Panel 1: End-to-End Latency Scaling
     ax1 = axes[0, 0]
-    ax1.plot(results["N"], results["naive_ipc_ms"], 'o--', color="#FF4D4D", label="Naive All-Pairs IPC $O(N^2)$", linewidth=2)
-    ax1.plot(results["N"], results["dyncsr_ipc_ms"], 's-', color="#FFB800", label="Standard DynCSRMat IPC (BVH)", linewidth=2)
-    ax1.plot(results["N"], results["matrix_free_ipc_ms"], '*-', color="#00FF88", label="Matrix-Free Tree-Free IPC", linewidth=2.5)
+    ax1.plot(results["N"], results["naive_ipc_ms"], 'o--', color="#FF4D4D", label="Naive All-Pairs IPC $O(N^2)$ (extrapolated for N>2100)", linewidth=2)
+    ax1.plot(results["N"], results["dyncsr_ipc_ms"], 's-', color="#FFB800", label="Standard DynCSRMat IPC (modeled, not measured)", linewidth=2)
+    ax1.plot(results["N"], results["matrix_free_ipc_ms"], '*-', color="#00FF88", label="Matrix-Free Tree-Free IPC (measured)", linewidth=2.5)
     ax1.set_xscale("log")
     ax1.set_yscale("log")
     ax1.set_title("1. Contact Solver Step Latency (Log-Log)", color=text_color, fontsize=11, fontweight="bold")
@@ -164,8 +196,8 @@ def run_contact_benchmarks():
 
     # Panel 3: Broadphase Collision Candidate Pruning Latency
     ax3 = axes[1, 0]
-    ax3.plot(results["N"], results["broadphase_bvh_ms"], 's-', color="#FFB800", label="GPU BVH Rebuild & Traverse", linewidth=2)
-    ax3.plot(results["N"], results["broadphase_morton_ms"], 'o-', color="#00F0FF", label="Flat Lock-Free Morton Spatial Hash", linewidth=2)
+    ax3.plot(results["N"], results["broadphase_bvh_ms"], 's-', color="#FFB800", label="GPU BVH Rebuild & Traverse (modeled)", linewidth=2)
+    ax3.plot(results["N"], results["broadphase_morton_ms"], 'o-', color="#00F0FF", label="CellIndex Spatial Hash (single-threaded numpy)", linewidth=2)
     ax3.set_title("3. Broadphase Collision Candidate Pruning Latency", color=text_color, fontsize=11, fontweight="bold")
     ax3.set_xlabel("Vertex Count (N)", color=text_color, fontsize=10)
     ax3.set_ylabel("Broadphase Latency (ms)", color=text_color, fontsize=10)

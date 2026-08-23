@@ -9,7 +9,10 @@ Key Capabilities:
 1. Contiguous Morton Z-Order Delta Compression for massive 3D point clouds & LiDAR.
 2. Variable-byte / Elias-Gamma integer stream packing.
 3. Attribute (Normals, Colors, Intensities, 3D Gaussian Splats) delta prediction.
-4. Lossless integer & user-configured lossy quantization modes at multi-GB/s throughput.
+4. LOSSY compression by default: coordinates are quantized to
+   ``precision_bits`` per axis (de-quantized on decode) and attributes are
+   stored as float16, so reconstruction is approximate (PSNR-grade, not
+   bit-exact). There is no lossless mode in this implementation.
 """
 
 from typing import Tuple, Optional, List, Dict, Union, Any
@@ -175,7 +178,13 @@ class SpatialPointCloudCompressor:
         
         # 4. Varint entropy stream
         coord_bytes = varint_encode(deltas)
-        
+
+        # 4b. Sort permutation: store sort_idx so decompress can restore the
+        # original point order. Without this, decompress returns points in
+        # Morton-sorted order, not the input order, breaking the
+        # point-to-attribute association for callers that index by position.
+        perm_bytes = varint_encode(sort_idx.astype(np.uint64))
+
         # 5. Optional Attribute Delta Encoding
         attr_bytes = b""
         has_attr = False
@@ -198,10 +207,11 @@ class SpatialPointCloudCompressor:
             attr_bytes = attr_deltas.astype(np.float16).tobytes()
             
         # 6. Header serialization: (Magic, Version, N, bits, b_min(3), span(3), has_attr, attr_dim)
+        # Version 2: includes sort permutation for order-preserving round-trip.
         header = struct.pack(
             "<4sIII3f3fII",
             b"TFPC",
-            1,
+            2,
             N,
             self.bits,
             float(b_min[0]), float(b_min[1]), float(b_min[2]),
@@ -209,8 +219,9 @@ class SpatialPointCloudCompressor:
             1 if has_attr else 0,
             attr_dim
         )
-        
-        payload = header + struct.pack("<I", len(coord_bytes)) + coord_bytes + attr_bytes
+
+        payload = header + struct.pack("<I", len(coord_bytes)) + coord_bytes \
+            + struct.pack("<I", len(perm_bytes)) + perm_bytes + attr_bytes
         
         raw_size = N * 3 * 4 + (N * attr_dim * 4 if has_attr else 0)
         comp_size = len(payload)
@@ -231,6 +242,9 @@ class SpatialPointCloudCompressor:
     def decompress(self, payload: bytes) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Decompresses a TFPC payload back into 3D coordinates and optional attributes.
+
+        Version 2 payloads include the sort permutation, so the decompressed
+        points and attributes are restored to the original input order.
         """
         header_size = struct.calcsize("<4sIII3f3fII")
         if len(payload) < header_size + 4:
@@ -241,7 +255,7 @@ class SpatialPointCloudCompressor:
             "<4sIII3f3fII",
             payload[:header_size]
         )
-        if magic != b"TFPC" or ver != 1:
+        if magic != b"TFPC" or ver not in (1, 2):
             raise ValueError("Corrupt or unsupported TFPC header")
         if not 1 <= bits <= 21 or N < 1 or has_attr not in (0, 1):
             raise ValueError("Invalid TFPC header fields")
@@ -257,11 +271,28 @@ class SpatialPointCloudCompressor:
         coord_len = struct.unpack("<I", payload[coord_len_offset:coord_len_offset + 4])[0]
         coord_start = coord_len_offset + 4
         coord_end = coord_start + coord_len
+
+        # Version 2: parse the sort permutation stream.
+        if ver >= 2:
+            perm_len_offset = coord_end
+            if perm_len_offset + 4 > len(payload):
+                raise ValueError("Invalid TFPC permutation length offset")
+            perm_len = struct.unpack("<I", payload[perm_len_offset:perm_len_offset + 4])[0]
+            perm_start = perm_len_offset + 4
+            perm_end = perm_start + perm_len
+            if perm_end > len(payload):
+                raise ValueError("Invalid TFPC permutation payload length")
+            perm_data = payload[perm_start:perm_end]
+            attr_start = perm_end
+        else:
+            perm_data = None
+            attr_start = coord_end
+
         attr_bytes_expected = N * attr_dim * 2 if has_attr else 0
-        if coord_end > len(payload) or len(payload) - coord_end != attr_bytes_expected:
+        if attr_start > len(payload) or len(payload) - attr_start != attr_bytes_expected:
             raise ValueError("Invalid TFPC coordinate or attribute payload length")
         coord_data = payload[coord_start:coord_end]
-        attr_data = payload[coord_end:]
+        attr_data = payload[attr_start:]
         
         # 1. Decode Varint deltas
         deltas = varint_decode(coord_data, N)
@@ -280,7 +311,22 @@ class SpatialPointCloudCompressor:
         if has_attr and attr_dim > 0:
             attr_deltas = np.frombuffer(attr_data, dtype=np.float16).reshape(N, attr_dim).astype(np.float32)
             reconstructed_attrs = np.cumsum(attr_deltas, axis=0)
-            
+
+        # 6. Restore original point order using the sort permutation.
+        # Version 2 payloads store sort_idx (sorted->original mapping), so
+        # placing the i-th sorted item at position sort_idx[i] recovers the
+        # original order. Version 1 payloads have no permutation: points are
+        # returned in Morton-sorted order (order NOT preserved).
+        if perm_data is not None:
+            sort_idx = varint_decode(perm_data, N).astype(np.int64)
+            original_pts = np.empty_like(reconstructed_pts)
+            original_pts[sort_idx] = reconstructed_pts
+            reconstructed_pts = original_pts
+            if reconstructed_attrs is not None:
+                original_attrs = np.empty_like(reconstructed_attrs)
+                original_attrs[sort_idx] = reconstructed_attrs
+                reconstructed_attrs = original_attrs
+
         return reconstructed_pts, reconstructed_attrs
 
 

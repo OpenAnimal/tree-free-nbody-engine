@@ -1,6 +1,6 @@
 """
 Application 6: MuJoCo-Style Proximity Fields & Aerodynamic Ground-Effect Contact Solver.
-Powered by the Farach-Colton/Krapivin/Kuszmaul (2025) non-reordering funnel/elastic hash
+Powered by the Farach-Colton, Krapivin, & Kuszmaul (2025) non-reordering funnel/elastic hash
 (core.elastic_hash) for O(1) terrain-cell proximity lookups. No FMM: proximity queries
 are exact nearest-terrain-point searches, not kernel sums, so multipole math does not apply.
 
@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from core.elastic_hash import ElasticHashTable
+from core.spatial_index import CellIndex
 
 def generate_terrain_and_robot_contacts(n_terrain: int = 2500):
     """Generates 2D/3D uneven heightfield terrain and foot contact probes."""
@@ -39,61 +39,43 @@ def run_mujoco_proximity_demo():
     print(">>> Running Application 6: MuJoCo-Style Proximity Contact & Ground-Effect Field")
     terrain_pts, foot_probes = generate_terrain_and_robot_contacts(2500)
     
-    # 1. Non-reordering Spatial Hash Indexing for Terrain Points
+    # 1. Build CellIndex for terrain points (2D hashing: x, y only; z is
+    #    terrain height, used for distance computation but not for hashing).
+    #    Replaces the manual ElasticHashTable + box_map dict.
     grid_res = 16
-    ix = np.clip((terrain_pts[:, 0] * grid_res).astype(np.int64), 0, grid_res - 1)
-    iy = np.clip((terrain_pts[:, 1] * grid_res).astype(np.int64), 0, grid_res - 1)
-    morton_keys = (ix << 12) | iy
-    
-    hash_table = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-    box_map = {}
-    for i in range(len(terrain_pts)):
-        k = morton_keys[i]
-        if k not in box_map:
-            box_map[k] = []
-        box_map[k].append(i)
-        
-    for k, p_indices in box_map.items():
-        hash_table.insert(k, p_indices)
-        
+    cell_index = CellIndex(dims=2, grid_res=grid_res)
+    terrain_2d = terrain_pts[:, :2]
+    cell_index.build(terrain_2d)
+
     # 2. Fast Proximity & Contact Penetration Evaluation
     t0 = time.perf_counter()
     contact_forces = np.zeros_like(foot_probes)
     penetration_depths = np.zeros(len(foot_probes))
-    
+
     k_contact = 500.0  # Contact stiffness
     d_margin = 0.05    # Aerodynamic / contact proximity cushion
-    
+
     for i, probe in enumerate(foot_probes):
-        px, py, pz = probe
-        c_ix = int(np.clip(px * grid_res, 0, grid_res - 1))
-        c_iy = int(np.clip(py * grid_res, 0, grid_res - 1))
-        
-        # O(1) Probing 3x3 local terrain neighborhood
+        # O(1) CellIndex probe: 3x3 neighborhood of the probe's cell.
+        key = cell_index.key_of(probe[:2])
+        near_idx = cell_index.neighborhood_indices(int(key), ring=1)
+
         min_dist = 1e9
         normal_acc = np.zeros(3)
-        
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                nx, ny = c_ix + dx, c_iy + dy
-                if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                    n_key = (nx << 12) | ny
-                    p_indices, _ = hash_table.lookup(n_key)
-                    if p_indices is not None and n_key in box_map:
-                        t_pts = terrain_pts[p_indices]
-                        # Compute distance to terrain points
-                        diffs = probe - t_pts
-                        dists = np.linalg.norm(diffs, axis=-1)
-                        closest_idx = np.argmin(dists)
-                        if dists[closest_idx] < min_dist:
-                            min_dist = dists[closest_idx]
-                            normal_acc = diffs[closest_idx] / (min_dist + 1e-6)
-                            
+
+        if len(near_idx) > 0:
+            t_pts = terrain_pts[near_idx]
+            diffs = probe - t_pts
+            dists = np.linalg.norm(diffs, axis=-1)
+            closest_idx = np.argmin(dists)
+            min_dist = dists[closest_idx]
+            normal_acc = diffs[closest_idx] / (min_dist + 1e-6)
+
         penetration = max(0.0, d_margin - min_dist)
         penetration_depths[i] = penetration
         # Soft-contact repulsive normal force
         contact_forces[i] = normal_acc * (k_contact * penetration + 5.0 * np.exp(-min_dist / 0.02))
-        
+
     t_eval = time.perf_counter() - t0
     print(f"[-] MuJoCo Footpad Proximity Solve Time: {t_eval*1000:.3f} ms for {len(foot_probes)} contact points")
     

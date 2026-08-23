@@ -1,5 +1,5 @@
 """
-Asymmetric Low-Rank Tensor Multipole Contraction (algebraic_multipole_tensor.py).
+Synthetic Low-Rank Tensor Contraction Demo (algebraic_multipole_tensor.py).
 
 Inspired by:
 1. "More Asymmetry Yields Faster Matrix Multiplication"
@@ -9,13 +9,18 @@ Inspired by:
 3. "Finite Matrix Multiplication Algorithms from Infinite Groups"
    Henry Cohn, Christopher Umans et al. (FOCS / arXiv 2024/2025).
 
-Key Algorithmic Principle:
-In high-order multipole expansions (order p, dimension D), the number of expansion coefficients
-grows as P = O((p + 1)^D). The naive Multipole-to-Local (M2L) operator is a dense P x P tensor,
-imposing an O(P^2) = O((p + 1)^{2D}) arithmetic contraction bottleneck per cluster pair.
-By formulating M2L as an asymmetric low-rank tensor decomposition (Tucker / CP / butterfly rank reduction),
-we project source moments into a compressed rank-R subspace (R << P), apply diagonal distance scaling,
-and reconstruct local coefficients with bounded epsilon error.
+HONESTY NOTE -- this is a SYNTHETIC low-rank contraction demo, NOT a real FMM
+Multipole-to-Local (M2L) operator. The "kernel" M(r) is not derived from any
+physical 1/r (or harmonic) Taylor translation: U is a fixed QR-orthonormalised
+Vandermonde-pattern matrix, the latent decay s(r) is a hand-constructed
+1/dist^exps * cos(phase) factor, and the "dense" baseline
+(``_build_dense_m2l_kernel``) RECONSTRUCTS THE SAME U * diag(s(r)) * U^T
+factorisation the low-rank path uses. The dense-vs-low-rank "Rel Error"
+reported by the benchmark is therefore ~1e-16 (floating-point round-off in
+reordering the same algebra), NOT an approximation error of a true M2L
+kernel. The speedup is real (O(P*R) vs O(P^2) contraction of the same
+synthetic factorisation), but no claim is made that this approximates an
+actual FMM M2L operator at bounded epsilon error.
 """
 
 import time
@@ -25,23 +30,23 @@ import numpy as np
 
 class AsymmetricMultipoleTensor:
     """
-    Low-Rank Asymmetric Tensor Factorization for Multipole-to-Local (M2L) Kernels.
-    
-    Decomposes the high-order translation matrix M(r) into:
-        M(r) \approx U * diag(s(r)) * V^T
-    where U is (P x R), V is (P x R), and R << P is the effective numerical rank.
+    Synthetic low-rank tensor factorisation demo.
+
+    Builds a fixed rank-R orthonormal basis U (P x R) from a Vandermonde
+    pattern and a synthetic distance-dependent latent decay s(r), then
+    contracts source moments through U * diag(s(r)) * U^T. This is a
+    synthetic low-rank contraction, not a physical M2L operator.
     """
-    def __init__(self, order: int = 4, dim: int = 3, target_rank: Optional[int] = None, eps: float = 1e-5):
+    def __init__(self, order: int = 4, dim: int = 3, target_rank: Optional[int] = None):
         self.order = order
         self.dim = dim
-        self.eps = eps
-        
+
         # Total number of multi-index coefficients (p + 1)^dim or homogeneous monomial combinations
         self.n_coeffs = (order + 1) ** dim
-        
+
         # Target rank for asymmetric compression
         if target_rank is None:
-            # Theoretical rank scaling from laser method / singular value decay of 1/r kernel
+            # Heuristic rank scaling for the synthetic demo
             self.rank = max(4, int(self.n_coeffs ** 0.65))
         else:
             self.rank = min(target_rank, self.n_coeffs)
@@ -185,7 +190,13 @@ class FastTensorM2L:
 
 def benchmark_tensor_vs_dense(order: int = 4, n_sources: int = 50, n_targets: int = 50) -> Dict[str, float]:
     """
-    Benchmarks dense vs asymmetric low-rank tensor contraction.
+    Benchmarks dense vs low-rank contraction of the SAME synthetic factorisation.
+
+    The "dense" path reconstructs U * diag(s(r)) * U^T and contracts it; the
+    "low_rank" path contracts U^T -> diag -> U. Both evaluate identical
+    algebra, so ``rel_error`` is floating-point round-off (~1e-16), NOT an
+    approximation error of a true M2L kernel. The reported speedup measures
+    the O(P*R) vs O(P^2) contraction cost of this synthetic factorisation.
     """
     engine = LowRankFarFieldContraction(order=order, dim=3)
     p = engine.tensor_engine.n_coeffs
@@ -215,12 +226,13 @@ def benchmark_tensor_vs_dense(order: int = 4, n_sources: int = 50, n_targets: in
 
 
 if __name__ == "__main__":
-    print("Testing Asymmetric Low-Rank Tensor Multipole Contraction...")
-    
+    print("Synthetic low-rank tensor contraction demo (NOT a real FMM M2L operator)...")
+
     for p_order in [2, 3, 4, 5]:
         stats = benchmark_tensor_vs_dense(order=p_order, n_sources=60, n_targets=60)
         print(f"Order p={stats['order']} (P={stats['n_coeffs_P']}, Rank={stats['rank_R']}): "
               f"Dense={stats['dense_time_ms']:.2f}ms, LowRank={stats['lowrank_time_ms']:.2f}ms "
-              f"-> Speedup={stats['speedup']:.2f}x (Rel Error={stats['rel_error']:.4e})")
-    
-    print("Asymmetric Tensor M2L Verification: SUCCESS!")
+              f"-> Speedup={stats['speedup']:.2f}x (round-off rel error={stats['rel_error']:.4e}, "
+              f"NOT a true M2L approximation error)")
+
+    print("Synthetic low-rank contraction demo complete (dense==low-rank algebra by construction).")

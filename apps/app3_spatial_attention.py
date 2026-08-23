@@ -1,6 +1,6 @@
 """
 Application 3: Fast Spatial-Hash Attention for 2D Geometric Point Clouds.
-Cell index: Farach-Colton / Krapivin / Kuszmaul (2025) non-reordering
+Cell index: Farach-Colton, Krapivin, & Kuszmaul (2025) non-reordering
 funnel/elastic hash (core.elastic_hash), used as the sole spatial index.
 
 Method, stated honestly: near-field (3x3 cell neighborhood) attention is
@@ -19,8 +19,76 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
-from core.elastic_hash import ElasticHashTable
-from core.tree_free_fmm import morton_encode_2d, decode_morton_2d, get_box_center_2d
+from core.spatial_index import CellIndex
+
+
+def hash_spatial_attention(points: np.ndarray, V: np.ndarray,
+                           sigma: float = 0.15, depth: int = 4) -> np.ndarray:
+    """Near-exact (3x3 CellIndex neighborhood) + far-field per-cell centroid
+    approximation. Vectorized per-cell using CellIndex (replaces the old
+    raw ElasticHashTable + per-point Python loops).
+
+    The dense spatial attention reference includes the self-pair w_ii = 1
+    (exp(0) = 1), so this function also includes self-pairs (no masking).
+    """
+    n, d = V.shape
+    grid_res = 1 << depth
+    cell_index = CellIndex(dims=2, grid_res=grid_res)
+    unique_keys, inverse = cell_index.build(points)
+    K = len(unique_keys)
+
+    # Cluster moments: barycenter and aggregated value sum per occupied cell.
+    cluster_counts = np.bincount(inverse, minlength=K).astype(np.float64)
+    cluster_centers = np.zeros((K, 2))
+    cluster_v = np.zeros((K, d))
+    for dim in range(2):
+        cluster_centers[:, dim] = np.bincount(inverse, weights=points[:, dim],
+                                              minlength=K) / np.maximum(cluster_counts, 1)
+    for dim in range(d):
+        cluster_v[:, dim] = np.bincount(inverse, weights=V[:, dim], minlength=K)
+
+    cell_ints = np.array([cell_index.key_ints(int(k)) for k in unique_keys])
+    inv_2_sigma_sq = 1.0 / (2.0 * sigma ** 2)
+
+    out = np.zeros_like(V)
+    for c, key in enumerate(unique_keys):
+        idx_t = cell_index.bucket(int(key))
+        if len(idx_t) == 0:
+            continue
+        pts_t = points[idx_t]  # (nt, 2)
+
+        acc_v = np.zeros((len(idx_t), d))
+        acc_w = np.zeros(len(idx_t)) + 1e-9
+
+        # Near-field: 3x3 CellIndex neighborhood (includes self-pairs w_ii=1).
+        near_idx = cell_index.neighborhood_indices(int(key), ring=1)
+        if len(near_idx) > 0:
+            pts_s = points[near_idx]   # (ns, 2)
+            V_s = V[near_idx]          # (ns, d)
+            diff = pts_t[:, None, :] - pts_s[None, :, :]  # (nt, ns, 2)
+            d2 = np.sum(diff ** 2, axis=-1)               # (nt, ns)
+            w = np.exp(-d2 * inv_2_sigma_sq)               # (nt, ns)
+            acc_v += np.sum(w[:, :, None] * V_s[None, :, :], axis=1)
+            acc_w += np.sum(w, axis=1)
+
+        # Far-field: per-cell centroid approximation.
+        cx, cy = cell_ints[c]
+        far_mask = (np.abs(cell_ints[:, 0] - cx) > 1) | \
+                   (np.abs(cell_ints[:, 1] - cy) > 1)
+        far_clusters = np.where(far_mask)[0]
+        if len(far_clusters) > 0:
+            far_centers = cluster_centers[far_clusters]
+            far_v = cluster_v[far_clusters]
+            far_counts = cluster_counts[far_clusters]
+            diff_c = pts_t[:, None, :] - far_centers[None, :, :]  # (nt, n_far, 2)
+            d_c2 = np.sum(diff_c ** 2, axis=-1)                   # (nt, n_far)
+            w_far = np.exp(-d_c2 * inv_2_sigma_sq)                 # (nt, n_far)
+            acc_v += np.sum(w_far[:, :, None] * far_v[None, :, :], axis=1)
+            acc_w += np.sum(w_far * far_counts[None, :], axis=1)
+
+        out[idx_t] = acc_v / acc_w[:, None]
+    return out
+
 
 def run_spatial_attention_demo(N_points: int = 1500, d_model: int = 16):
     print(">>> Running Application 3: Fast Spatial-Hash Attention (near exact + far centroid)")
@@ -55,66 +123,7 @@ def run_spatial_attention_demo(N_points: int = 1500, d_model: int = 16):
     # --- Spatial-Hash Attention (near exact + far centroid approximation) ---
     t0 = time.perf_counter()
     depth = 4
-    grid_res = 1 << depth
-    hash_table = ElasticHashTable(capacity=grid_res * grid_res * 2, delta=0.05)
-    
-    # Step 1: Bucket points into the funnel hash (sole spatial index:
-    # Morton cell key -> list of particle indices).
-    for i in range(N_points):
-        key = morton_encode_2d(points[i, 0], points[i, 1], depth=depth)
-        p_indices, _ = hash_table.lookup(key)
-        if p_indices is None:
-            hash_table.insert(key, [i])
-        else:
-            p_indices.append(i)
-    cell_keys = [k for k, _ in hash_table.items()]
-    
-    # Step 2: Compute cluster center aggregated values (centroid moments)
-    cluster_centers = {}
-    cluster_v = {}
-    for key in cell_keys:
-        p_indices = hash_table.lookup(key)[0]
-        _, ix, iy = decode_morton_2d(key)
-        cx, cy = get_box_center_2d(depth, ix, iy)
-        cluster_centers[key] = np.array([cx, cy])
-        cluster_v[key] = np.sum(V[p_indices], axis=0)  # aggregated value sum (centroid moment)
-        
-    # Step 3: Fast Attention Query: near-field direct + far-field centroid
-    fast_output = np.zeros_like(V)
-    for i in range(N_points):
-        px, py = points[i, 0], points[i, 1]
-        m_key = morton_encode_2d(px, py, depth=depth)
-        _, ix, iy = decode_morton_2d(m_key)
-        
-        acc_v = np.zeros(d_model)
-        acc_weight = 1e-9
-        
-        # Near-field search (3x3 adjacent buckets via O(1) hash probes)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                nx, ny = ix + dx, iy + dy
-                if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                    n_key = (depth << 24) | morton_encode_2d((nx+0.5)/grid_res, (ny+0.5)/grid_res, depth=depth) & 0xFFFFFF
-                    p_indices, _ = hash_table.lookup(n_key)
-                    if p_indices is not None:
-                        # Direct local attention
-                        neigh_pts = points[p_indices]
-                        d2 = np.sum((points[i] - neigh_pts)**2, axis=-1)
-                        w = np.exp(-d2 / (2 * sigma**2))
-                        acc_v += np.sum(w[:, None] * V[p_indices], axis=0)
-                        acc_weight += np.sum(w)
-                        
-        # Far-field centroid approximation from distant clusters
-        for f_key, c_center in cluster_centers.items():
-            _, fx, fy = decode_morton_2d(f_key)
-            if abs(fx - ix) > 1 or abs(fy - iy) > 1:
-                dist_c2 = np.sum((points[i] - c_center)**2)
-                w_far = np.exp(-dist_c2 / (2 * sigma**2))
-                acc_v += w_far * cluster_v[f_key]
-                acc_weight += w_far * len(hash_table.lookup(f_key)[0])
-                
-        fast_output[i] = acc_v / acc_weight
-        
+    fast_output = hash_spatial_attention(points, V, sigma=sigma, depth=depth)
     t_fast = time.perf_counter() - t0
     print(f"[-] Spatial-Hash Attention Time:          {t_fast*1000:.2f} ms")
 
@@ -127,8 +136,9 @@ def run_spatial_attention_demo(N_points: int = 1500, d_model: int = 16):
           f"(far-field centroid approximation + no QK feature term)")
     
     # 3. Visualization
+    grid_res = 1 << depth
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6.5), facecolor='#0B0E14')
-    
+
     # Plot 1: Query attention field from an arbitrary query point
     query_idx = 100
     q_pt = points[query_idx]
@@ -141,33 +151,27 @@ def run_spatial_attention_demo(N_points: int = 1500, d_model: int = 16):
     plt.setp(plt.getp(cb1.ax.axes, 'yticklabels'), color='#8B949E')
     ax1.set_title("Exact Dense Attention Matrix A[q, :]", color='white', fontsize=11, fontweight='bold')
     ax1.legend(loc='upper right', facecolor='#161B22', edgecolor='#30363D', labelcolor='white')
-    
+
     # Plot 2: Spatial Hash Decomposition (Near vs Far buckets)
     ax2.set_facecolor('#0B0E14')
-    q_key = morton_encode_2d(q_pt[0], q_pt[1], depth=depth)
-    _, q_ix, q_iy = decode_morton_2d(q_key)
-    
-    # Color particles by Near vs Far field relative to query
+    vis_index = CellIndex(dims=2, grid_res=grid_res)
+    vis_index.build(points)
+    q_key = vis_index.key_of(q_pt)
+    near_idx = vis_index.neighborhood_indices(int(q_key), ring=1)
+
     is_near = np.zeros(N_points, dtype=bool)
-    for dx in [-1, 0, 1]:
-        for dy in [-1, 0, 1]:
-            nx, ny = q_ix + dx, q_iy + dy
-            if 0 <= nx < grid_res and 0 <= ny < grid_res:
-                n_key = (depth << 24) | morton_encode_2d((nx+0.5)/grid_res, (ny+0.5)/grid_res, depth=depth) & 0xFFFFFF
-                p_indices, _ = hash_table.lookup(n_key)
-                if p_indices is not None:
-                    is_near[p_indices] = True
-                    
+    is_near[near_idx] = True
+
     ax2.scatter(points[is_near, 0], points[is_near, 1], c='#00FFCC', s=22, label='Near-Field (Direct P2P via Hash)')
     ax2.scatter(points[~is_near, 0], points[~is_near, 1], c='#4B5563', s=15, alpha=0.6, label='Far-Field (Centroid Cluster Approx.)')
     ax2.scatter(q_pt[0], q_pt[1], c='#FF0055', s=120, marker='*', edgecolors='white', label='Query Point')
-    
+
     # Grid lines
     for g in np.linspace(0, 1, grid_res + 1):
         ax2.axvline(g, color='#30363D', lw=0.4, alpha=0.4)
         ax2.axhline(g, color='#30363D', lw=0.4, alpha=0.4)
         
-    ax2.set_title("Spatial Hash Partitioning (Funnel Hash, Farach-Colton et al.)", color='white', fontsize=11, fontweight='bold')
+    ax2.set_title("Spatial Hash Partitioning (Funnel Hash, Farach-Colton, Krapivin, & Kuszmaul, 2025)", color='white', fontsize=11, fontweight='bold')
     ax2.legend(loc='upper right', facecolor='#161B22', edgecolor='#30363D', labelcolor='white')
     
     for ax in (ax1, ax2):

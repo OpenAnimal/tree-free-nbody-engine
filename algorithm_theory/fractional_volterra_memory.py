@@ -7,7 +7,7 @@ Inspired by:
 2. "Fast Evaluation of Non-Local Fractional-in-Time Operators"
    A. Arnold, E. S. Valdinoci (Numerische Mathematik, 2014).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 In anomalous sub-diffusion, battery capacity degradation, viscoelastic materials, and memory-dependent
@@ -21,7 +21,10 @@ By viewing the kernel K(t, s) = (t - s)^{alpha - 1} as a 1D continuous multi-pol
 1. Near-field history (recent window s in [t - tau, t]): Evaluated via direct local quadrature.
 2. Far-field history: Grouped into dyadic logarithmic time intervals [t - 2^{l+1}*tau, t - 2^l*tau)
    and compressed into low-rank Taylor/multipole polynomial moments.
-This drops the total history integration cost from O(T^2) to strictly O(T * log T) or O(T).
+This drops the total history integration cost from O(T^2) to O(T * log T):
+the near-field window is O(window) per step (constant window => O(T) total)
+and each far-field dyadic block is aggregated in O(1) via prefix sums of
+``f`` and ``f*s``, giving O(log T) far-field work per step.
 """
 
 import time
@@ -33,19 +36,22 @@ import numpy as np
 class FractionalVolterraMemoryFMM:
     """
     Fast Multipole Evaluator for 1D Non-Local Fractional History Kernels.
-    
-    Evaluates u(t) = int_0^t ((t - s)^{alpha - 1} / Gamma(alpha)) * f(s) ds in O(T) time.
+
+    Evaluates u(t) = int_0^t ((t - s)^{alpha - 1} / Gamma(alpha)) * f(s) ds
+    in O(T * log T) time: O(window) near-field direct quadrature per step
+    (constant window => O(T) total) plus O(log T) far-field dyadic blocks per
+    step, each aggregated in O(1) via prefix sums of ``f`` and ``f*s``. The
+    far-field expansion is a fixed monopole + dipole (first-order Taylor)
+    approximation about each dyadic block centre.
     """
     def __init__(
         self,
         fractional_alpha: float = 0.6,
-        order: int = 4,
         recent_window_size: int = 64
     ):
         self.alpha = float(fractional_alpha)
-        self.order = int(order)
         self.window = int(recent_window_size)
-        
+
         # Precompute Gamma(alpha)
         self.gamma_alpha = math.gamma(self.alpha)
 
@@ -69,13 +75,26 @@ class FractionalVolterraMemoryFMM:
 
     def fast_history_convolution(self, signal_f: np.ndarray, dt: float) -> np.ndarray:
         """
-        Fast Tree-Free Dyadic Multipole Memory Convolution in O(T * log T) operations.
+        Fast Tree-Free Dyadic Multipole Memory Convolution in O(T * log T)
+        operations.
+
+        Each far-field dyadic block is aggregated in O(1) using prefix sums of
+        ``f`` and ``f*s`` (so the block monopole ``sum f`` and dipole
+        ``sum f*(s - center)`` are read off as two subtractions rather than
+        recomputed over the whole block every timestep -- the old per-block
+        ``np.sum`` made the far field Theta(T^2), contradicting the O(T log T)
+        claim).
         """
         T = len(signal_f)
         out = np.zeros(T, dtype=np.float64)
 
-        # Precompute 1D Taylor expansion coefficients for kernel (t - s)^{alpha - 1}
-        # K(t - s) = K(t - c) + K'(t - c)*(c - s) + ...
+        # Prefix sums for O(1) per-block aggregation:
+        #   prefix_f[i]  = sum_{j<i} f[j]
+        #   prefix_fs[i] = sum_{j<i} f[j] * (j * dt)
+        s_grid = np.arange(T, dtype=np.float64) * dt
+        prefix_f = np.concatenate(([0.0], np.cumsum(signal_f, dtype=np.float64)))
+        prefix_fs = np.concatenate(([0.0], np.cumsum(signal_f * s_grid, dtype=np.float64)))
+
         for k in range(1, T):
             # 1. Near-field: Direct evaluation over recent window
             near_start = max(0, k - self.window)
@@ -91,23 +110,25 @@ class FractionalVolterraMemoryFMM:
                 while cur_end > 0:
                     block_size = self.window * (2 ** level)
                     cur_start = max(0, cur_end - block_size)
-                    
+
                     if cur_start < cur_end:
                         # Cluster center time
                         center_s = (cur_start + cur_end) * 0.5 * dt
                         t_now = k * dt
                         center_dt = t_now - center_s
-                        
+
+                        # O(1) block aggregates from prefix sums.
+                        block_f_sum = prefix_f[cur_end] - prefix_f[cur_start]
+                        block_fs_sum = prefix_fs[cur_end] - prefix_fs[cur_start]
                         # Total integrated signal in block
-                        block_sum = np.sum(signal_f[cur_start:cur_end]) * dt
-                        
+                        block_sum = block_f_sum * dt
+
                         # Monopole contribution: K(center_dt) * block_sum
                         k_center = self._eval_fractional_kernel(np.array([center_dt]))[0]
                         out[k] += k_center * block_sum
-                        
+
                         # Dipole correction: K'(center_dt) * sum f(s)*(s - center_s)
-                        s_vec = np.arange(cur_start, cur_end) * dt
-                        dipole_moment = np.sum(signal_f[cur_start:cur_end] * (s_vec - center_s)) * dt
+                        dipole_moment = (block_fs_sum - center_s * block_f_sum) * dt
                         # d/dt [ dt^{alpha-1} / Gamma ] = (alpha - 1) * dt^{alpha-2} / Gamma
                         k_deriv = ((self.alpha - 1.0) * (center_dt ** (self.alpha - 2.0))) / self.gamma_alpha
                         out[k] -= k_deriv * dipole_moment
@@ -134,7 +155,7 @@ if __name__ == "__main__":
     time_points = np.arange(T_history) * dt_step
     signal = np.sin(2.0 * np.pi * time_points * 0.5) + np.random.randn(T_history) * 0.1
 
-    fmm_volterra = FractionalVolterraMemoryFMM(fractional_alpha=alpha_frac, order=2, recent_window_size=32)
+    fmm_volterra = FractionalVolterraMemoryFMM(fractional_alpha=alpha_frac, recent_window_size=32)
 
     # 1. Fast Multipole History Convolution
     t0 = time.perf_counter()
@@ -155,4 +176,23 @@ if __name__ == "__main__":
     print(f"Projected Dense O(T^2) Time  : {t_dense_proj:.2f} ms")
     print(f"Measured Speedup Ratio       : {t_dense_proj / max(t_fast, 1e-6):.1f}x")
     print(f"Relative L2 Precision Error  : {rel_error:.2e}")
+
+    # 3. Timing sanity: T-doubling ratio. With the prefix-sum far field the
+    #    cost is O(T log T), so doubling T should give a ratio approaching
+    #    ~2.1x (2 * (log(2T)/log(T))). The old per-block np.sum far field was
+    #    Theta(T^2) and gave ~4x (or ~2.5x with the near-field constant
+    #    dominating); the corrected ratio must be well below the quadratic
+    #    ~4x benchmark.
+    print("\nTiming sanity (T-doubling ratio, expect ~2.1x for O(T log T)):")
+    prev_t = None
+    for T_test in (2000, 4000, 8000):
+        sig_t = np.sin(2.0 * np.pi * np.arange(T_test) * dt_step * 0.5)
+        t0 = time.perf_counter()
+        fmm_volterra.fast_history_convolution(sig_t, dt=dt_step)
+        tt = time.perf_counter() - t0
+        if prev_t is not None:
+            print(f"  T={T_test:>6d}: {tt*1000:8.2f} ms  (ratio vs prev = {tt/prev_t:.2f}x)")
+        else:
+            print(f"  T={T_test:>6d}: {tt*1000:8.2f} ms")
+        prev_t = tt
     print("=" * 70)

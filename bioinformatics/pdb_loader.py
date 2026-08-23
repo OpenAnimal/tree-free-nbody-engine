@@ -78,6 +78,10 @@ class MolecularSystem:
     residue_ids: np.ndarray     # (N,) int32
     chain_ids: List[str]        # N chain IDs
     system_name: str = "Macromolecule"
+    # Provenance of the partial charges (set by the loader/generator). Real
+    # force-field charges would say e.g. "AMBER ff14SB"; the parse_pdb heuristic
+    # sets "heuristic element-based placeholder, not a force field".
+    charges_source: str = "heuristic element-based placeholder, not a force field"
 
     @property
     def num_atoms(self) -> int:
@@ -109,7 +113,8 @@ class MolecularSystem:
             residue_names=list(self.residue_names),
             residue_ids=self.residue_ids.copy(),
             chain_ids=list(self.chain_ids),
-            system_name=self.system_name
+            system_name=self.system_name,
+            charges_source=self.charges_source,
         )
 
 
@@ -141,7 +146,7 @@ def parse_pdb(pdb_content_or_path: str) -> MolecularSystem:
                 res_id = int(line[22:26].strip())
                 x = float(line[30:38].strip())
                 y = float(line[38:46].strip())
-                z = float(line[47:54].strip())
+                z = float(line[46:54].strip())
 
                 element = line[76:78].strip().upper() if len(line) >= 78 else name[0].upper()
                 if not element or element.isdigit():
@@ -150,7 +155,12 @@ def parse_pdb(pdb_content_or_path: str) -> MolecularSystem:
                 r = ATOM_RADII.get(element, ATOM_RADII["DEFAULT"])
                 m = ATOM_MASSES.get(element, ATOM_MASSES["DEFAULT"])
 
-                # Estimate default partial charge if not given
+                # Estimate default partial charge if not given.
+                # WARNING: this is a crude element/residue-name heuristic that
+                # fires on every real PDB with no charge columns. It is NOT a
+                # force field -- do not use these charges for binding/energy
+                # conclusions. The provenance is recorded on
+                # MolecularSystem.charges_source.
                 q = 0.0
                 if res_name in ["ARG", "LYS"] and name in ["NZ", "NH1", "NH2", "NE", "1HZ", "2HZ", "3HZ"]:
                     q = 0.33
@@ -185,7 +195,8 @@ def parse_pdb(pdb_content_or_path: str) -> MolecularSystem:
         residue_names=res_names,
         residue_ids=np.array(res_ids, dtype=np.int32),
         chain_ids=chain_ids,
-        system_name="PDB_Import"
+        system_name="PDB_Import",
+        charges_source="heuristic element-based placeholder, not a force field",
     )
 
 
@@ -285,15 +296,21 @@ def generate_synthetic_protein(n_atoms: int = 5000, seed: int = 42) -> Molecular
         residue_names=all_resnames[:n_atoms],
         residue_ids=np.array(all_resids[:n_atoms], dtype=np.int32),
         chain_ids=all_chains[:n_atoms],
-        system_name=f"Synthetic_Protein_{n_atoms}atoms"
+        system_name=f"Synthetic_Protein_{n_atoms}atoms",
+        charges_source="synthetic heuristic placeholder, not a force field",
     )
 
 
-def generate_viral_capsid(n_capsomers: int = 60, atoms_per_unit: int = 500, radius: float = 120.0) -> MolecularSystem:
+def generate_viral_capsid(n_capsomers: int = 60, atoms_per_unit: int = 500, radius: float = 120.0, seed: int = 42) -> MolecularSystem:
     """
     Generates an icosahedral viral capsid assembly (e.g. Parvovirus / Adenovirus / HIV capsid model)
     spanning tens of thousands to hundreds of thousands of atoms in Angstroms.
+
+    ``seed`` controls the per-capsomer jitter (default 42, fixed for
+    reproducibility); previously this drew from the unseeded global
+    ``np.random`` state.
     """
+    rng = np.random.RandomState(seed)
     # Golden ratio for icosahedron vertices
     phi = (1.0 + np.sqrt(5.0)) / 2.0
     v_base = np.array([
@@ -314,7 +331,7 @@ def generate_viral_capsid(n_capsomers: int = 60, atoms_per_unit: int = 500, radi
 
     for c_idx in range(n_capsomers):
         # Position on spherical shell
-        center = v_base[c_idx % len(v_base)] + np.random.normal(0, 5.0, 3)
+        center = v_base[c_idx % len(v_base)] + rng.normal(0, 5.0, 3)
         center = center / np.linalg.norm(center) * radius
         unit = generate_synthetic_protein(atoms_per_unit, seed=c_idx)
         unit_coords = unit.coords - unit.center_of_mass + center
@@ -337,5 +354,6 @@ def generate_viral_capsid(n_capsomers: int = 60, atoms_per_unit: int = 500, radi
         residue_names=all_resnames,
         residue_ids=np.concatenate(all_resids),
         chain_ids=all_chains,
-        system_name=f"Viral_Capsid_{len(np.vstack(all_coords))}atoms"
+        system_name=f"Viral_Capsid_{len(np.vstack(all_coords))}atoms",
+        charges_source="synthetic heuristic placeholder, not a force field",
     )

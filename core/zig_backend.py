@@ -426,7 +426,7 @@ def zig_contact_forces(
     return np.column_stack([fx, fy, fz])
 
 # -----------------------------------------------------------------------------
-# 2D Complex Multipole APIs (Exact Greengard-Rokhlin Laurent Expansion)
+# 2D Complex Multipole APIs (Exact Greengard & Rokhlin Laurent Expansion)
 # -----------------------------------------------------------------------------
 
 def zig_2d_p2m(

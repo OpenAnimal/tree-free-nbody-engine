@@ -7,13 +7,18 @@ One implementation of the pattern used across every domain folder:
      3D: 10-bit Morton interleave of world-space cell coords),
   2. bucket the item ids per occupied cell,
   3. keep the elastic (non-reordering) hash as the AUTHORITATIVE occupied-cell
-     index — every membership/neighborhood query goes through hash probes,
-     never through dict scans,
+     index for membership and neighborhood probes -- `cell_id`, `bucket`,
+     `neighbor_keys`, and `neighborhood_indices` all resolve occupancy via a
+     hash probe per candidate key (never a dict scan),
   4. rebuild on every `build()` call: the append-only table cannot unlearn
      stale keys, so the table is recreated with a capacity sized to the real
      occupied-cell count (two-pass build).
 
-Domain modules should use this class instead of hand-rolling the pattern.
+Honesty note on the exception to (3): the full-set enumerators
+`occupied_keys()`, `items()`, and `far_keys(key)` DO iterate the backing
+`_buckets` dict (the elastic hash is not iterable in key order), so they are
+O(occupied_cells) dict scans rather than hash probes. Membership and
+per-neighborhood queries -- the hot paths -- remain hash-probe only.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +26,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from core.elastic_hash import ElasticHashTable
+
+
+def morton_1d_key(ix: int) -> int:
+    """1D cell key: just the cell index directly (grid resolution up to 4096)."""
+    return int(ix) & 0xFFF
 
 
 def morton_2d_key(ix: int, iy: int) -> int:
@@ -43,17 +53,27 @@ class CellIndex:
 
     Parameters
     ----------
-    dims : 2 or 3.
+    dims : 1, 2 or 3.
     grid_res : "unit" mode (default) — positions live in [0,1)^dims and are
-        quantized with floor(p * grid_res) (grid_res <= 4096 for 2D, <= 1024
-        for 3D).
+        quantized with floor(p * grid_res) (grid_res <= 4096 for 1D/2D,
+        <= 1024 for 3D).
     cell_size : pass explicitly for "world" mode — positions are world units,
         quantized as floor(p / cell_size) + 512 into 1024 cells per axis.
+
+    Note on `grid_res` semantics (Round-7 task T-C8 / finding R7-F30):
+        In this class `grid_res` is exactly cells-per-side (linear). The
+        `RadialTaylorFMM` engines pass `grid_res=depth` and treat `depth` as
+        cells-per-side linearly. The neural-ops modules
+        (`multipole_attention.py`, `flash_multipole_kernel.py`,
+        `continuous_meshfree_gnn.py`) use a DIFFERENT convention:
+        `grid_res = 1 << grid_depth` (exponential). The same word
+        (`depth`/`grid_depth`) therefore means different things one import
+        apart — check each module's convention before mixing.
     """
 
     def __init__(self, dims: int = 2, grid_res: int = 32, cell_size: Optional[float] = None):
-        if dims not in (2, 3):
-            raise ValueError("dims must be 2 or 3")
+        if dims not in (1, 2, 3):
+            raise ValueError("dims must be 1, 2, or 3")
         self.dims = dims
         self.grid_res = int(grid_res)
         self.unit_mode = cell_size is None
@@ -65,6 +85,13 @@ class CellIndex:
             self.cell_size = float(cell_size)
         if self.unit_mode and (self.dims == 3 and self.grid_res > 1024):
             raise ValueError("3D unit mode supports grid_res <= 1024")
+        # 1D and 2D keys use 12-bit per-axis masks (morton_1d_key and
+        # morton_2d_key mask with 0xFFF), so grid_res > 4096 would silently
+        # alias distinct cells to the same key. Reject explicitly.
+        if self.unit_mode and self.dims in (1, 2) and self.grid_res > 4096:
+            raise ValueError(
+                f"{self.dims}D unit mode supports grid_res <= 4096 (12-bit "
+                f"per-axis key mask); got {self.grid_res}")
         self.hash_table = ElasticHashTable(capacity=16, delta=0.05)
         self._buckets: Dict[int, List[int]] = {}
         self._cell_ids: Dict[int, int] = {}
@@ -86,6 +113,8 @@ class CellIndex:
     def key_of(self, pos) -> int:
         """Cell key of a single position."""
         p = np.asarray(pos, dtype=np.float64)
+        if self.dims == 1:
+            return morton_1d_key(int(self._quantize_axis(p[:1])[0]))
         if self.dims == 2:
             return morton_2d_key(int(self._quantize_axis(p[:1])[0]),
                                  int(self._quantize_axis(p[1:2])[0]))
@@ -95,6 +124,8 @@ class CellIndex:
 
     def key_ints(self, key: int) -> Tuple[int, ...]:
         """Decode a key back to integer cell coordinates."""
+        if self.dims == 1:
+            return (int(key) & 0xFFF,)
         if self.dims == 2:
             return (key & 0xFFF, key >> 12)
         ix = iy = iz = 0
@@ -112,6 +143,8 @@ class CellIndex:
             ints[ax] += delta
             if ints[ax] < 0 or ints[ax] > limit:
                 return None
+        if self.dims == 1:
+            return morton_1d_key(ints[0])
         if self.dims == 2:
             return morton_2d_key(ints[0], ints[1])
         return morton_3d_key(*ints)
@@ -128,7 +161,10 @@ class CellIndex:
         positions = np.asarray(positions, dtype=np.float64)
         n = len(positions)
         self._buckets.clear()
-        if self.dims == 2:
+        if self.dims == 1:
+            ix = self._quantize_axis(positions[:, 0])
+            keys = ix
+        elif self.dims == 2:
             ix = self._quantize_axis(positions[:, 0])
             iy = self._quantize_axis(positions[:, 1])
             keys = (iy << 12) | ix
@@ -188,9 +224,10 @@ class CellIndex:
 
     def neighbor_keys(self, key: int, ring: int = 1) -> List[int]:
         """Occupied keys within Chebyshev ring `ring` of `key` (inclusive)."""
-        axes = (0, 1) if self.dims == 2 else (0, 1, 2)
         out = []
-        if self.dims == 2:
+        if self.dims == 1:
+            deltas = [(dx,) for dx in range(-ring, ring + 1)]
+        elif self.dims == 2:
             deltas = [(dx, dy) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1)]
         else:
             deltas = [(dx, dy, dz) for dx in range(-ring, ring + 1)

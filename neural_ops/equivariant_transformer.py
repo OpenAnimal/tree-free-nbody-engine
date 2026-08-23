@@ -11,6 +11,11 @@ Key Equivariance Theorems:
 """
 
 import numpy as np
+
+try:
+    from neural_ops._coord_contract import check_unit_coords
+except ImportError:  # direct script execution (repo root not yet on sys.path)
+    from _coord_contract import check_unit_coords
 from typing import Optional, Tuple, Dict, Any, List
 
 
@@ -64,6 +69,7 @@ class EquivariantMultipoleTransformerLayer:
         Forward pass producing updated invariant scalar and equivariant vector features.
         Returns: (scalar_out (N, scalar_dim), vector_out (N, vector_dim, 3), meta)
         """
+        check_unit_coords(coords, "EquivariantMultipoleTransformerLayer.forward(coords)")
         N, D_s = scalar_feats.shape
         D_v = self.vector_dim
         if vector_feats is None:
@@ -123,19 +129,29 @@ class EquivariantMultipoleTransformerLayer:
             pts_src = coords_clipped[p_src_arr]
             center_src = all_centers[key_to_idx[k_src]]
 
-            # Find near neighbors
-            src_grid = np.floor(center_src * res).astype(np.int64)
+            # Find near neighbors.
+            # Derive the source cell from the bucket key k_src itself (NOT from
+            # the cluster centroid): for a multi-particle bucket whose members
+            # hug a cell boundary, the centroid can land in a different cell
+            # than every member, and the ring-1 neighborhood around the
+            # centroid cell then misses a cell that is ring-1 adjacent to the
+            # bucket's actual cell (where a true near neighbor lives).  The
+            # bucket key is LINEAR (see _morton_encode): k = nx + ny*res +
+            # nz*res^2, so the cell coords are recovered by integer division.
+            src_grid = np.array([k_src % res,
+                                 (k_src // res) % res,
+                                 k_src // (res * res)], dtype=np.int64)
             near_indices_set = set()
             near_p_list = []
 
             for dx in (-1, 0, 1):
-                nx = src_grid[0] + dx
+                nx = int(src_grid[0]) + dx
                 if 0 <= nx < res:
                     for dy in (-1, 0, 1):
-                        ny = src_grid[1] + dy
+                        ny = int(src_grid[1]) + dy
                         if 0 <= ny < res:
                             for dz in (-1, 0, 1):
-                                nz = src_grid[2] + dz
+                                nz = int(src_grid[2]) + dz
                                 if 0 <= nz < res:
                                     nk = int(nx + ny * res + nz * (res ** 2))
                                     if nk in key_to_idx:
@@ -157,6 +173,15 @@ class EquivariantMultipoleTransformerLayer:
             # Invariant scalar attention weights
             dot_near = (q_s_src @ k_s_near.T) * inv_sqrt_d
             attn_near = spatial_w_near * np.exp(np.clip(dot_near, -30.0, 30.0))
+
+            # Mask self-pairs (target i == source i) so each token is not
+            # attended to itself.  Pass-30 fix: the original code had no
+            # self-masking, adding a spurious self-attention contribution
+            # (weight 1.0 at distance 0) to every near-field evaluation.
+            id_t = p_src_arr[:, None]
+            id_s = near_arr[None, :]
+            self_mask = (id_t == id_s).astype(np.float32)
+            attn_near = attn_near * (1.0 - self_mask)
 
             val_s_near = attn_near @ v_s_near # (M_src, D_s)
             val_v_near = np.einsum('mn,nvd->mvd', attn_near, v_vec_near) # (M_src, D_v, 3)

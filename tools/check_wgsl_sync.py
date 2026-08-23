@@ -2,7 +2,7 @@
 
 `index.html` carries WGSL shaders inline (as backtick template literals
 assigned to `wgsl*Source` JS constants).  `core/webgpu_kernels/` ships
-`tree_free_fmm.wgsl` + `adaptive_cgr88.wgsl` consumed by
+`tree_free_fmm.wgsl` + `adaptive_fmm.wgsl` consumed by
 `webgpu_fmm_runner.py`.  This tool verifies that every function present in
 BOTH a .wgsl file and the index.html inline shaders has a matching
 (whitespace-normalized) body.
@@ -44,7 +44,7 @@ INDEX_HTML = os.path.join(REPO_ROOT, "index.html")
 WGSL_DIR = os.path.join(REPO_ROOT, "core", "webgpu_kernels")
 WGSL_FILES = [
     os.path.join(WGSL_DIR, "tree_free_fmm.wgsl"),
-    os.path.join(WGSL_DIR, "adaptive_cgr88.wgsl"),
+    os.path.join(WGSL_DIR, "adaptive_fmm.wgsl"),
 ]
 
 # Post-T-E1 intentionally-diverged shared functions (see module docstring):

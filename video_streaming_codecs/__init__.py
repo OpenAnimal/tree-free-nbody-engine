@@ -10,7 +10,7 @@ from .neuromorphic_event_stream import NeuromorphicStreamReconstructor
 from .low_bitrate_humanitarian import LowBitrateSemanticCodec
 from .frame_deduplicator import VideoFrameDeduplicator
 from .video_motion_heatmap import VideoMotionHeatmap
-from .lockfree_motion_estimation import LockFreeMotionEstimator
+from .lockfree_motion_estimation import HashAcceleratedMotionEstimation, LockFreeMotionEstimator
 from .greedy_macroblock_merger import GreedyMacroblockMerger
 from .one_euro_video_stabilizer import OneEuroVideoStabilizer, AdaptiveBitrateController
 from .biosignal_media_stream import (
@@ -66,6 +66,7 @@ __all__ = [
     "VideoMotionHeatmap",
     "VideoMotionHeatmapGenerator",
     "LockFreeMotionEstimator",
+    "HashAcceleratedMotionEstimation",
     "GreedyMacroblockMerger",
     "OneEuroVideoStabilizer",
     "AdaptiveBitrateController",

@@ -21,7 +21,11 @@ from video_streaming_codecs.one_euro_video_stabilizer import OneEuroVideoStabili
 
 class LowBitrateSemanticCodec:
     """
-    Sub-10 kbps Semantic Video Streamer.
+    Low-Bitrate Semantic Landmark Video Streamer (~49 kbps at 30 fps).
+
+    Bitrate is 204 bytes/frame (68 landmarks x 2 coords, 12-bit packed two-per-3-bytes),
+    i.e. 204 * 8 * 30 / 1000 ~= 48.96 kbps at 30 fps. The earlier "Sub-10 kbps"
+    label was arithmetically wrong for 68 landmarks and has been removed.
     """
     def __init__(self, num_landmarks: int = 68):
         self.num_landmarks = num_landmarks
@@ -106,12 +110,16 @@ def run_humanitarian_demo():
     print(f"[-] Encoding Latency:         {t_enc:.3f} ms")
     print(f"[-] Client Reconstruction:    {t_dec:.3f} ms (Dense RBF Influence Field)")
 
-    # Round-trip validation: decode must reproduce the quantized landmarks exactly.
-    rt_field, _ = codec.decode_and_reconstruct_field(packed_data, grid_size=2)
-    _ = rt_field  # field shape only; exact landmark check happens on quantized values
-    repacked, _ = codec.encode_frame(landmarks)
-    # 12-bit quantization bounds the round-trip error
+    # Round-trip validation: a fresh codec with the SAME initial filter state must
+    # reproduce the exact same packed bytes for the same input (deterministic
+    # encoding). The previous version re-encoded via the now-advanced stateful
+    # filter and never compared anything.
+    rt_codec = LowBitrateSemanticCodec(num_landmarks=68)
+    repacked, _ = rt_codec.encode_frame(landmarks)
+    assert repacked == packed_data, "round-trip mismatch: same-state encode must be byte-identical"
+    # 12-bit quantization bounds the landmark reconstruction error
     q_err = 0.5 / 4095.0
+    print(f"[-] Round-Trip:               same-state re-encode byte-identical ({len(packed_data)} bytes)")
     print(f"[-] Quantization Bound:        max landmark error <= {q_err:.2e} (12-bit grid)")
 
 if __name__ == '__main__':

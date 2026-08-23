@@ -9,8 +9,18 @@
 
 ---
 
-> 🔬 **Research & Algorithmic Integration Suite:**  
-> The `algorithm_theory` module translates recent breakthroughs in theoretical computer science into concrete, high-performance computational geometry, quantum chemistry, continuous transforms, causal mathematics, and dynamical systems. By synthesizing **Frontier Clustering (Duan et al. STOC 2025)**, **Asymmetric Tensor Laser Methods (Alman et al. 2024/2025)**, **Nearly-Linear Spectral Laplacians (Spielman-Teng SDDM)**, **Sublinear Approximate Distance Oracles (Thorup-Zwick)**, **Non-Uniform Spectral Gridding (Greengard/Barnett NUFFT)**, **Co-Optimal Transport (COOT)**, **Koopman Operator Linearization (EDMD)**, **Localized Ensemble Kalman Filtering (LEnKF)**, and **Kernel Causal Discovery (HSIC)** with **Tree-Free Elastic Spatial Hashing**, this package eliminates classical algorithmic bottlenecks across science and engineering.
+> 🔬 **Research & Algorithmic Integration Suite:**
+> The `algorithm_theory` module translates recent breakthroughs in theoretical computer science into concrete, high-performance computational geometry, quantum chemistry, continuous transforms, causal mathematics, and dynamical systems. By synthesizing **Frontier Clustering (Duan et al. STOC 2025)**, **Asymmetric Tensor Laser Methods (Alman et al. 2024/2025)**, **Nearly-Linear Spectral Laplacians (Spielman-Teng SDDM)**, **Sublinear Approximate Distance Oracles (Thorup-Zwick)**, **Non-Uniform Spectral Gridding (Greengard/Barnett NUFFT)**, **Co-Optimal Transport (COOT)**, **Koopman Operator Linearization (EDMD)**, **Localized Ensemble Kalman Filtering (LEnKF)**, and **Kernel Causal Discovery (HSIC)** with **Tree-Free Elastic Spatial Hashing**, this package addresses classical algorithmic bottlenecks across science and engineering.
+>
+> ⚠️ **Honesty caveat (round-8 audit):** the implementations in this folder
+> are research-grade Python prototypes. Several modules realise only a
+> subset of the cited algorithm (e.g. monopole-only far fields, diagonal
+> coarse solves, heuristic landmark elections without formal stretch
+> guarantees, dense matvecs where the asymptotic bound would require a
+> sparse matvec). The asymptotic complexity column below describes the
+> *idealised* cited algorithm; per-module docstrings document the precise
+> complexity and any deviations from the ideal. See `STATUS.md` for the
+> round-8 honesty-pass summary.
 
 ---
 
@@ -26,13 +36,15 @@
 │    (Duan et al. STOC 2025)           │ priority-queue bottleneck        │ Bucketed frontier relaxation │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 2. Asymmetric Laser Matrix Mult      │ O(P²) dense M2L tensor           │ algebraic_multipole_tensor.py│
-│    ω < 2.371339 (Alman et al. 2024)  │ contraction for order p (P~pᴰ)   │ Low-rank Tucker/CP M2L (295x)│
+│    ω < 2.371339 (Alman et al. 2024)  │ contraction for order p (P~pᴰ)   │ Synthetic low-rank contraction│
+│    (SYNTHETIC demo, NOT a real M2L)  │                                  │ (NOT a real M2L operator)    │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 3. Nearly-Linear Spectral Laplacians │ O(N³) or slow mesh FEM solves    │ spectral_meshfree_laplacian.py│
 │    (Spielman-Teng SDDM)              │ for continuous Poisson PDEs      │ Matrix-free two-level PCG    │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 4. Sublinear Approximate Distance    │ O(N²) all-pairs geodesic table / │ sublinear_distance_oracle.py │
-│    Oracles (Thorup-Zwick / Bourgain) │ O(N log N) online path query     │ O(log 1/ε) ADO (14.4M qps)   │
+│    Oracles (Thorup-Zwick / Bourgain) │ O(N log N) online path query     │ Multi-scale landmark upper   │
+│    (NO (1+eps) stretch guarantee)    │                                  │ bound (no stretch guarantee)│
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 5. Non-Uniform FFT Gridding          │ O(N*M) continuous non-equispaced │ non_uniform_fourier_hash.py  │
 │    (Greengard & Lee / FINUFFT)       │ exponential Fourier sum          │ Elastic Hash NUFFT Type 1/2  │
@@ -59,7 +71,7 @@
 │    (ReCom Spanning Tree Sampling)    │ like district boundary artifacts │ Balanced tree cut partitions │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 13. Continuous Fock Exchange CFMM    │ O(N⁴) 4-center electron repulsion│ quantum_fock_exchange_fmm.py │
-│    (White & Head-Gordon Gaussian CFMM) integrals in Hartree-Fock/DFT    │ Gaussian overlap FMM (O(N))  │
+│    (White & Head-Gordon Gaussian CFMM) integrals in Hartree-Fock/DFT    │ Monopole-only J matrix; no K│
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 14. Non-Local Opinion Dynamics       │ O(N²) pairwise distance checks   │ opinion_dynamics_fmm.py      │
 │    (Hegselmann-Krause Multi-Agent)   │ per continuous belief step       │ Spatial hash bounded sweeps  │
@@ -86,19 +98,20 @@
 │    (Takens' Delay Embedding 1981)    │ search for chaotic motifs        │ Spatial hash local density   │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 22. Localized Ensemble Kalman Filter │ O(N³) dense covariance inversion │ localized_ensemble_kalman_fmm.py│
-│    (Gaspari-Cohn spatial tapering)   │ and low-rank sampling noise      │ Local O(N*M²) block update   │
+│    (Gaspari-Cohn spatial tapering)   │ and low-rank sampling noise      │ Local update O(N*k_act²*M)  │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 23. Spectral Graph Sparsification    │ Dense O(|V|²) graph analysis     │ spectral_graph_sparsifier.py │
 │    (Spielman & Srivastava 2011)      │ is intractable at scale          │ Resistance leverage sampling │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 24. Personalized PageRank Resolvent  │ O(|V|³) matrix inverse for       │ personalized_pagerank_fmm.py │
-│    (Page & Brin / Tong ICDM 2006)    │ random walks with restart        │ SDDM PCG in O(|E|) time      │
+│    (Page & Brin / Tong ICDM 2006)    │ random walks with restart        │ SDDM PCG (<=60 iters, approx)│
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 25. Kernel Causal Discovery (HSIC)   │ O(N²) kernel Gram matrices for   │ kernel_causal_discovery.py   │
 │    (Gretton & Zhang KCIT/ANM 2011)   │ non-linear independence tests    │ Random Fourier Features O(N) │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 26. Matrix-Free Gaussian Process     │ O(N³) Cholesky factorization and │ matrix_free_gaussian_process.py│
-│    (Wang, Pleiss, Wilson NeurIPS)    │ O(N²) memory for exact GPs       │ Linear-time matrix-free PCG  │
+│    (Wang, Pleiss, Wilson NeurIPS)    │ O(N²) memory for exact GPs       │ Sparse-truncated RBF PCG     │
+│    (cutoff tail ~2.2e-3 at 3.5*ell)  │                                  │ (NOT ~1e-7; raise cutoff)   │
 ├──────────────────────────────────────┼──────────────────────────────────┼──────────────────────────────┤
 │ 27. Functional Sobol ANOVA           │ Exponential variance integrals   │ functional_sobol_anova.py    │
 │    (Saltelli & Sobol GSA 2001/2010)  │ in high-dimensional models       │ Saltelli matrix decomposition│
@@ -133,12 +146,12 @@ algorithm_theory/
 │
 │   # --- 1. Pure TCS Foundations ---
 ├── tree_free_geodesic_fmm.py            # Duan-inspired Frontier-Clustered SSSP on 3D Manifolds
-├── algebraic_multipole_tensor.py        # Asymmetric Low-Rank Tensor Factorization for High-Order M2L
-├── spectral_meshfree_laplacian.py       # Matrix-Free Nearly-Linear Poisson Solver with Multi-Scale PCG
-├── sublinear_distance_oracle.py         # Sublinear Approximate Distance Oracle & Metric Embeddings
+├── algebraic_multipole_tensor.py        # Synthetic Low-Rank Tensor Contraction demo (NOT a real FMM M2L operator)
+├── spectral_meshfree_laplacian.py       # Matrix-Free Poisson Solver with Two-Level PCG (diagonal coarse solve)
+├── sublinear_distance_oracle.py         # Multi-Scale Landmark Distance Oracle (upper bound; no stretch guarantee)
 │
 │   # --- 2. Continuous Transforms & Wavefields ---
-├── non_uniform_fourier_hash.py          # NUFFT Type 1/2/3 via Elastic Hash Spreading & Deconvolution
+├── non_uniform_fourier_hash.py          # NUFFT Type 1/2 via Elastic Hash Spreading & Deconvolution (no Type 3)
 ├── fractional_laplace_contour.py        # Matrix-Free Talbot Contour Numerical Laplace Inversion
 ├── oscillatory_butterfly_kernel.py      # Directional Butterfly High-Frequency Helmholtz Factorization
 ├── continuous_meshfree_wavelet.py       # Continuous Meshfree Wavelet (CWT) Filterbanks on Point Sets
@@ -153,7 +166,7 @@ algorithm_theory/
 ├── spatial_graph_partitioning.py        # Neutral ReCom MCMC Balanced Spanning Tree Space Partitions
 │
 │   # --- 5. Quantum Chemistry & Electronic Structure ---
-├── quantum_fock_exchange_fmm.py         # Continuous Fast Multipole 2-Electron Exchange Operator (O(N⁴) → O(N))
+├── quantum_fock_exchange_fmm.py         # Continuous FMM 2-Electron Coulomb J Matrix (monopole-only; no K matrix)
 │
 │   # --- 6. Continuous Opinion Dynamics & Spatial Voting ---
 ├── opinion_dynamics_fmm.py              # Hegselmann-Krause: Non-local continuous belief dynamics
@@ -170,7 +183,7 @@ algorithm_theory/
 ├── phase_space_attractor_fmm.py         # Takens' Delay Embedding Phase Space Attractor & Anomaly Search
 │
 │   # --- 9. Advanced State Estimation & Filtering ---
-├── localized_ensemble_kalman_fmm.py     # Gaspari-Cohn Covariance Tapered Local EnKF (O(N·M²))
+├── localized_ensemble_kalman_fmm.py     # Gaspari-Cohn Covariance Tapered Local EnKF (cost depends on k_act)
 │
 │   # --- 10. Graph Search, Random Walks & Sparsification ---
 ├── spectral_graph_sparsifier.py         # Spielman-Srivastava Effective Resistance Graph Sparsifier
@@ -180,7 +193,7 @@ algorithm_theory/
 ├── kernel_causal_discovery.py           # Random Fourier Feature Fast HSIC & Additive Noise Causal Discovery
 │
 │   # --- 12. Modern Bayesian & Classical Statistics ---
-├── matrix_free_gaussian_process.py      # Exact O(N) Gaussian Process Regression & Uncertainty Quantification
+├── matrix_free_gaussian_process.py      # Sparse-Truncated Matrix-Free Gaussian Process Regression & UQ
 ├── functional_sobol_anova.py            # Saltelli-Sobol Functional Variance Decomposition & Global Sensitivity
 │
 │   # --- 13. Basic Datatypes & Fundamental Data Structures ---
@@ -208,4 +221,4 @@ algorithm_theory/
 9. **GPyTorch: Blackbox Matrix-Matrix Gaussian Process Inference with GPU Acceleration.** Gardner, Pleiss, Wu, Weinberger, Wilson (2018). *NeurIPS*.
 10. **Global Sensitivity Indices for Nonlinear Mathematical Models and Their Monte Carlo Estimates.** Sobol (2001). *Mathematics and Computers in Simulation*, 55(1-3).
 11. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths.** Duan, Cheng, Mao, Yin, Ren (2025). *ACM STOC 2025 Best Paper* / [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
-12. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
+12. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, & Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).

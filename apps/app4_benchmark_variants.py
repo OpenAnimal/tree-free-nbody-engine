@@ -9,7 +9,7 @@ Variants:
                    cohesion term that is an intentional extra
 
 The +fmm axis is OMITTED with reason: the boid interaction kernel is a
-piecewise near-field rule, not the 2D logarithmic CGR88 kernel.
+piecewise near-field rule, not the 2D logarithmic adaptive FMM kernel.
 
 Accuracy semantics (matching game_mechanics_spatial/benchmark_variants.py):
 the near-field is exact (same 3x3 cell box => identical near-field forces),

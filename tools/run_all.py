@@ -24,56 +24,63 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (label, argv, skippable)
 # argv is the list passed to subprocess; the python interpreter is prepended.
+#
+# Round-10 test-layout fix (AGENTS.md "Test Layout"): the test modules were
+# moved from <package>/test_*.py to tests/<package>/test_*.py with __init__
+# chaining, so every module invocation below uses the tests.* package path
+# and every script path points into tests/. The old core.test_* /
+# <pkg>/test_*.py references raised ModuleNotFoundError / FileNotFoundError
+# after the move, which made every one of these items FAIL.
 ITEMS = [
     ("core.test_spatial_index",
-     ["-m", "core.test_spatial_index"], False),
+     ["-m", "tests.core.test_spatial_index"], False),
     ("core.test_elastic_hash",
-     ["-m", "core.test_elastic_hash"], False),
-    ("core.test_cgr88_cross_validation",
-     ["-m", "core.test_cgr88_cross_validation"], False),
+     ["-m", "tests.core.test_elastic_hash"], False),
+    ("core.test_adaptive_fmm_cross_validation",
+     ["-m", "tests.core.test_adaptive_fmm_cross_validation"], False),
     ("core.test_yukawa3d_fmm",
-     ["-m", "core.test_yukawa3d_fmm"], False),
+     ["-m", "tests.core.test_yukawa3d_fmm"], False),
     ("core.test_gaussian2d_fgt",
-     ["-m", "core.test_gaussian2d_fgt"], False),
+     ["-m", "tests.core.test_gaussian2d_fgt"], False),
     ("core.test_screened_yukawa2d_fmm",
-     ["-m", "core.test_screened_yukawa2d_fmm"], False),
+     ["-m", "tests.core.test_screened_yukawa2d_fmm"], False),
     ("core.test_uniform_multilevel_fmm",
-     ["-m", "core.test_uniform_multilevel_fmm"], False),
+     ["-m", "tests.core.test_uniform_multilevel_fmm"], False),
     ("core.test_webgpu_parity",
-     ["-m", "core.test_webgpu_parity"], True),
-    # T-E1 file-kernel gate: adaptive_cgr88.wgsl compile (16-binding
+     ["-m", "tests.core.test_webgpu_parity"], True),
+    # T-E1 file-kernel gate: adaptive_fmm.wgsl compile (16-binding
     # consolidated layout) + counting-sort CSR validation via wgpu-py.
     # Skippable-with-reason like test_webgpu_parity when wgpu is absent.
     ("core.test_adaptive_wgsl_csr",
-     ["-m", "core.test_adaptive_wgsl_csr"], True),
+     ["-m", "tests.core.test_adaptive_wgsl_csr"], True),
     ("core.test_jax_pipeline",
-     ["-m", "core.test_jax_pipeline"], True),
+     ["-m", "tests.core.test_jax_pipeline"], True),
     # Round-7 T-F1: neural_ops + bioinformatics + algorithm_theory coverage
     ("neural_ops.test_fmm_neural_ops",
-     ["neural_ops/test_fmm_neural_ops.py"], False),
+     ["tests/neural_ops/test_fmm_neural_ops.py"], False),
     ("neural_ops.test_neural_ops_advanced",
-     ["neural_ops/test_neural_ops_advanced.py"], False),
+     ["tests/neural_ops/test_neural_ops_advanced.py"], False),
     ("neural_ops.test_farfield_error",
-     ["neural_ops/test_farfield_error.py"], False),
+     ["tests/neural_ops/test_farfield_error.py"], False),
     ("neural_ops.test_kv_cache_recall",
-     ["neural_ops/test_kv_cache_recall.py"], False),
+     ["tests/neural_ops/test_kv_cache_recall.py"], False),
     ("bioinformatics.test_sota_modules",
-     ["bioinformatics/test_sota_modules.py"], False),
+     ["tests/bioinformatics/test_sota_modules.py"], False),
     ("algorithm_theory.test_basic_datatypes_fmm",
-     ["algorithm_theory/test_basic_datatypes_fmm.py"], False),
+     ["tests/algorithm_theory/test_basic_datatypes_fmm.py"], False),
     ("environmental_modeling.test_environmental_suite",
-     ["-m", "environmental_modeling.test_environmental_suite"], False),
+     ["-m", "tests.environmental_modeling.test_environmental_suite"], False),
     ("graphics_rendering/test_graphics_rendering.py",
-     ["graphics_rendering/test_graphics_rendering.py"], False),
+     ["tests/graphics_rendering/test_graphics_rendering.py"], False),
     ("video_streaming_codecs/test_video_streaming.py",
-     ["video_streaming_codecs/test_video_streaming.py"], False),
+     ["tests/video_streaming_codecs/test_video_streaming.py"], False),
     ("tools/lint_claims.py",
      ["tools/lint_claims.py"], False),
     ("tools/check_wgsl_sync.py",
      ["tools/check_wgsl_sync.py"], False),
     # The five benchmark_variants.py files (core + 4 domain folders).
     # core/benchmark_variants.py is skippable: it runs the full scaling
-    # sweep (direct O(N^2) at N=32000, ~36s) plus the adaptive CGR88 engine
+    # sweep (direct O(N^2) at N=32000, ~36s) plus the adaptive FMM engine
     # (Python tree traversal, ~1s) on every invocation.  In CI / quick-check
     # contexts that only need the lint+sync+unit-test matrix, the SKIP note
     # below documents why it was omitted.  The full BENCHMARKS.md tables are
@@ -87,7 +94,7 @@ ITEMS = [
     ("physics_simulation/ppf_contact_solver_fmm/benchmark_variants.py",
      ["physics_simulation/ppf_contact_solver_fmm/benchmark_variants.py"], False),
     ("physics_simulation.test_matrix_free_ipc",
-     ["physics_simulation/test_matrix_free_ipc.py"], False),
+     ["tests/physics_simulation/test_matrix_free_ipc.py"], False),
     ("video_streaming_codecs/benchmark_variants.py",
      ["video_streaming_codecs/benchmark_variants.py"], False),
 ]
@@ -128,7 +135,7 @@ def _classify(label: str, exit_code: int, tail: str, skippable: bool):
 
 def main():
     print("=" * 78)
-    print("tools/run_all.py -- round-7 verification matrix (26 items)")
+    print("tools/run_all.py -- round-7 verification matrix (27 items)")
     print("=" * 78)
     py = sys.executable
     results = []

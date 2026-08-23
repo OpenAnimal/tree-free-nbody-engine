@@ -21,8 +21,13 @@ By Dhillon's Bipartite Normalized Cut Theorem:
 3. The continuous relaxation of the optimal bipartite normalized cut is given by the leading
    singular vectors (u_l, v_l) of A_n.
 
-We compute the k leading singular pairs via Matrix-Free Orthogonalized Power Iteration / Lanczos
-in O(k * nnz(A)) time without dense allocations, simultaneously partitioning rows and columns.
+We compute the k leading singular pairs via Matrix-Free Orthogonalized Block
+Power Iteration. Each iteration performs two dense matvecs (A @ v and A.T @ u)
+plus a QR; the cost is O(k * (R*C + (R+C) * k^2)) per iteration when A is a
+dense numpy array (as in this implementation), i.e. the matvec cost is the
+dense O(R*C), NOT O(nnz(A)) -- the O(k * nnz(A)) claim would only hold for a
+sparse A. The matrix-free framing avoids materialising the (R+C) x (R+C)
+bipartite Laplacian, not the underlying A matvec.
 """
 
 import time
@@ -33,8 +38,10 @@ import numpy as np
 class SpectralBiclusteringFMM:
     """
     Matrix-Free Normalized Spectral Biclustering Engine.
-    
-    Partitions rows and columns simultaneously in O(k * nnz(A)) time.
+
+    Partitions rows and columns simultaneously. Each power iteration costs
+    O(R*C) for the two dense A matvecs (NOT O(nnz(A)) -- A is a dense numpy
+    array here; the O(nnz(A)) claim would require a sparse A).
     """
     def __init__(
         self,

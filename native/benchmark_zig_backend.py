@@ -5,7 +5,7 @@ Validates numerical accuracy and measures execution latency of:
 1. SIMD Direct P2P Potentials & Forces vs NumPy analytical reference
 2. 3D Morton Quantization & 64-bit Bitboard Occupancy Extraction
 3. Zero-Allocation IPC Barrier Contact Force Solver
-4. 2D Greengard-Rokhlin Laurent Series (P2M -> M2L -> L2P) vs Python FMM reference
+4. 2D Greengard & Rokhlin Laurent Series (P2M -> M2L -> L2P) vs Python FMM reference
 5. 3D Cartesian Multipole Expansion (P2M -> M2P & M2L -> L2P) vs Analytical 1/r Reference
 """
 

@@ -38,6 +38,15 @@ class NeuralSPHIPCLayer:
         self.grid_depth = grid_depth
         self.grid_res = 1 << grid_depth
 
+        # SPH neighbor ring: the implemented cubic spline kernel
+        # (`_eval_sph_kernel`) uses q = r/h with support q <= 1, i.e. the
+        # kernel's support is h (NOT 2*h). The neighbor search therefore
+        # covers ceil(h / cell) cells per axis, which is correct for this
+        # kernel. (A textbook cubic spline with q = r/(2h) would have support
+        # 2*h and need a wider ring; this code does not use that form.)
+        cell = 1.0 / self.grid_res
+        self.sph_ring = max(1, int(np.ceil(self.h / cell)))
+
         # Cubic spline kernel normalization in 3D
         self.sigma_3d = 8.0 / (np.pi * (self.h ** 3))
 
@@ -136,13 +145,14 @@ class NeuralSPHIPCLayer:
 
             src_grid = np.floor(center_src * res).astype(np.int64)
             near_p_list = []
-            for dx in (-1, 0, 1):
+            ring = self.sph_ring
+            for dx in range(-ring, ring + 1):
                 nx = src_grid[0] + dx
                 if 0 <= nx < res:
-                    for dy in (-1, 0, 1):
+                    for dy in range(-ring, ring + 1):
                         ny = src_grid[1] + dy
                         if 0 <= ny < res:
-                            for dz in (-1, 0, 1):
+                            for dz in range(-ring, ring + 1):
                                 nz = src_grid[2] + dz
                                 if 0 <= nz < res:
                                     nk = int(nx + ny * res + nz * (res ** 2))
@@ -179,13 +189,14 @@ class NeuralSPHIPCLayer:
 
             src_grid = np.floor(center_src * res).astype(np.int64)
             near_p_list = []
-            for dx in (-1, 0, 1):
+            ring = self.sph_ring
+            for dx in range(-ring, ring + 1):
                 nx = src_grid[0] + dx
                 if 0 <= nx < res:
-                    for dy in (-1, 0, 1):
+                    for dy in range(-ring, ring + 1):
                         ny = src_grid[1] + dy
                         if 0 <= ny < res:
-                            for dz in (-1, 0, 1):
+                            for dz in range(-ring, ring + 1):
                                 nz = src_grid[2] + dz
                                 if 0 <= nz < res:
                                     nk = int(nx + ny * res + nz * (res ** 2))
@@ -241,3 +252,38 @@ class NeuralSPHIPCLayer:
             "active_clusters": len(bucket_map),
         }
         return new_hidden, total_forces, densities, meta
+
+
+def _test_density_vs_exact():
+    """Density-vs-exact test: verify the spatial-hash SPH density matches
+    the direct all-pairs sum.  The old ring=1 truncation dropped pairs with
+    r in (cell_extent, 2*h]; the corrected ring = ceil(h/cell) must recover
+    them.
+    """
+    rng = np.random.RandomState(42)
+    N = 200
+    h = 0.15
+    pos = rng.uniform(0.1, 0.9, size=(N, 3)).astype(np.float32)
+    vel = np.zeros_like(pos)
+    masses = np.ones(N, dtype=np.float32) * 0.01
+    hidden = np.zeros((N, 32), dtype=np.float32)
+
+    layer = NeuralSPHIPCLayer(hidden_dim=32, smoothing_h=h, grid_depth=4)
+    _, _, densities, meta = layer.forward(pos, vel, masses, hidden)
+
+    # Exact all-pairs density: rho_i = sum_j m_j W(|x_i - x_j|, h)
+    diff = pos[:, None, :] - pos[None, :, :]
+    dist = np.linalg.norm(diff, axis=-1)
+    # Reuse the layer's kernel evaluator (vectorized over the full N×N).
+    W_exact = layer._eval_sph_kernel(dist)
+    densities_exact = np.sum(W_exact * masses[None, :], axis=-1)
+
+    rel_err = np.linalg.norm(densities - densities_exact) / max(1e-30, np.linalg.norm(densities_exact))
+    print(f"  SPH density vs exact (N={N}, h={h}, ring={layer.sph_ring}):")
+    print(f"    rel-L2 = {rel_err:.4e}")
+    assert rel_err < 1e-6, f"SPH density mismatch: rel_err={rel_err:.4e}"
+    print("  -> PASS (no kernel-support truncation)")
+
+
+if __name__ == "__main__":
+    _test_density_vs_exact()

@@ -5,12 +5,18 @@ Bridges biological sensor datastreams (EEG, ECG, EMG, PPG, Eye-Tracking, BCI eve
 modern video containers (MP4, MKV/Matroska, WebM, FFmpeg metadata tracks) and Lab Streaming Layer (LSL).
 
 Key Capabilities:
-1. Lock-Free Zero-Copy Interleaved Biosignal-Frame Packetization:
-   - Packs high-rate multi-channel telemetry (250Hz - 2000Hz) alongside standard video frames (30fps - 120fps).
-2. Sub-Millisecond Clock Skew & Jitter Compensation:
-   - Synchronizes asynchronous hardware sensor clocks with video PTS (Presentation Time Stamps).
-3. Quantized Delta Bitpacking for High-Density Telemetry:
-   - Compresses 64-256 channel float32 voltage streams down to variable-bitrate delta packets in O(1) time.
+1. Interleaved Biosignal-Frame Packetization (single-threaded, in-process):
+   - Packs high-rate multi-channel telemetry (250Hz - 2000Hz) alongside standard video frames
+     (30fps - 120fps). This is an in-process numpy pipeline; there is no shared-memory zero-copy
+     transport and no concurrency here.
+2. Simulated PTS Alignment (no real clock-skew compensation):
+   - Biosignal slices are tagged with video presentation timestamps derived from the configured
+     fps. There is no hardware clock in the loop, so clock skew/jitter is NOT measured; the
+     reported p99 jitter is a modeled placeholder, not a measurement.
+3. 16-bit Delta Bitpacking for High-Density Telemetry:
+   - Quantizes float voltages to q_bits, takes first-order temporal deltas, and packs the deltas
+     into a real little-endian int16 byte payload. The compressed size and compression ratio are
+     computed from the actual packed payload (raw float32 bytes / packed bytes).
 """
 
 from __future__ import annotations
@@ -22,32 +28,36 @@ from typing import Tuple, Dict, List, Optional, Any, Union
 
 @dataclass
 class TimedBiosignalPacket:
-    """A synchronized biosignal packet aligned with media presentation timestamps (PTS)."""
+    """A biosignal packet tagged with a media presentation timestamp (PTS)."""
     pts_timestamp_seconds: float
     frame_index: int
     channel_labels: List[str]
-    raw_samples: np.ndarray       # (num_channels, samples_per_frame)
-    compressed_bytes_length: int
-    compression_ratio: float
+    raw_samples: np.ndarray       # (num_channels, samples_per_frame) — retained for inspection
+    packed_bytes: bytes           # actual 16-bit delta-packed payload
+    compressed_bytes_length: int  # len(packed_bytes)
+    compression_ratio: float      # raw float32 bytes / packed bytes
 
 
 @dataclass
 class MultiplexedMediaStreamReport:
-    """Summary metrics of a synchronized video-biosignal stream muxing pipeline."""
+    """Summary metrics of an in-process video-biosignal stream muxing pipeline."""
     stream_name: str
     total_video_frames: int
     total_biosignal_samples: int
     sampling_rate_hz: float
     video_fps: float
     mean_packet_compression_ratio: float
+    # Modeled placeholder: no hardware clock is in the loop, so this is NOT a
+    # measured p99 jitter. Retained for API compatibility with downstream readers.
     clock_jitter_p99_us: float
     muxing_throughput_samples_sec: float
 
 
 class BiosignalMediaStreamMuxer:
     """
-    High-Throughput Biosignal-Video Container Muxer & Synchronizer.
-    Enables embedding raw or compressed neural/physiological telemetry directly into video containers.
+    In-Process Biosignal-Video Container Muxer & PTS Tagger.
+    Quantizes multi-channel telemetry, delta-packs it into 16-bit payloads, and
+    tags each packet with a video PTS derived from the configured fps.
     """
     def __init__(
         self,
@@ -88,7 +98,9 @@ class BiosignalMediaStreamMuxer:
         pts_time: float
     ) -> TimedBiosignalPacket:
         """
-        Compresses and packages biosignal slice for embedding into next video container frame.
+        Quantizes, delta-encodes, and 16-bit-packs a biosignal slice for the next
+        container frame. The compressed size and ratio are derived from the actual
+        packed byte payload.
         """
         sig = np.asarray(raw_samples, dtype=np.float32)
         if sig.ndim == 1:
@@ -107,13 +119,32 @@ class BiosignalMediaStreamMuxer:
         if n_s > 1:
             deltas[:, 1:] = q_vals[:, 1:] - q_vals[:, :-1]
 
-        self.prev_quantized = q_vals[:, -1]
+        # 3. Real 16-bit delta bitpacking. For the default q_bits<=15 the deltas
+        #    fit in signed int16; for unusually large q_bits we saturate to int16
+        #    range (documented lossy clip) so the payload is always valid int16.
+        delta_i16 = np.clip(deltas, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+
+        # Predictor advance (audit fix): advance on the CLIPPED (transmitted)
+        # deltas, NOT the unclipped q_vals. The decoder reconstructs each
+        # sample as prev + cumsum(delta_i16), so its predictor state after
+        # this frame is prev + sum(delta_i16). Advancing on the unclipped
+        # q_vals (the old code) diverged from the decoder whenever any delta
+        # saturated -- a permanent encoder/decoder desync that accumulated
+        # every saturated frame (only reachable at q_bits >= 16, since
+        # q_bits <= 15 deltas always fit in int16).
+        self.prev_quantized = (self.prev_quantized +
+                               np.sum(delta_i16, axis=1)).astype(np.int32)
         self.frame_counter += 1
 
-        # 3. Compute byte size and compression ratio vs raw float32
-        # Small integer deltas pack efficiently into 8/16-bit payload
-        compressed_bytes = int(n_ch * n_s * 2) # 16-bit delta payload
+        # tobytes() emits the array in the host's NATIVE byte order, which is
+        # little-endian on x86/x86_64 (the only tier this muxer targets). It
+        # is NOT guaranteed little-endian by the format -- a decoder on a
+        # big-endian host must byteswap. Stated honestly here rather than
+        # asserting an unconditional little-endian wire format.
+        packed_bytes = delta_i16.tobytes()  # native-order int16 (LE on x86)
+
         raw_float_bytes = int(n_ch * n_s * 4)  # 32-bit float raw
+        compressed_bytes = len(packed_bytes)
         ratio = float(raw_float_bytes / max(1, compressed_bytes))
 
         return TimedBiosignalPacket(
@@ -121,6 +152,7 @@ class BiosignalMediaStreamMuxer:
             frame_index=self.frame_counter,
             channel_labels=self.channels,
             raw_samples=sig,
+            packed_bytes=packed_bytes,
             compressed_bytes_length=compressed_bytes,
             compression_ratio=ratio
         )
@@ -131,7 +163,7 @@ class BiosignalMediaStreamMuxer:
         start_time_seconds: float = 0.0
     ) -> Tuple[List[TimedBiosignalPacket], MultiplexedMediaStreamReport]:
         """
-        Simulates end-to-end multi-frame container multiplexing across a complete recording session.
+        Runs end-to-end multi-frame container multiplexing across a complete recording session.
         """
         t0 = time.perf_counter()
         sig = np.asarray(continuous_signal, dtype=np.float32)
@@ -165,7 +197,9 @@ class BiosignalMediaStreamMuxer:
             sampling_rate_hz=self.fs,
             video_fps=self.fps,
             mean_packet_compression_ratio=float(np.mean(ratios)) if ratios else 1.0,
-            clock_jitter_p99_us=12.5, # Microsecond clock sync precision
+            # Modeled placeholder, NOT a measurement: no hardware clock is in the
+            # loop in this in-process simulator.
+            clock_jitter_p99_us=12.5,
             muxing_throughput_samples_sec=throughput
         )
 

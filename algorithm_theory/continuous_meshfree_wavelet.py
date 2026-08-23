@@ -7,7 +7,7 @@ Inspired by:
 2. "Spectral Graph Wavelets"
    David K. Hammond, Pierre Vandergheynst, Remi Gribonval (Applied and Computational Harmonic Analysis, 2011).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Continuous multi-scale signal analysis and spectral feature extraction on unstructured 3D point sets
@@ -35,7 +35,9 @@ class ContinuousMeshfreeWavelet:
     Continuous Multi-Scale Wavelet Filterbank on Unstructured 3D Point Manifolds.
     
     Supports:
-    - Ricker / Mexican Hat Wavelet: psi(r) = (1 - r^2) * exp(-r^2 / 2)
+    - Ricker / Mexican Hat Wavelet: psi(r) = (D - r^2) * exp(-r^2 / 2)
+      (D-dimensional generalization; the 1D Ricker uses D=1, the 3D
+      Mexican Hat uses D=3)
     - Morlet Wavelet: psi(r) = cos(omega_0 * r) * exp(-r^2 / 2)
     - Gaussian smoothing kernel: psi(r) = exp(-r^2 / 2)
     """
@@ -45,7 +47,8 @@ class ContinuousMeshfreeWavelet:
         num_scales: int = 5,
         base_scale: float = 0.05,
         wavelet_type: str = "mexican_hat",
-        dim: int = 3
+        dim: int = 3,
+        volumes: Optional[np.ndarray] = None
     ):
         self.points = np.asarray(points, dtype=np.float64)
         self.n_points = len(self.points)
@@ -53,6 +56,13 @@ class ContinuousMeshfreeWavelet:
         self.base_scale = float(base_scale)
         self.wavelet_type = wavelet_type.lower()
         self.dim = int(dim)
+        # Per-particle volume weights vol_j for the continuous wavelet
+        # transform W_psi[f](a, x) = (1/a^{D/2}) * sum_j f(y_j) * psi((x-y_j)/a) * vol_j.
+        # Defaults to uniform weights (all ones) when not provided.
+        if volumes is None:
+            self.volumes = np.ones(self.n_points, dtype=np.float64)
+        else:
+            self.volumes = np.asarray(volumes, dtype=np.float64)
 
         self.scales = self.base_scale * (2.0 ** np.arange(self.num_scales))
 
@@ -60,7 +70,11 @@ class ContinuousMeshfreeWavelet:
         """Evaluates normalized mother wavelet function psi(r)."""
         r_sq = r_normalized ** 2
         if self.wavelet_type in ("mexican_hat", "ricker"):
-            return (1.0 - r_sq) * np.exp(-0.5 * r_sq)
+            # D-dimensional Mexican Hat / Ricker wavelet:
+            # psi(r) = (D - r^2) * exp(-r^2 / 2)
+            # The factor D (not 1) ensures the wavelet has zero mean in D
+            # dimensions: integral of (D - r^2) * exp(-r^2/2) * r^{D-1} dr = 0.
+            return (float(self.dim) - r_sq) * np.exp(-0.5 * r_sq)
         elif self.wavelet_type == "morlet":
             omega_0 = 5.0
             return np.cos(omega_0 * r_normalized) * np.exp(-0.5 * r_sq)
@@ -74,9 +88,11 @@ class ContinuousMeshfreeWavelet:
         diff = self.points[:, None, :] - self.points[None, :, :]
         r = np.linalg.norm(diff, axis=-1)
         r_norm = r / scale
-        
+
         psi_mat = (1.0 / (scale ** (self.dim / 2.0))) * self._eval_mother_wavelet(r_norm)
-        return psi_mat @ signal
+        # Apply per-particle volume weights vol_j (source-side weighting):
+        # W_psi[f](a, x_i) = (1/a^{D/2}) * sum_j f(y_j) * psi((x_i-y_j)/a) * vol_j
+        return psi_mat @ (signal * self.volumes)
 
     def transform_scale_hashed(
         self,
@@ -112,6 +128,7 @@ class ContinuousMeshfreeWavelet:
 
             pts_s = self.points[idx_src]
             sig_s = signal[idx_src]
+            vol_s = self.volumes[idx_src]
 
             # Vectorized block distance
             diff = pts_t[:, None, :] - pts_s[None, :, :]
@@ -121,7 +138,8 @@ class ContinuousMeshfreeWavelet:
             r_norm = dist / scale
             psi_vals = np.where(mask, norm_factor * self._eval_mother_wavelet(r_norm), 0.0)
 
-            out_coeffs[idx_target] = psi_vals @ sig_s
+            # Apply per-particle volume weights vol_j (source-side weighting)
+            out_coeffs[idx_target] = psi_vals @ (sig_s * vol_s)
 
         return out_coeffs
 

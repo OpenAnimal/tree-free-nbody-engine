@@ -71,6 +71,11 @@ class DeviceDescriptor:
     has_sam_rebar: bool = False  # Smart Access Memory / Resizable BAR
     driver_version: str = "Unknown"
     extra_metadata: Dict[str, Any] = field(default_factory=dict)
+    # True when total_memory_bytes / compute_units are placeholder estimates
+    # rather than values queried from the driver (e.g. DirectML/JAX/WebGPU
+    # fallbacks that hardcode 8GB/4GB and 32 CUs). Reported as "est." so the
+    # topology print does not present estimates as measured hardware.
+    memory_and_units_estimated: bool = False
 
     @property
     def total_memory_mb(self) -> float:
@@ -201,7 +206,8 @@ class DeviceRuntime:
                         is_integrated_apu="GRAPHICS" in dml_name.upper() and "AMD" in dml_name.upper() and "RX" not in dml_name.upper(),
                         has_sam_rebar=is_amd,
                         driver_version="DirectX 12 DirectML",
-                        extra_metadata={"dml_device_index": idx}
+                        extra_metadata={"dml_device_index": idx},
+                        memory_and_units_estimated=True,
                     )
                     devices.append(desc)
             except ImportError:
@@ -223,7 +229,8 @@ class DeviceRuntime:
                     is_integrated_apu=True,
                     has_sam_rebar=True,
                     driver_version="Apple Metal",
-                    extra_metadata={"torch_device": "mps"}
+                    extra_metadata={"torch_device": "mps"},
+                    memory_and_units_estimated=True,
                 )
                 devices.append(desc)
 
@@ -314,7 +321,8 @@ class DeviceRuntime:
                         supports_fp16=True,
                         supports_fp64=True,
                         driver_version=f"JAX {jax.__version__}",
-                        extra_metadata={"jax_device": str(dev)}
+                        extra_metadata={"jax_device": str(dev)},
+                        memory_and_units_estimated=True,
                     )
                     devices.append(desc)
         except Exception:
@@ -357,7 +365,8 @@ class DeviceRuntime:
                     supports_atomic_cas=True,
                     has_sam_rebar=vendor == AcceleratorVendor.AMD,
                     driver_version=f"WebGPU ({backend_type})",
-                    extra_metadata={"summary": summary, "backend_type": backend_type}
+                    extra_metadata={"summary": summary, "backend_type": backend_type},
+                    memory_and_units_estimated=True,
                 )
                 devices.append(desc)
         except Exception:
@@ -524,9 +533,13 @@ def print_hardware_topology():
         vendor_tag = f"[{dev.vendor.value}]"
         backend_tag = f"[{dev.backend.value}]"
         sam_tag = "SAM/ReBAR: YES" if dev.has_sam_rebar else "SAM/ReBAR: N/A"
+        # When the driver did not expose real memory/CU counts the descriptor
+        # carries placeholder estimates; label them "est." so the report does
+        # not present estimates as measured hardware.
+        est_tag = " (est.)" if dev.memory_and_units_estimated else ""
         print(f" Device #{i+1}: {dev.name}")
         print(f"   * Vendor / Backend : {vendor_tag:<14} {backend_tag:<16} Wavefront/Warp: {dev.wavefront_size}")
-        print(f"   * VRAM / Units     : {dev.total_memory_mb:,.0f} MB | {dev.compute_units} Compute Units | {sam_tag}")
+        print(f"   * VRAM / Units     : {dev.total_memory_mb:,.0f} MB | {dev.compute_units} Compute Units{est_tag} | {sam_tag}")
         print(f"   * Precision Support: FP16={'YES' if dev.supports_fp16 else 'NO'}, FP64={'YES' if dev.supports_fp64 else 'NO'}, Driver: {dev.driver_version}")
     print("=" * 80)
 

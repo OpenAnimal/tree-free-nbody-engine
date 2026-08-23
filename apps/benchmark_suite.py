@@ -23,20 +23,19 @@ import numpy as np
 try:
     import jax
     import jax.numpy as jnp
-    from core.jax_tree_free_fmm import jax_direct_nbody, jax_elastic_probe_lookup
+    from core.jax_tree_free_fmm import jax_direct_nbody
     HAS_JAX = True
 except ImportError:
     jax = None
     jnp = None
     jax_direct_nbody = None
-    jax_elastic_probe_lookup = None
     HAS_JAX = False
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import time
 from core.fast_vectorized_fmm import FastVectorizedFMM
-from core.cgr88_adaptive_fmm import exact_direct_nbody_2d
+from core.adaptive_fmm import exact_direct_nbody_2d
 from core.elastic_hash import ElasticHashTable
 
 NAIVE_MAX_N = 2000
@@ -45,19 +44,31 @@ JAX_MAX_N = 16000
 
 
 def validate_fmm_accuracy(n=2000, seed=123):
-    """Accuracy gate: FMM vs exact direct summation (float64)."""
+    """Accuracy gate: FMM vs exact direct summation (float64).
+
+    Validates the SAME order the benchmark uses (order=4), not a higher
+    order — the gate must verify the configuration being timed, not a
+    more accurate one that would hide order-4 errors.  The threshold is
+    1e-3 (not 1e-4) because order=4 on a uniform distribution measures
+    ~3.5e-4 max relative error — the old 1e-4 threshold was calibrated
+    for order=8 and would reject the correct order=4 result.  1e-3 gives
+    ~3x headroom above the measured value while still catching real
+    regressions (a broken FMM would be off by orders of magnitude).
+    """
     rng = np.random.RandomState(seed)
     pos = rng.uniform(0.05, 0.95, size=(n, 2))
     q = rng.uniform(-1.0, 1.0, size=n)
-    fmm = FastVectorizedFMM(depth=4, order=8)
+    # Match the benchmark's order=4 (line ~130).  The old gate used order=8,
+    # which passes at higher accuracy than what the benchmark actually times.
+    fmm = FastVectorizedFMM(depth=4, order=4)
     pot = fmm.evaluate(pos, q)
     exact = exact_direct_nbody_2d(pos, q)
     rel = np.max(np.abs(pot - exact)) / np.max(np.abs(exact))
-    print(f"[ACCURACY] N={n}: max relative potential error vs direct = {rel:.3e}")
-    if rel >= 1e-4:
+    print(f"[ACCURACY] N={n}, order=4: max relative potential error vs direct = {rel:.3e}")
+    if rel >= 1e-3:
         print("[ACCURACY] FAIL — refusing to benchmark an incorrect FMM result.")
-        raise AssertionError(f"FMM accuracy gate failed: rel err {rel:.3e} >= 1e-4")
-    print("[ACCURACY] PASS (< 1e-4) — benchmark may proceed.")
+        raise AssertionError(f"FMM accuracy gate failed: rel err {rel:.3e} >= 1e-3")
+    print(f"[ACCURACY] PASS (< 1e-3, measured {rel:.3e}) — benchmark may proceed.")
 
 
 def run_comprehensive_benchmarks():
@@ -68,9 +79,22 @@ def run_comprehensive_benchmarks():
     validate_fmm_accuracy()
 
     if HAS_JAX:
-        dummy_pos = jax.random.uniform(jax.random.PRNGKey(0), (128, 2))
-        dummy_q = jax.random.uniform(jax.random.PRNGKey(1), (128,))
-        _ = jax_direct_nbody(dummy_pos, dummy_q).block_until_ready()
+        # JAX JIT compiles per concrete input shape: each new N triggers a
+        # recompilation that would otherwise be billed to the first timed
+        # run.  Warm EVERY JAX-timed shape once (un-timed, single iteration,
+        # block_until_ready) so the JIT cache truly covers all sizes the
+        # timing loop will hit.  Warming only N=128 and N=JAX_MAX_N (the old
+        # behavior) left the other 7 timed shapes paying compile cost on
+        # their first measured call.
+        jax_warmup_sizes = [n for n in
+                            [100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 100000]
+                            if n <= JAX_MAX_N]
+        for warmup_n in jax_warmup_sizes:
+            dummy_pos = jax.random.uniform(jax.random.PRNGKey(0), (warmup_n, 2))
+            dummy_q = jax.random.uniform(jax.random.PRNGKey(1), (warmup_n,))
+            _ = jax_direct_nbody(dummy_pos, dummy_q).block_until_ready()
+        print(f"[INFO] JAX warmed up (un-timed, 1 iter each) at N={jax_warmup_sizes}; "
+              f"JIT cache now covers every JAX-timed benchmark shape.")
     else:
         print("[INFO] JAX is unavailable; JAX benchmark columns will be omitted.")
 
@@ -136,7 +160,7 @@ def run_comprehensive_benchmarks():
         print(f"  [-] Flat Tree-Free FMM O(N + K^2):  {t_fmm*1000:.2f} ms  (depth={depth})")
 
     # --- Elastic hash load-factor stress (measured probes) ---
-    print("\n[Elastic/Funnel Hash Stress Test (Farach-Colton / Krapivin / Kuszmaul)]")
+    print("\n[Elastic/Funnel Hash Stress Test (Farach-Colton, Krapivin, & Kuszmaul, 2025)]")
     for cap in [10000, 50000, 200000]:
         n_keys = int(cap * 0.92)
         h_table = ElasticHashTable(capacity=cap, delta=0.05)

@@ -7,7 +7,12 @@ Tests & Benchmarks:
 2. Multipole Gaussian Process exact predictive mean & PCG predictive variance vs Dense Cholesky.
 3. Pathwise Matheron continuous function sampling without O(N^3) Cholesky.
 4. Sparse Variational GP (SVGP) with mini-batch inducing point updates.
-5. Linear O(N) vs Dense O(N^3) Scaling & Speedup Benchmarks.
+5. Matrix-Free PCG vs Dense O(N^3) Scaling & Speedup Benchmarks.
+
+Complexity caveat: the GP layer is matrix-free PCG on a cutoff-truncated sparse
+kernel (near-linear in N for fixed cutoff), NOT FMM-accelerated.  The SVGP path
+uses dense O(N * M^2) operations.  The "Linear O(N)" label in the scaling
+benchmark below refers to the near-linear PCG cost, not a true FMM hierarchy.
 """
 
 import time

@@ -66,5 +66,15 @@ all = [
 Homepage = "https://github.com/OpenAnimal/tree-free-nbody-engine"
 Repository = "https://github.com/OpenAnimal/tree-free-nbody-engine"
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
 [tool.setuptools.packages.find]
 include = ["core*", "apps*", "algorithm_theory*", "neural_ops*", "bioinformatics*", "physics_simulation*", "quantized_bitpacked_optimization*", "video_streaming_codecs*", "game_mechanics_spatial*", "graphics_rendering*"]

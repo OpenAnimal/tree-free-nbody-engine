@@ -304,13 +304,33 @@ def derivative_fd_guard(kappa: float = 1.0, p: int = 8,
 
 def toy_2cell_check(kappa: float = 1.0, p: int = 8) -> bool:
     """Two cells, a handful of particles, compare FMM vs exact direct.
-    This is the mandatory sign-convention check before scaling up."""
+    This is the mandatory sign-convention check before scaling up.
+
+    Round-7 task T-C8 / finding R7-F30: the previous configuration used
+    depth=4 with cells (3,3,3) and (10,10,10), but with the engine's LINEAR
+    cells-per-side semantics (depth=4 → 4 cells/side, indices 0..3), cell
+    (10,10,10) clipped into (3,3,3) — the same cell as c1 — so the check
+    silently exercised only the (exact) near field and never touched M2L/L2P.
+    Now uses depth=8 with cells (1,1,1) and (6,6,6): Chebyshev separation
+    5 ≥ 2*ring_direct+1=5, genuinely well-separated, and an explicit
+    separation assertion makes any future degeneration loud.
+    """
     rng = np.random.default_rng(0)
-    # two well-separated cells at depth=4 (grid_res=16): cell (3,3,3) and (10,10,10)
-    depth = 4
+    depth = 8
     h = 1.0 / depth
-    c1 = (np.array([3, 3, 3]) + 0.5) * h
-    c2 = (np.array([10, 10, 10]) + 0.5) * h
+    cell1 = np.array([1, 1, 1])
+    cell2 = np.array([6, 6, 6])
+    # Separation assertion (R7-F30): the two cells must be outside each
+    # other's ring-2 neighborhood so the far path is genuinely exercised.
+    cheb_sep = np.max(np.abs(cell1 - cell2))
+    ring_direct = 2
+    assert cheb_sep > 2 * ring_direct, (
+        f"toy_2cell_check degenerate: cells {cell1} and {cell2} have "
+        f"Chebyshev separation {cheb_sep} <= 2*ring={2*ring_direct}; "
+        f"the far path would never be exercised."
+    )
+    c1 = (cell1 + 0.5) * h
+    c2 = (cell2 + 0.5) * h
     n1, n2 = 4, 5
     pts1 = c1 + rng.uniform(-h * 0.4, h * 0.4, size=(n1, 3))
     pts2 = c2 + rng.uniform(-h * 0.4, h * 0.4, size=(n2, 3))
@@ -332,9 +352,62 @@ def toy_2cell_check(kappa: float = 1.0, p: int = 8) -> bool:
     return rel < 1e-5
 
 
+def toy_2cell_check_forces(kappa: float = 1.0, p: int = 8) -> bool:
+    """Round-7 task T-D6: 2-cell force check.
+
+    Same setup as `toy_2cell_check` but tests `evaluate_forces` vs exact
+    direct force computation. The force on particle i from particle j is
+    F_ij = -q_j * d/dr [exp(-kappa*r)/r] * (r_i - r_j)/r
+         = q_j * exp(-kappa*r) * (1 + kappa*r) / r^3 * (r_i - r_j)
+
+    Round-7 task T-C8: uses the same de-degenerated depth=8 / cells
+    (1,1,1)/(6,6,6) configuration as `toy_2cell_check` so the far path
+    is genuinely exercised.
+    """
+    rng = np.random.default_rng(0)
+    depth = 8
+    h = 1.0 / depth
+    cell1 = np.array([1, 1, 1])
+    cell2 = np.array([6, 6, 6])
+    cheb_sep = np.max(np.abs(cell1 - cell2))
+    ring_direct = 2
+    assert cheb_sep > 2 * ring_direct, (
+        f"toy_2cell_check_forces degenerate: separation {cheb_sep} <= 2*ring"
+    )
+    c1 = (cell1 + 0.5) * h
+    c2 = (cell2 + 0.5) * h
+    n1, n2 = 4, 5
+    pts1 = c1 + rng.uniform(-h * 0.4, h * 0.4, size=(n1, 3))
+    pts2 = c2 + rng.uniform(-h * 0.4, h * 0.4, size=(n2, 3))
+    pts = np.vstack([pts1, pts2])
+    q = rng.uniform(-1.0, 1.0, size=len(pts))
+
+    # Exact direct forces (exclude self)
+    forces_exact = np.zeros_like(pts)
+    for i in range(len(pts)):
+        for j in range(len(pts)):
+            if i == j:
+                continue
+            dr = pts[i] - pts[j]
+            r = np.linalg.norm(dr)
+            # F_i = -grad_i [q_j * exp(-kappa*r) / r]
+            # d/dr [exp(-kappa*r)/r] = exp(-kappa*r) * (-kappa/r - 1/r^2)
+            # -d/dr = exp(-kappa*r) * (kappa/r + 1/r^2)
+            # F_i = q_j * exp(-kappa*r) * (kappa*r + 1) / r^3 * dr
+            forces_exact[i] += q[j] * np.exp(-kappa * r) * (kappa * r + 1.0) / (r ** 3) * dr
+
+    fmm = Yukawa3DFMM(depth=depth, p=p, kappa=kappa)
+    forces_fmm = fmm.evaluate_forces(pts, q)
+    rel = np.linalg.norm(forces_fmm - forces_exact) / max(1e-30, np.linalg.norm(forces_exact))
+    print(f"toy_2cell_check_forces: rel-L2 = {rel:.3e} (target < 1e-5) "
+          f"{'PASS' if rel < 1e-5 else 'FAIL'}")
+    return rel < 1e-5
+
+
 if __name__ == "__main__":
     ok_fd = derivative_fd_guard()
     ok_toy = toy_2cell_check()
-    if not (ok_fd and ok_toy):
+    ok_toy_f = toy_2cell_check_forces()
+    if not (ok_fd and ok_toy and ok_toy_f):
         raise SystemExit(1)
     print("yukawa3d_fmm guards: PASS")

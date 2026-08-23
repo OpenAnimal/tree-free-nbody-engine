@@ -9,7 +9,7 @@ Inspired by:
 3. "Random Features for Large-Scale Kernel Machines"
    Ali Rahimi and Benjamin Recht (NeurIPS 2007).
 4. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 In non-linear causal discovery and structural equation modeling, testing conditional independence

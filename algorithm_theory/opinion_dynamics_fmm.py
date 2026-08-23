@@ -7,7 +7,7 @@ Inspired by:
 2. "Algorithmic Polarization in Continuous Opinion Spaces"
    Florian Dandekar, Ashish Goel, Michael Lee (Proc. Natl. Acad. Sci. USA, 2013).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 Continuous multi-agent opinion dynamics models the evolution of belief vectors x_i in R^D
@@ -87,8 +87,16 @@ class ContinuousOpinionDynamicsFMM:
             return np.empty((0, self.dim), dtype=np.float64)
 
         # X-A12: CellIndex (world mode) replaces hand-rolled dict grid.
-        idx = CellIndex(dims=self.dim, cell_size=self.cell_size)
-        idx.build(opinions)
+        # Pass-32 fix: CellIndex only supports dims 2 or 3, so pad 1-D
+        # opinions to 2-D with a zero second coordinate and strip it back
+        # after the grid build.  The spatial hash is identical because the
+        # second coordinate is constant.
+        idx_dim = max(self.dim, 2)
+        idx_coords = opinions
+        if self.dim == 1:
+            idx_coords = np.hstack([opinions, np.zeros((n_agents, 1))])
+        idx = CellIndex(dims=idx_dim, cell_size=self.cell_size)
+        idx.build(idx_coords)
 
         drift = np.zeros_like(opinions)
 

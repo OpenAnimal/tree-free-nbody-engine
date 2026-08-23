@@ -7,7 +7,7 @@ Inspired by:
 2. "Spatial Competition and the Median Voter Theorem in Multidimensional Spaces"
    Anthony Downs / Donald Wittman (Journal of Economic Theory, 1977).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 In spatial voting theory and policy game theory, voters occupy positions x_i in R^D

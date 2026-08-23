@@ -1,6 +1,6 @@
 """
 Application 7: High-Dimensional Continuous Graph & Memory Partitioning.
-Powered by Random Hyperplane LSH + Farach-Colton / Krapivin / Kuszmaul Non-Reordering Hash.
+Powered by Random Hyperplane LSH + Farach-Colton, Krapivin, & Kuszmaul (2025) Non-Reordering Hash.
 
 Clusters 128-dimensional dense continuous embedding vectors (e.g. LLM memory / Vector DB retrieval)
 into non-reordered, lock-free hash buckets without building expensive Hierarchical Navigable Small World (HNSW) graphs.
@@ -104,7 +104,7 @@ def run_high_dim_graph_demo(n_embeddings: int = 5000, d_dim: int = 64, n_hyperpl
         for spine in ax.spines.values():
             spine.set_color('#30363D')
             
-    fig.suptitle("Application 7: High-Dimensional Vector DB / Memory Graph Clustering\nAccelerated by Farach-Colton / Kuszmaul Elastic Open Addressing", 
+    fig.suptitle("Application 7: High-Dimensional Vector DB / Memory Graph Clustering\nAccelerated by Farach-Colton, Krapivin, & Kuszmaul (2025) Elastic Open Addressing", 
                  color='white', fontsize=13, fontweight='bold')
     
     plt.tight_layout()

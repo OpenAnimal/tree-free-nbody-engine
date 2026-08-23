@@ -1,9 +1,15 @@
 /**
  * Ultra-Fast Tree-Free Fast Multipole Method (FMM) AMD ROCm / HIP C++ Kernel
  * =========================================================================
- * Combines Lock-Free Non-Reordering Open Addressing Hash Table (Farach-Colton et al. 2025)
+ * Combines a generic multi-level open-addressing hash insert (lock-free CAS)
  * with Carrier, Greengard, & Rokhlin (1988) Multipole Expansions (P2M, M2L, L2P)
  * and Fused Shared-Memory / Local Data Share (LDS) P2P Interaction Tiles.
+ *
+ * Round-7 task T-E2 honesty note: the hash insert here is a generic
+ * lock-free open-addressing scheme (atomicCAS with linear probing). It is
+ * NOT the Farach-Colton, Krapivin, & Kuszmaul (2025) funnel hash schedule (the
+ * non-reordering elastic hash lives in core/elastic_hash.py and the WGSL
+ * demo). The FKK citation has been removed from this file accordingly.
  *
  * Target Architectures:
  *  - AMD RDNA 1/2/3/4 (gfx1010/gfx1030/gfx1100/gfx1200)
@@ -97,7 +103,7 @@ __device__ __forceinline__ uint32_t hash_probe_hip(uint32_t key, uint32_t seed_a
     return ((key * seed_a + seed_b + attempt * 2654435761U) & 0x7FFFFFFFU) % size;
 }
 
-__global__ void hip_insert_particles_elastic_hash_kernel(
+__global__ void hip_insert_particles_open_addressing_kernel(
     const Particle2D* __restrict__ particles,
     int num_particles,
     uint32_t* __restrict__ table_keys,
@@ -227,7 +233,7 @@ __global__ void hip_compute_cluster_multipoles_kernel(
     }
 }
 
-__global__ void hip_evaluate_cgr88_fmm_2d_kernel(
+__global__ void hip_evaluate_adaptive_fmm_2d_kernel(
     const Particle2D* __restrict__ particles,
     int num_particles,
     const ComplexFloat* __restrict__ cluster_local_coeffs,

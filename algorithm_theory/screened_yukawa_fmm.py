@@ -7,7 +7,7 @@ Inspired by:
 2. "Fast Screened Electrostatics for Biomolecular and Electrolyte Systems"
    J. P. Bardhan (J. Chem. Theory Comput. 2012).
 3. "Optimal Bounds for Open Addressing Without Reordering"
-   Martin Farach-Colton, Andrew Krapivin, William Kuszmaul (FOCS 2024 / arXiv:2501.02305).
+   Farach-Colton, Krapivin, & Kuszmaul (2025). IEEE FOCS 2024 / arXiv:2501.02305.
 
 Key Algorithmic Principle:
 In dense battery electrolytes, plasma physics, and colloidal suspensions, ionic interactions
@@ -24,7 +24,7 @@ we compute millions of screened pairwise interactions in roughly O(N) time.
 
 Honesty note on terminology: this is a tree-code (Barnes-Hut with an order-1
 dipole correction) plus hard screening truncation at r_cut, NOT a
-Greengard-Rokhlin translation-based FMM — there are no M2M/M2L/L2L operator
+Greengard & Rokhlin translation-based FMM — there are no M2M/M2L/L2L operator
 hierarchies. Measured accuracy vs the exact direct sum is ~1% relative L2 at
 default parameters (verified against direct_evaluate).
 

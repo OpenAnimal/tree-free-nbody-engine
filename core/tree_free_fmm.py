@@ -1,6 +1,6 @@
 """
 Tree-Free Fast Multipole Method (FMM) in JAX & Python
-Powered by the Non-Reordering Funnel Hash Table (Farach-Colton et al. 2025,
+Powered by the Non-Reordering Funnel Hash Table (Farach-Colton, Krapivin, & Kuszmaul, 2025,
 arXiv:2501.02305) and Carrier, Greengard, & Rokhlin (1988) / Greengard &
 Rokhlin (1987) mathematical formulations.
 
@@ -12,7 +12,7 @@ Implements:
 5. L2L: Local to Local translation (CGR88 Theorem 2.4)
 6. L2P & P2P: Local to Particle evaluation and Direct Near-Field summation
 7. TreeFreeFMM: Non-reordering elastic spatial hash FMM
-8. CGR88AdaptiveFMM: Exact adaptive quadtree FMM
+8. AdaptiveFMM: Exact adaptive quadtree FMM
 9. GreengardRokhlin87RegularFMM: Exact uniform quadtree FMM
 """
 
@@ -34,8 +34,8 @@ except ImportError:
 
 try:
     from .elastic_hash import ElasticHashTable
-    from .cgr88_adaptive_fmm import (
-        CGR88AdaptiveFMM,
+    from .adaptive_fmm import (
+        AdaptiveFMM,
         TreeFreeElasticAdaptiveFMM,
         GreengardRokhlin87RegularFMM,
         AdaptiveQuadTree,
@@ -43,20 +43,20 @@ try:
         decode_morton_box,
         exact_direct_nbody_2d,
         exact_direct_nbody_forces_2d,
-        p2m as cgr88_p2m,
-        m2m as cgr88_m2m,
-        m2l as cgr88_m2l,
-        l2l as cgr88_l2l,
-        l2p as cgr88_l2p,
-        l2p_force as cgr88_l2p_force,
-        p2l as cgr88_p2l,
-        m2p as cgr88_m2p,
+        p2m as adaptivefmm_p2m,
+        m2m as adaptivefmm_m2m,
+        m2l as adaptivefmm_m2l,
+        l2l as adaptivefmm_l2l,
+        l2p as adaptivefmm_l2p,
+        l2p_force as adaptivefmm_l2p_force,
+        p2l as adaptivefmm_p2l,
+        m2p as adaptivefmm_m2p,
         p2p_potential_and_force
     )
 except ImportError:
     from elastic_hash import ElasticHashTable
-    from cgr88_adaptive_fmm import (
-        CGR88AdaptiveFMM,
+    from adaptive_fmm import (
+        AdaptiveFMM,
         TreeFreeElasticAdaptiveFMM,
         GreengardRokhlin87RegularFMM,
         AdaptiveQuadTree,
@@ -64,14 +64,14 @@ except ImportError:
         decode_morton_box,
         exact_direct_nbody_2d,
         exact_direct_nbody_forces_2d,
-        p2m as cgr88_p2m,
-        m2m as cgr88_m2m,
-        m2l as cgr88_m2l,
-        l2l as cgr88_l2l,
-        l2p as cgr88_l2p,
-        l2p_force as cgr88_l2p_force,
-        p2l as cgr88_p2l,
-        m2p as cgr88_m2p,
+        p2m as adaptivefmm_p2m,
+        m2m as adaptivefmm_m2m,
+        m2l as adaptivefmm_m2l,
+        l2l as adaptivefmm_l2l,
+        l2p as adaptivefmm_l2p,
+        l2p_force as adaptivefmm_l2p_force,
+        p2l as adaptivefmm_p2l,
+        m2p as adaptivefmm_m2p,
         p2p_potential_and_force
     )
 
@@ -121,27 +121,27 @@ def morton_key_from_indices(depth: int, ix: int, iy: int) -> int:
 # 2. Multipole & Field Kernels (CGR88 Complex Logarithmic Series)
 # -------------------------------------------------------------
 def p2m(points: np.ndarray, charges: np.ndarray, center: complex, order: int = ORDER) -> np.ndarray:
-    return cgr88_p2m(points, charges, center, p=order)
+    return adaptivefmm_p2m(points, charges, center, p=order)
 
 
 def m2m(m_coeffs: np.ndarray, child_center: complex, parent_center: complex, order: int = ORDER) -> np.ndarray:
-    return cgr88_m2m(m_coeffs, child_center, parent_center, p=order)
+    return adaptivefmm_m2m(m_coeffs, child_center, parent_center, p=order)
 
 
 def l2l(l_coeffs: np.ndarray, parent_center: complex, child_center: complex, order: int = ORDER) -> np.ndarray:
-    return cgr88_l2l(l_coeffs, parent_center, child_center, p=order)
+    return adaptivefmm_l2l(l_coeffs, parent_center, child_center, p=order)
 
 
 def m2l(m_coeffs: np.ndarray, src_center: complex, dst_center: complex, order: int = ORDER) -> np.ndarray:
-    return cgr88_m2l(m_coeffs, src_center, dst_center, p=order)
+    return adaptivefmm_m2l(m_coeffs, src_center, dst_center, p=order)
 
 
 def eval_local(l_coeffs: np.ndarray, target_pt: complex, center: complex, order: int = ORDER) -> float:
-    return cgr88_l2p(l_coeffs, target_pt, center, p=order)
+    return adaptivefmm_l2p(l_coeffs, target_pt, center, p=order)
 
 
 def eval_local_force(l_coeffs: np.ndarray, target_pt: complex, center: complex, order: int = ORDER) -> Tuple[float, float]:
-    return cgr88_l2p_force(l_coeffs, target_pt, center, p=order)
+    return adaptivefmm_l2p_force(l_coeffs, target_pt, center, p=order)
 
 
 # -------------------------------------------------------------
@@ -150,8 +150,8 @@ def eval_local_force(l_coeffs: np.ndarray, target_pt: complex, center: complex, 
 class TreeFreeFMM:
     """
     Regular fixed-depth FMM indexed by a non-reordering funnel hash
-    (core.elastic_hash.ElasticHashTable, Farach-Colton/Krapivin/Kuszmaul
-    2025).
+    (core.elastic_hash.ElasticHashTable, Farach-Colton, Krapivin, &
+    Kuszmaul, 2025).
 
     Index split, honestly stated:
       * `self.levels[lvl]` is a dict of the nodes alive at each fixed depth
@@ -219,9 +219,20 @@ class TreeFreeFMM:
         for level in range(self.depth - 1, -1, -1):
             for node in self.levels[level].values():
                 node['m_coeffs'].fill(0.0)
-                for child in self.levels[level + 1].values():
-                    if (child['ix'] >> 1) == node['ix'] and (child['iy'] >> 1) == node['iy']:
-                        node['m_coeffs'] += m2m(child['m_coeffs'], child['center'], node['center'], self.order)
+                # Address the 4 children by key directly (adaptive FMM by-key
+                # pattern, adaptive_fmm.py:~1092-1097) instead of
+                # scanning all child-level nodes and filtering by parent.
+                # Produces the identical (parent, child) pair set.
+                ix, iy = node['ix'], node['iy']
+                for cdx in (0, 1):
+                    for cdy in (0, 1):
+                        ch_key = morton_key_from_indices(
+                            level + 1, 2 * ix + cdx, 2 * iy + cdy)
+                        child = self.levels[level + 1].get(ch_key)
+                        if child is not None:
+                            node['m_coeffs'] += m2m(
+                                child['m_coeffs'], child['center'],
+                                node['center'], self.order)
 
     def compute_field_contributions(self, positions: np.ndarray, charges: np.ndarray):
         positions = np.asarray(positions, dtype=np.float64)
@@ -235,17 +246,35 @@ class TreeFreeFMM:
         far = np.zeros(N, dtype=np.float64)
         near = np.zeros(N, dtype=np.float64)
         
-        # M2L translation for well-separated boxes at each level
+        # M2L translation for well-separated boxes at each level.
+        # Restructured from O(nodes^2) per level to O(nodes * 36): for each
+        # target, enumerate only the children of target's parent's 3x3
+        # colleagues (<=9 parents * 4 children = 36 candidates) instead of
+        # scanning all same-level nodes. A source qualifies iff
+        # cheb(target, source) > 1 AND parents are adjacent -- which is
+        # equivalent to source being a child of a parent-colleague of
+        # target. Produces the identical (target, source) pair set as the
+        # previous all-pairs scan (verified by pair-set snapshot).
         for level in range(1, self.depth + 1):
-            nodes = list(self.levels[level].values())
-            for target in nodes:
-                for source in nodes:
-                    if max(abs(target['ix'] - source['ix']), abs(target['iy'] - source['iy'])) <= 1:
-                        continue
-                    tp = self.levels[level - 1].get(morton_key_from_indices(level - 1, target['ix'] >> 1, target['iy'] >> 1))
-                    sp = self.levels[level - 1].get(morton_key_from_indices(level - 1, source['ix'] >> 1, source['iy'] >> 1))
-                    if tp is not None and sp is not None and max(abs(tp['ix'] - sp['ix']), abs(tp['iy'] - sp['iy'])) <= 1:
-                        target['l_coeffs'] += m2l(source['m_coeffs'], source['center'], target['center'], self.order)
+            for target in self.levels.get(level, {}).values():
+                tx, ty = target['ix'], target['iy']
+                px, py = tx >> 1, ty >> 1
+                for pdx in (-1, 0, 1):
+                    for pdy in (-1, 0, 1):
+                        ppx, ppy = px + pdx, py + pdy
+                        if ppx < 0 or ppy < 0 or ppx >= (1 << (level - 1)) or ppy >= (1 << (level - 1)):
+                            continue
+                        for cdx in (0, 1):
+                            for cdy in (0, 1):
+                                sx, sy = 2 * ppx + cdx, 2 * ppy + cdy
+                                if max(abs(tx - sx), abs(ty - sy)) <= 1:
+                                    continue  # adjacent, not well-separated
+                                s_key = morton_key_from_indices(level, sx, sy)
+                                source = self.levels[level].get(s_key)
+                                if source is not None:
+                                    target['l_coeffs'] += m2l(
+                                        source['m_coeffs'], source['center'],
+                                        target['center'], self.order)
                         
         # Downward L2L propagation
         for level in range(1, self.depth + 1):
@@ -299,7 +328,7 @@ if __name__ == '__main__':
     np.random.seed(42)
     N_PARTICLES = 1000
     print("=" * 70)
-    print(" CGR88 ADAPTIVE & REGULAR FAST MULTIPOLE METHOD (FMM) TEST SUITE")
+    print(" ADAPTIVE & REGULAR FAST MULTIPOLE METHOD (FMM) TEST SUITE")
     print(" Carrier, Greengard, & Rokhlin (1988) / Greengard & Rokhlin (1987)")
     print("=" * 70)
     
@@ -313,19 +342,19 @@ if __name__ == '__main__':
     t_exact = time.perf_counter() - t0
     print(f"[-] Exact O(N^2) Direct Summation Time: {t_exact*1000:.2f} ms")
     
-    # 2. CGR88 Adaptive FMM
+    # 2. Adaptive FMM
     t0 = time.perf_counter()
-    cgr_fmm = CGR88AdaptiveFMM(max_leaf_particles=20, max_depth=6, p=10)
+    cgr_fmm = AdaptiveFMM(max_leaf_particles=20, max_depth=6, p=10)
     cgr_pot, cgr_fx, cgr_fy = cgr_fmm.evaluate(pos, charges, compute_forces=True)
     t_cgr = time.perf_counter() - t0
-    print(f"[-] CGR88 Adaptive FMM Time:           {t_cgr*1000:.2f} ms")
+    print(f"[-] Adaptive FMM Time:           {t_cgr*1000:.2f} ms")
     
     # 3. Regular FMM
     t0 = time.perf_counter()
     reg_fmm = GreengardRokhlin87RegularFMM(depth=4, p=10)
     reg_pot, reg_fx, reg_fy = reg_fmm.evaluate(pos, charges, compute_forces=True)
     t_reg = time.perf_counter() - t0
-    print(f"[-] Greengard-Rokhlin 87 Regular FMM Time: {t_reg*1000:.2f} ms")
+    print(f"[-] Greengard & Rokhlin (1987) Regular FMM Time: {t_reg*1000:.2f} ms")
     
     # 4. Tree-Free Hash FMM
     t0 = time.perf_counter()
@@ -341,7 +370,7 @@ if __name__ == '__main__':
     err_tf_pot = np.linalg.norm(tf_pot - exact_pot) / np.linalg.norm(exact_pot)
     
     print("\n[Cross-Validation Accuracy]")
-    print(f"[-] CGR88 Adaptive FMM  -> Rel Pot Error: {err_cgr_pot:.3e}, Rel Force Error: {err_cgr_f:.3e}")
+    print(f"[-] Adaptive FMM  -> Rel Pot Error: {err_cgr_pot:.3e}, Rel Force Error: {err_cgr_f:.3e}")
     print(f"[-] Regular FMM (1987)  -> Rel Pot Error: {err_reg_pot:.3e}")
     print(f"[-] Tree-Free Hash FMM  -> Rel Pot Error: {err_tf_pot:.3e}")
     print("=" * 70)

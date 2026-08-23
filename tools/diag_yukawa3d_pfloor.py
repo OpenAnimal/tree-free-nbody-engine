@@ -1,6 +1,6 @@
 """Round-5 task 5.2 diagnostic: Yukawa3D p-floor root-cause analysis.
 
-Runs the three experiments specified in next_implementation_plan.md section 5.2:
+Runs the three experiments specified by round-6 task 5.2 (historical plan; retained in git history):
   a. Derivative-tensor audit (P_{alpha,n} nonzero counts per order;
      D_{alpha+beta} bound check).
   b. Single-pair test: worst-converging far cell pair, Taylor contribution

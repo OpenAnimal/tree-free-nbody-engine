@@ -22,7 +22,7 @@ from packed_particle_types import pack_particles_32bit_2d, pack_particles_64bit_
 def run_ablation_benchmarks():
     print("=" * 80)
     print("VOXEL-PACKED TREE-FREE FMM: SYSTEMATIC ABLATION & SCALING BENCHMARK")
-    print("Inspired by Vercidium (2024) & Farach-Colton, Krapivin, Kuszmaul (2025)")
+    print("Inspired by Vercidium (2024) & Farach-Colton, Krapivin, & Kuszmaul (2025)")
     print("=" * 80)
 
     particle_counts = [500, 2000, 5000, 10000, 20000]
@@ -68,10 +68,12 @@ def run_ablation_benchmarks():
             np.fill_diagonal(r, 1.0)
             exact_pot = np.sum(charges[None, :] * np.log(r) * (1.0 - np.eye(N)), axis=1)
             t_direct = (time.perf_counter() - t0) * 1000.0
-
+            direct_extrapolated = False
         else:
-            # Extrapolate quadratic scaling
+            # EXTRAPOLATE quadratic scaling (N > 5000 is too slow to measure directly).
+            # This is a modeled estimate, NOT a measurement.
             t_direct = results["direct_n2"][2] * ((N / 5000) ** 2)
+            direct_extrapolated = True
         results["direct_n2"].append(t_direct)
         
         # 2. Baseline Tree-Free FMM (All voxel optimizations OFF)
@@ -128,7 +130,7 @@ def run_ablation_benchmarks():
         results["all_combined"].append(m_all["total_latency_ms"])
         results["stage_timings_combined"].append(m_all)
         
-        print(f"  -> Direct N^2:        {t_direct:8.2f} ms")
+        print(f"  -> Direct N^2:        {t_direct:8.2f} ms{' (EXTRAPOLATED, not measured)' if direct_extrapolated else ''}")
         if exact_pot is not None:
             print(f"  -> Accuracy (rel L2 vs direct): baseline {rel_err(pot_base):.2e} | "
                   f"packed {rel_err(pot_packed):.2e} | greedy {rel_err(pot_greedy):.2e} | "
@@ -136,7 +138,8 @@ def run_ablation_benchmarks():
         print(f"  -> Baseline FMM:      {m_base['total_latency_ms']:8.2f} ms (Mem: {m_base['memory_bytes']/1024:.1f} KB)")
         print(f"  -> + Bit-Packing:     {m_packed['total_latency_ms']:8.2f} ms (Mem: {m_packed['memory_bytes']/1024:.1f} KB, {m_base['memory_bytes']/m_packed['memory_bytes']:.1f}x compression)")
         print(f"  -> + Greedy Merging:  {m_greedy['total_latency_ms']:8.2f} ms (M2L Dim: {m_greedy['m2l_matrix_dim']} vs {m_base['m2l_matrix_dim']})")
-        print(f"  -> Combined Engine:   {m_all['total_latency_ms']:8.2f} ms (Speedup vs N^2: {t_direct/m_all['total_latency_ms']:.1f}x; NOTE: the speedup is partly bought with accuracy — see the error column above: greedy run-merging and coordinate bit-packing are lossy, bitboard/strides are lossless).")
+        speedup_note = " (vs EXTRAPOLATED N^2)" if direct_extrapolated else ""
+        print(f"  -> Combined Engine:   {m_all['total_latency_ms']:8.2f} ms (Speedup vs N^2: {t_direct/m_all['total_latency_ms']:.1f}x{speedup_note}; NOTE: the speedup is partly bought with accuracy — see the error column above: greedy run-merging and coordinate bit-packing are lossy, bitboard/strides are lossless).")
 
     # -------------------------------------------------------------
     # Render Publication-Grade Visualization

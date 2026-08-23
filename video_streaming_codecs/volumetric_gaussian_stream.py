@@ -33,9 +33,13 @@ class GaussianSplat4DStreamer:
 
     def compress_frame(self, means: np.ndarray, scales: np.ndarray, rotations: np.ndarray, sh_colors: np.ndarray) -> Dict:
         """
-        Compresses a frame of N 3D Gaussians:
-        - Quantizes centroids into 3D Morton integer keys.
-        - Computes local multipole radiance moments per active spatial bucket.
+        Compresses a frame of N 3D Gaussians (lossy, order-0):
+        - Quantizes centroids into 3D Morton integer keys (one bucket per occupied cell).
+        - Stores the per-bucket mean color (an order-0 / average moment, NOT a
+          "local multipole radiance moment" — see the module header for what this
+          module does and does not do).
+        - `scales` and `rotations` are accepted for API completeness but are NOT
+          used by this lossy color-averaging compressor.
         """
         t0 = time.perf_counter()
         N = len(means)

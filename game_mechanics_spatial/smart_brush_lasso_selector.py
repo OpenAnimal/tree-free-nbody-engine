@@ -36,15 +36,23 @@ class SmartBrushPointCloudSelector:
     def select_sphere_brush(self, center: np.ndarray, radius: float = 0.05) -> Dict:
         """
         center: (3,) brush cursor position
+
+        Returns a dict that includes `selected_indices` (the actual point indices
+        inside the brush sphere) in addition to count/latency stats. The cell scan
+        radius is ceil(radius*grid_res) so a point at distance <= radius that sits
+        up to ceil(radius*res) cells away (when the center is near a cell boundary)
+        is never missed.
         """
         t0 = time.perf_counter()
         grid_res = self.grid_res
         base_key = self.index.key_of(center)
         cx, cy, cz = self.index.key_ints(base_key)
 
-        # O(1) query only touching intersecting spatial buckets
+        # Query only touching intersecting spatial buckets. Use ceil so a point
+        # within `radius` of the center is never dropped when the center sits near
+        # a cell boundary (truncating int(radius*res) can under-scan by one cell).
         selected_indices = []
-        r_cells = max(1, int(radius * grid_res))
+        r_cells = max(1, int(np.ceil(radius * grid_res)))
 
         for dx in range(-r_cells, r_cells + 1):
             for dy in range(-r_cells, r_cells + 1):
@@ -58,11 +66,12 @@ class SmartBrushPointCloudSelector:
                             dists = np.linalg.norm(cand_pts - center, axis=-1)
                             hit = np.where(dists <= radius)[0]
                             for h in hit:
-                                selected_indices.append(cand_ids[h])
+                                selected_indices.append(int(cand_ids[h]))
 
         t_query = (time.perf_counter() - t0) * 1000.0
 
         return {
+            "selected_indices": selected_indices,
             "num_selected": len(selected_indices),
             "latency_ms": t_query,
             "fps_brush_capacity": 1000.0 / max(1e-3, t_query)

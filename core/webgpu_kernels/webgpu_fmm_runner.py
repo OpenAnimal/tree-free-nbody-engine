@@ -7,10 +7,10 @@ and Intel Arc without requiring vendor-specific toolchains.
 
 Two roles:
   1. WGSL source access for browser/client integration (get_wgsl_source /
-     get_adaptive_cgr88_wgsl_source).
+     get_adaptive_fmm_wgsl_source).
   2. Host-side dispatch via wgpu-py: run_fixed_grid_fmm_forces() executes the
      file kernel `tree_free_fmm.wgsl` (T-E1 counting-sort CSR cell lists +
-     CGR88 complex L2P far field) on a native adapter and returns per-particle
+     adaptive FMM complex L2P far field) on a native adapter and returns per-particle
      forces. The far-field local-expansion coefficients are built host-side
      (exact 2D complex Taylor fit about each leaf-cell center from all
      particles outside the cell's 3x3 neighborhood), the near field + L2P
@@ -23,7 +23,7 @@ from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 WGSL_SOURCE_PATH = os.path.join(os.path.dirname(__file__), "tree_free_fmm.wgsl")
-ADAPTIVE_CGR88_WGSL_SOURCE_PATH = os.path.join(os.path.dirname(__file__), "adaptive_cgr88.wgsl")
+ADAPTIVE_FMM_WGSL_SOURCE_PATH = os.path.join(os.path.dirname(__file__), "adaptive_fmm.wgsl")
 
 try:
     import wgpu
@@ -39,9 +39,9 @@ def get_wgsl_source() -> str:
         return f.read()
 
 
-def get_adaptive_cgr88_wgsl_source() -> str:
-    """Return the staged flat adaptive CGR88 WGSL kernel source."""
-    with open(ADAPTIVE_CGR88_WGSL_SOURCE_PATH, "r", encoding="utf-8") as f:
+def get_adaptive_fmm_wgsl_source() -> str:
+    """Return the staged flat adaptive FMM WGSL kernel source."""
+    with open(ADAPTIVE_FMM_WGSL_SOURCE_PATH, "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -73,7 +73,7 @@ def get_webgpu_adapter_info() -> Dict[str, Any]:
 
 
 # =====================================================================
-# Host-side far-field: per-leaf-cell complex local expansions (CGR88).
+# Host-side far-field: per-leaf-cell complex local expansions (adaptive FMM).
 # The kernel's L2P evaluates  phi(z) ~= Re( sum_k l_k (z - z_c)^k )  with
 # force  (-Re L'(z), Im L'(z)).  Matching coefficients for the 2D log
 # kernel  phi_j(z) = q_j log|z - z_j|  expanded about the cell center z_c
