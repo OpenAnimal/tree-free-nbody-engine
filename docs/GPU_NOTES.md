@@ -698,3 +698,59 @@ numbers depressed ~proportionally):
 The implementation-details sidebar line is plain ASCII prose (the raw
 `?param=...` A/B suffix removed; the Copy button copies it) and the 1euro
 toggle stays boids-only (hidden elsewhere).
+
+## 9. Round-12 findings: adaptive tree-shape sweep (negative), Python-side rewrite (strong positive)
+
+### 9.1 Adaptive tree-shape sweep at 500k — the auto tier is already optimal
+
+Motivation: Lashuk et al. (2012) report that increasing leaf capacity
+(shorter tree) shifts work from memory-bound M2L traversal to compute-bound
+near-field and helps GPUs. `tools/adaptive_shape_sweep.js` swept
+`?leaftarget=` x `?adapdepth=` (new URL overrides, auto = 0) at N=500k,
+3 interleaved rounds, medians:
+
+| config | median steps/s | nodes | maxLeafOccupancy |
+|---|---|---|---|
+| auto (lt16/d8) | **48** | 23010 | 288 |
+| lt32 (d7) | 41 | 7288 | 1054 |
+| lt64 (d7) | 35 | 5840 | 1060 |
+| lt128 (d6) | 33 | 1833 | 4006 |
+| lt64/d8 | 35 | 12579 | 285 |
+| lt128/d9 | 27 | 11677 | 128 |
+
+Result: NEGATIVE for the Lashuk heuristic — the auto tier (small leaves,
+deep tree) is fastest; every shallower shape is slower, and deeper-than-auto
+is slowest. Explanation: this demo's near field is budget-capped
+(p2pBudget subsampling), so enlarging leaves does not add compute-bound
+work for the GPU to amortize — it only coarsens the far field and starves
+the near-field sample fraction (24/4006 on the densest leaf). The
+classical compute-bound/memory-bound trade does not apply here. Defaults
+unchanged; `?leaftarget=` / `?adapdepth=` stay as user tuning axes.
+
+Conclusion for the adaptive-vs-fixed gap at 500k+ (48-56 vs 172 steps/s):
+it is the divergent per-target chain walk itself, not tree shape. The
+structural fix is materialized per-target far-field interaction lists
+(built once per metadata refresh on GPU, evaluated as flat gathers like
+the fixed grid) — the same move that closed the hash-mode near-field gap
+in §8.1. Documented as the identified next step; not implemented this
+round.
+
+### 9.2 Artifact re-check (adaptive, 2.5x zoom)
+
+20 s of adaptive galaxy at 500k, canvas + two 2.5x zoom crops inspected:
+no grid-aligned seams, no square/rectangular clumping, no straight-line
+density discontinuities at refinement boundaries, no rendering glitches.
+The §8.1 materialize_ranges fix holds structurally.
+
+### 9.3 Python core: the "NOT faster than direct at N=2000" rows are gone
+
+New engine `core/adaptive_fmm_fast.FastAdaptiveFMM` (level-batched,
+2:1-balanced CGR88 with per-(level,offset) M2L matrices, vectorized List-4
+P2L via reduceat segment sums, CSR near-field): 30 ms at N=2000 (23x faster
+than the classical per-box engine, 1.2-2.4x faster than direct) at the SAME
+2e-7 rel-L2; 91-112x at 32k; 465x at 128k (direct measured 296 s).
+`FastVectorizedFMM` M2L rewritten as an exact FFT lattice convolution
+(kernel = per-offset M2L matrix, 3x3 near block zeroed, side-2R padded):
+710 -> 90 ms at N=2000, unchanged accuracy. See BENCHMARKS.md "Core FMM"
+for tables, automated crossover headline, and plots
+(assets/core_fmm_scaling_{loglog,linear}.png).

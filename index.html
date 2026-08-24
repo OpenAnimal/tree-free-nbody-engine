@@ -3847,6 +3847,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // ?p2pbudget=N — override the adaptive near-field sampling budget
         // (auto tier: 24 below 500k, 12 below 2M, 6 above). 0 = auto.
         let p2pBudgetOverride = 0;
+        // ?leaftarget=N / ?adapdepth=N — override the adaptive quadtree leaf
+        // occupancy target and max depth (auto: computeAdaptiveLeafTarget /
+        // computeAdaptiveDepth). Tuning axis for the tree-shape trade-off:
+        // larger leaf target => shallower tree => fewer memory-bound
+        // per-level chain walks, more compute-bound near-field work
+        // (Lashuk et al., 2012). 0 = auto.
+        let adaptiveLeafTargetOverride = 0;
+        let adaptiveDepthOverride = 0;
         // Benchmark axis flags (default off => validated counting-sort / f32
         // paths; toggled only by the live bench panel to measure the
         // +openaddr-hash / +quantized_bitpacked axes). See T3/T4.
@@ -4689,11 +4697,13 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         // cell, clamped to [4, 10] (the node-key packing (l<<20|iy<<10|ix)
         // supports 10-bit cell indices).
         function computeAdaptiveDepth(n, leafTarget) {
-            return Math.min(10, Math.max(4, Math.ceil(Math.log2(Math.sqrt(Math.max(1, n) / leafTarget)))));
+            const auto = Math.min(10, Math.max(4, Math.ceil(Math.log2(Math.sqrt(Math.max(1, n) / leafTarget)))));
+            return adaptiveDepthOverride > 0 ? Math.min(10, Math.max(2, adaptiveDepthOverride)) : auto;
         }
         // Leaf occupancy target scales with N so the per-24-frame JS rebuild
         // stays interactive at 5M particles (leaf count ~ N/leafTarget).
         function computeAdaptiveLeafTarget(n) {
+            if (adaptiveLeafTargetOverride > 0) return adaptiveLeafTargetOverride;
             if (n > 2000000) return 64;
             if (n > 500000) return 32;
             return 16;
@@ -8066,6 +8076,17 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             const pbParam = parseInt(qs.get('p2pbudget') || '', 10);
             if (Number.isFinite(pbParam) && pbParam > 0) {
                 p2pBudgetOverride = Math.min(256, pbParam);
+            }
+            // ?leaftarget=N / ?adapdepth=N: override the adaptive quadtree
+            // leaf occupancy target / max depth (tuning axis, see
+            // computeAdaptiveLeafTarget).
+            const ltParam = parseInt(qs.get('leaftarget') || '', 10);
+            if (Number.isFinite(ltParam) && ltParam > 0) {
+                adaptiveLeafTargetOverride = Math.min(512, ltParam);
+            }
+            const adParam = parseInt(qs.get('adapdepth') || '', 10);
+            if (Number.isFinite(adParam) && adParam > 0) {
+                adaptiveDepthOverride = Math.min(10, adParam);
             }
             // ?capped=1 (the default) keeps the vsync-locked rAF loop;
             // ?uncapped=1 removes the display-refresh ceiling (benchmark).

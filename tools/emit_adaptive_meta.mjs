@@ -77,7 +77,7 @@ class FunnelTable {
 const initialPositions = pos;
 const jsModule = new Function(
     'N', 'initialPositions', 'FunnelTable', 'p2pBudgetWarned', 'adaptiveNodeHashWarned',
-    'useAdaptiveNodeHash', 'p2pBudgetOverride',
+    'useAdaptiveNodeHash', 'p2pBudgetOverride', 'adaptiveLeafTargetOverride', 'adaptiveDepthOverride',
     source + '\nreturn { buildAdaptiveMetadata, computeAdaptiveDepth, computeAdaptiveLeafTarget, cellsTouch };'
 );
 // useAdaptiveNodeHash=false: the page-level `let useAdaptiveNodeHash` (index.html)
@@ -85,7 +85,7 @@ const jsModule = new Function(
 // the Python emulator never consumes nodeHash and the emitted binary layout has
 // no nodeHash section, so the harness stubs the flag OFF (same pattern as the
 // p2pBudgetWarned / adaptiveNodeHashWarned / p2pBudgetOverride stubs here).
-const api = jsModule(N, pos, FunnelTable, false, false, false, 0);
+const api = jsModule(N, pos, FunnelTable, false, false, false, 0, 0, 0);
 const md = api.buildAdaptiveMetadata(depth, pos);
 
 // Binary layout (little-endian):
