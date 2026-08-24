@@ -36,7 +36,7 @@ struct FmmParams {
     levelCount: u32,
     levelBase: u32,
     zeroNearP2P: u32,  // probe flag: 1 = skip near-field P2P (measure multipole path only)
-    _pad1: u32,
+    farEntryCount: u32, // materialized far CSR entry total (farOps tail base)
     _pad2: u32,
 };
 
@@ -70,6 +70,11 @@ struct GridParams {
 // the demo's adaptive shader when its hash buffers were added).
 @group(0) @binding(12) var<storage, read> nodeMeta: array<vec2<u32>>;
 @group(0) @binding(13) var<storage, read> nodeChildren: array<vec4<u32>>;
+// Materialized per-target far-field CSR + per-(level, offset) M2L operator
+// table packed into ONE u32 buffer (see the farCSR accessors below the
+// coefficient helpers): [per-node start/count header | packed entries |
+// farOps f32 bits]. Built per metadata refresh (round 13).
+@group(0) @binding(14) var<storage, read> farCSR: array<u32>;
 @group(0) @binding(15) var<storage, read> charges: array<f32>;  // T-D7: per-particle charge
 // T-E1 counting-sort CSR cell-list buffers (dispatched before l2p).
 // cellArrays packs [0..nc) count | [nc..2nc) cursor | [2nc..3nc) start into
@@ -156,6 +161,52 @@ fn writec(which: u32, node: u32, k: u32, z: vec2<f32>) {
 }
 fn isTerminal(node: u32) -> bool {
     return (nodeMeta[node].y & FLAG_TERMINAL) != 0u;
+}
+
+// ---- Materialized far-field CSR accessors + helpers (round 13) ----
+// farCSR layout (one u32 storage buffer, binding 14):
+//   [0 .. 2*nodeCount)              per-node header: start (2n) | count (2n+1)
+//   [2n .. 2n + farEntryCount)      packed entries: source node index (low
+//                                   22 bits) | operator row index (top 10)
+//   [2n + farEntryCount ..)         farOps: per-(level, offset) M2L operator
+//                                   table, 50 f32 (25 complex) per row, stored
+//                                   as bitcast u32 words.
+fn farStartOf(node: u32) -> u32 { return farCSR[2u * node]; }
+fn farCountOf(node: u32) -> u32 { return farCSR[2u * node + 1u]; }
+fn farEntryAt(i: u32) -> u32 { return farCSR[2u * params.nodeCount + i]; }
+fn farOpsBase() -> u32 { return 2u * params.nodeCount + params.farEntryCount; }
+fn farOpAt(row: u32, m: u32, k: u32) -> vec2<f32> {
+    let base = farOpsBase() + row * 50u + (m * 5u + k) * 2u;
+    return vec2<f32>(bitcast<f32>(farCSR[base]), bitcast<f32>(farCSR[base + 1u]));
+}
+fn farZero() -> array<vec2<f32>, 5> {
+    return array<vec2<f32>, 5>(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0));
+}
+fn farAdd(a: array<vec2<f32>, 5>, b: array<vec2<f32>, 5>) -> array<vec2<f32>, 5> {
+    var out = farZero();
+    for (var k = 0u; k < 5u; k = k + 1u) { out[k] = a[k] + b[k]; }
+    return out;
+}
+// One-shot L2L recentering of a 5-coefficient local expansion by d: the
+// exact polynomial shift the per-level l2l kernel applies one level at a
+// time; composing exact shifts equals the single long shift, so gathering
+// each ancestor level's contribution and shifting it straight to the leaf
+// reproduces the chain result (same operator math as l2l below).
+fn farShift(c: array<vec2<f32>, 5>, d: vec2<f32>) -> array<vec2<f32>, 5> {
+    var out = farZero();
+    var dpow = farZero();
+    dpow[0] = vec2<f32>(1.0, 0.0);
+    for (var j = 1u; j <= 4u; j = j + 1u) { dpow[j] = cmul(dpow[j - 1u], d); }
+    for (var m = 0u; m <= 4u; m = m + 1u) {
+        var acc = vec2<f32>(0.0);
+        for (var k = m; k <= 4u; k = k + 1u) {
+            var binom = 1.0;
+            for (var b = 1u; b <= m; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
+            acc += cmul(c[k], dpow[k - m]) * binom;
+        }
+        out[m] = acc;
+    }
+    return out;
 }
 
 // ---- T-E1 counting-sort CSR cell-list passes (uniform grid overlay) ----
@@ -400,6 +451,121 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
     }
+}
+
+@compute @workgroup_size(64)
+fn p2l(@builtin(global_invocation_id) id: vec3<u32>) {
+    // List-4 P2L pass of the materialized far-field path (round 13): the
+    // List-4 block of the per-level m2l kernel, dispatched once over ALL
+    // nodes (P2L has no inter-level data dependency). Writes ONLY each
+    // node's own P2L contribution into locals; far_gather then folds every
+    // ancestor's part into each leaf with one-shot L2L shifts, so the P2L
+    // work stays shared per (node, source leaf) pair exactly as before.
+    if (id.x >= params.nodeCount) { return; }
+    let targetNode = id.x;
+    let targetCenter = nodeCenterSize[targetNode].xy;
+    let l4Offset = listOffsets[targetNode].w;
+    let l4Count = listCounts[targetNode].w;
+    for (var q = 0u; q < l4Count; q = q + 1u) {
+        let sourceNode = listData[l4Offset + q];
+        let range = nodeParticleRange[sourceNode];
+        if (range.y == 0u) { continue; }
+        // Bound the serial P2L loop: a saturated max-depth leaf can hold
+        // thousands of particles and this kernel runs one thread per target
+        // node — unbounded, that is a collapse-triggered stall. Stride-sample
+        // with a (target, source)-rotated offset and reweight by range.y/cnt.
+        let cnt = min(range.y, 128u);
+        let skip = (targetNode * 2654435761u + q * 40503u) % range.y;
+        let w = f32(range.y) / f32(cnt);
+        for (var n = 0u; n < cnt; n = n + 1u) {
+            let pIdx = particleIndices[range.x + ((skip + n) % range.y)];
+            let d = targetCenter - particles[pIdx].pos;
+            let qj = charges[pIdx] * w;
+            let existing0 = readc(1u, targetNode, 0u);
+            writec(1u, targetNode, 0u, existing0 + qj * clog(d));
+            for (var l = 1u; l <= 4u; l = l + 1u) {
+                if (l > params.expansionOrder) { break; }
+                let sign = select(1.0, -1.0, (l & 1u) == 0u);
+                var dp = vec2<f32>(1.0, 0.0);
+                for (var n2 = 0u; n2 < l; n2 = n2 + 1u) { dp = cmul(dp, d); }
+                let existing = readc(1u, targetNode, l);
+                writec(1u, targetNode, l, existing + qj * cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
+            }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn far_gather(@builtin(global_invocation_id) id: vec3<u32>) {
+    // Materialized far-field evaluation (round 13): one thread per LEAF
+    // gathers the leaf's CSR of List-2 M2L sources across ALL levels of its
+    // ancestor chain, applying each source through the precomputed
+    // per-(level, offset) operator row (two loads + a 5x5 complex matvec —
+    // no clog/cdiv chains) and recentering each level's partial expansion
+    // onto the leaf with one exact L2L shift per level run. This replaces
+    // the per-level m2l (List-2 part) + l2l chain of the legacy path. The
+    // ancestors' List-4 P2L locals (written by the p2l pass) are folded in
+    // by the same shifts; a strict ancestor of a leaf is always internal,
+    // so no thread reads a leaf slot another thread writes.
+    if (id.x >= params.nodeCount) { return; }
+    let t = id.x;
+    if (!isTerminal(t)) { return; }
+    let tCenter = nodeCenterSize[t].xy;
+    let tLevel = u32(nodeCenterSize[t].w);
+    // Ancestor node index + center per level (entry [tLevel] is t itself).
+    var ancIdx: array<u32, 11>;
+    var ancCenter: array<vec2<f32>, 11>;
+    var a = t;
+    for (var l = tLevel; l > 0u; l = l - 1u) {
+        ancIdx[l] = a;
+        ancCenter[l] = nodeCenterSize[a].xy;
+        a = nodeMeta[a].x;
+    }
+    var acc = farZero();
+    // CSR run accumulator: same-level entries accumulate about that
+    // ancestor's center; on a level change the run is shifted to the leaf.
+    var lvl = farZero();
+    var runLevel = 0xFFFFFFFFu;
+    let cnt = farCountOf(t);
+    let start = farStartOf(t);
+    for (var e = 0u; e < cnt; e = e + 1u) {
+        let packed = farEntryAt(start + e);
+        let src = packed & 0x3FFFFFu;
+        let row = packed >> 22u;
+        let l = row / 49u;
+        if (l != runLevel) {
+            if (runLevel != 0xFFFFFFFFu) {
+                acc = farAdd(acc, farShift(lvl, tCenter - ancCenter[runLevel]));
+            }
+            lvl = farZero();
+            runLevel = l;
+        }
+        var mom = farZero();
+        for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+            mom[k] = readc(0u, src, k);
+        }
+        for (var m = 0u; m <= params.expansionOrder; m = m + 1u) {
+            var v = vec2<f32>(0.0);
+            for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+                v += cmul(farOpAt(row, m, k), mom[k]);
+            }
+            lvl[m] += v;
+        }
+    }
+    if (runLevel != 0xFFFFFFFFu) {
+        acc = farAdd(acc, farShift(lvl, tCenter - ancCenter[runLevel]));
+    }
+    // Fold the ancestors' P2L locals (List-4 parts written by p2l) with the
+    // same one-shot shifts; index tLevel is t itself, picking up t's own
+    // P2L entries with a zero shift.
+    for (var l = 1u; l <= tLevel; l = l + 1u) {
+        var pl = farZero();
+        for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+            pl[k] = readc(1u, ancIdx[l], k);
+        }
+        acc = farAdd(acc, farShift(pl, tCenter - ancCenter[l]));
+    }
+    for (var k = 0u; k <= 4u; k = k + 1u) { writec(1u, t, k, acc[k]); }
 }
 
 @compute @workgroup_size(256)

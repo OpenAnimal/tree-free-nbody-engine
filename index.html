@@ -2649,6 +2649,7 @@ struct FmmParams {
                        // on a level-2 node by tests/core/test_adaptive_wgsl_numeric.py.
     useAdaptiveNodeHash: u32, // 1 => l2p resolves the target leaf via a funnel probe of nodeHashKeys
     p2pBudgetOverride: u32, // 0 = auto tier (24/12/6 by N); >0 = ?p2pbudget= override
+    farEntryCount: u32, // materialized far CSR entry total (farOps tail base)
 };
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -2663,9 +2664,16 @@ struct FmmParams {
 @group(0) @binding(9) var<storage, read_write> locals: array<vec4<f32>>;
 @group(0) @binding(10) var<storage, read_write> fields: array<vec4<f32>>;
 @group(0) @binding(11) var<uniform> params: FmmParams;
-@group(0) @binding(12) var<storage, read> nodeParent: array<u32>;
+// nodeMeta packs parent (.x) and terminal flag (.y) per node into ONE
+// vec2<u32> buffer (same packing as the standalone adaptive_fmm.wgsl) so
+// the far-field CSR + operator table fit the 16-storage-buffer limit.
+@group(0) @binding(12) var<storage, read> nodeMeta: array<vec2<u32>>;
 @group(0) @binding(13) var<storage, read> nodeChildren: array<vec4<u32>>;
-@group(0) @binding(14) var<storage, read> nodeFlags: array<u32>;
+// Materialized per-target far-field CSR + per-(level, offset) M2L operator
+// table packed into ONE u32 buffer (see the farCSR accessors below the
+// coefficient helpers): [per-node start/count header | packed entries |
+// farOps f32 bits]. Built worker-side per metadata refresh (round 13).
+@group(0) @binding(14) var<storage, read> farCSR: array<u32>;
 @group(0) @binding(15) var<storage, read> charges: array<f32>;  // T-D7: per-particle charge
 // Funnel-hash occupied-node directory (read-only; built on CPU by
 // FunnelTable in buildAdaptiveMetadata). Packed into ONE storage buffer to
@@ -2692,35 +2700,112 @@ fn cdiv(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 fn clog(a: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(0.5 * log(max(dot(a,a), 1e-20)), atan2(a.y, a.x));
 }
-fn readc(buf: ptr<storage, array<vec4<f32>>, read_write>, node: u32, k: u32) -> vec2<f32> {
+// Complex-coefficient accessors for the packed per-node coefficient slots
+// (3 vec4 = 5 complex per node: k = 0..4). which selects the buffer:
+// 0 = multipoles, 1 = locals. (Selector form — identical text to the
+// standalone core/webgpu_kernels/adaptive_fmm.wgsl, so check_wgsl_sync.py
+// verifies the two copies against each other.)
+fn readc(which: u32, node: u32, k: u32) -> vec2<f32> {
     let b = node * 3u;
-    if (k == 0u) { return (*buf)[b].xy; }
-    if (k == 1u) { return (*buf)[b].zw; }
-    if (k == 2u) { return (*buf)[b+1u].xy; }
-    if (k == 3u) { return (*buf)[b+1u].zw; }
-    return (*buf)[b+2u].xy;
+    if (which == 0u) {
+        if (k == 0u) { return multipoles[b].xy; }
+        if (k == 1u) { return multipoles[b].zw; }
+        if (k == 2u) { return multipoles[b+1u].xy; }
+        if (k == 3u) { return multipoles[b+1u].zw; }
+        return multipoles[b+2u].xy;
+    }
+    if (k == 0u) { return locals[b].xy; }
+    if (k == 1u) { return locals[b].zw; }
+    if (k == 2u) { return locals[b+1u].xy; }
+    if (k == 3u) { return locals[b+1u].zw; }
+    return locals[b+2u].xy;
 }
-fn writec(buf: ptr<storage, array<vec4<f32>>, read_write>, node: u32, k: u32, z: vec2<f32>) {
+fn writec(which: u32, node: u32, k: u32, z: vec2<f32>) {
     let b = node * 3u;
-    if (k == 0u) {
-        let v = (*buf)[b];
-        (*buf)[b] = vec4<f32>(z.x, z.y, v.z, v.w);
-    } else if (k == 1u) {
-        let v = (*buf)[b];
-        (*buf)[b] = vec4<f32>(v.x, v.y, z.x, z.y);
-    } else if (k == 2u) {
-        let v = (*buf)[b+1u];
-        (*buf)[b+1u] = vec4<f32>(z.x, z.y, v.z, v.w);
-    } else if (k == 3u) {
-        let v = (*buf)[b+1u];
-        (*buf)[b+1u] = vec4<f32>(v.x, v.y, z.x, z.y);
+    if (which == 0u) {
+        if (k == 0u) {
+            let v = multipoles[b];
+            multipoles[b] = vec4<f32>(z.x, z.y, v.z, v.w);
+        } else if (k == 1u) {
+            let v = multipoles[b];
+            multipoles[b] = vec4<f32>(v.x, v.y, z.x, z.y);
+        } else if (k == 2u) {
+            let v = multipoles[b+1u];
+            multipoles[b+1u] = vec4<f32>(z.x, z.y, v.z, v.w);
+        } else if (k == 3u) {
+            let v = multipoles[b+1u];
+            multipoles[b+1u] = vec4<f32>(v.x, v.y, z.x, z.y);
+        } else {
+            let v = multipoles[b+2u];
+            multipoles[b+2u] = vec4<f32>(z.x, z.y, v.z, v.w);
+        }
     } else {
-        let v = (*buf)[b+2u];
-        (*buf)[b+2u] = vec4<f32>(z.x, z.y, v.z, v.w);
+        if (k == 0u) {
+            let v = locals[b];
+            locals[b] = vec4<f32>(z.x, z.y, v.z, v.w);
+        } else if (k == 1u) {
+            let v = locals[b];
+            locals[b] = vec4<f32>(v.x, v.y, z.x, z.y);
+        } else if (k == 2u) {
+            let v = locals[b+1u];
+            locals[b+1u] = vec4<f32>(z.x, z.y, v.z, v.w);
+        } else if (k == 3u) {
+            let v = locals[b+1u];
+            locals[b+1u] = vec4<f32>(v.x, v.y, z.x, z.y);
+        } else {
+            let v = locals[b+2u];
+            locals[b+2u] = vec4<f32>(z.x, z.y, v.z, v.w);
+        }
     }
 }
 fn isTerminal(node: u32) -> bool {
-    return (nodeFlags[node] & FLAG_TERMINAL) != 0u;
+    return (nodeMeta[node].y & FLAG_TERMINAL) != 0u;
+}
+
+// ---- Materialized far-field CSR accessors + helpers (round 13) ----
+// farCSR layout (one u32 storage buffer, binding 14):
+//   [0 .. 2*nodeCount)              per-node header: start (2n) | count (2n+1)
+//   [2n .. 2n + farEntryCount)      packed entries: source node index (low
+//                                   22 bits) | operator row index (top 10)
+//   [2n + farEntryCount ..)         farOps: per-(level, offset) M2L operator
+//                                   table, 50 f32 (25 complex) per row, stored
+//                                   as bitcast u32 words.
+fn farStartOf(node: u32) -> u32 { return farCSR[2u * node]; }
+fn farCountOf(node: u32) -> u32 { return farCSR[2u * node + 1u]; }
+fn farEntryAt(i: u32) -> u32 { return farCSR[2u * params.nodeCount + i]; }
+fn farOpsBase() -> u32 { return 2u * params.nodeCount + params.farEntryCount; }
+fn farOpAt(row: u32, m: u32, k: u32) -> vec2<f32> {
+    let base = farOpsBase() + row * 50u + (m * 5u + k) * 2u;
+    return vec2<f32>(bitcast<f32>(farCSR[base]), bitcast<f32>(farCSR[base + 1u]));
+}
+fn farZero() -> array<vec2<f32>, 5> {
+    return array<vec2<f32>, 5>(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0));
+}
+fn farAdd(a: array<vec2<f32>, 5>, b: array<vec2<f32>, 5>) -> array<vec2<f32>, 5> {
+    var out = farZero();
+    for (var k = 0u; k < 5u; k = k + 1u) { out[k] = a[k] + b[k]; }
+    return out;
+}
+// One-shot L2L recentering of a 5-coefficient local expansion by d: the
+// exact polynomial shift the per-level l2l kernel applies one level at a
+// time; composing exact shifts equals the single long shift, so gathering
+// each ancestor level's contribution and shifting it straight to the leaf
+// reproduces the chain result (same operator math as l2l below).
+fn farShift(c: array<vec2<f32>, 5>, d: vec2<f32>) -> array<vec2<f32>, 5> {
+    var out = farZero();
+    var dpow = farZero();
+    dpow[0] = vec2<f32>(1.0, 0.0);
+    for (var j = 1u; j <= 4u; j = j + 1u) { dpow[j] = cmul(dpow[j - 1u], d); }
+    for (var m = 0u; m <= 4u; m = m + 1u) {
+        var acc = vec2<f32>(0.0);
+        for (var k = m; k <= 4u; k = k + 1u) {
+            var binom = 1.0;
+            for (var b = 1u; b <= m; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
+            acc += cmul(c[k], dpow[k - m]) * binom;
+        }
+        out[m] = acc;
+    }
+    return out;
 }
 
 // ---- Funnel-hash occupied-node directory probe (port of the cell-lists
@@ -2864,7 +2949,7 @@ fn p2m(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
     }
-    for (var k = 0u; k <= 4u; k = k + 1u) { writec(&multipoles, node, k, coeff[k]); }
+    for (var k = 0u; k <= 4u; k = k + 1u) { writec(0u, node, k, coeff[k]); }
 }
 
 @compute @workgroup_size(64)
@@ -2888,23 +2973,23 @@ fn m2m(@builtin(global_invocation_id) id: vec3<u32>) {
             if (child == INVALID) { continue; }
             let childCenter = nodeCenterSize[child].xy;
             if (k == 0u) {
-                acc += readc(&multipoles, child, 0u);
+                acc += readc(0u, child, 0u);
             } else {
                 let delta = childCenter - center;
                 var deltaPower = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < k; n = n + 1u) { deltaPower = cmul(deltaPower, delta); }
-                let a0 = readc(&multipoles, child, 0u);
+                let a0 = readc(0u, child, 0u);
                 acc -= cmul(a0, deltaPower) / f32(k);
                 for (var j = 1u; j <= k; j = j + 1u) {
                     var bj = 1.0;
                     for (var b = 1u; b <= (j - 1u); b = b + 1u) { bj *= f32(k - b) / f32(b); }
                     var dp = vec2<f32>(1.0, 0.0);
                     for (var n = 0u; n < (k - j); n = n + 1u) { dp = cmul(dp, delta); }
-                    acc += cmul(readc(&multipoles, child, j), dp) * bj;
+                    acc += cmul(readc(0u, child, j), dp) * bj;
                 }
             }
         }
-        writec(&multipoles, node, k, acc);
+        writec(0u, node, k, acc);
     }
 }
 
@@ -2917,7 +3002,7 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.dispatchCount) { return; }
     let node = params.levelBase + id.x;
     if (node >= params.nodeCount) { return; }
-    let parent = nodeParent[node];
+    let parent = nodeMeta[node].x;
     if (parent == INVALID) { return; }
     let center = nodeCenterSize[node].xy;
     let parentCenter = nodeCenterSize[parent].xy;
@@ -2931,10 +3016,10 @@ fn l2l(@builtin(global_invocation_id) id: vec3<u32>) {
             for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k - b + 1u) / f32(b); }
             var dp = vec2<f32>(1.0, 0.0);
             for (var n = 0u; n < (k - l); n = n + 1u) { dp = cmul(dp, delta); }
-            acc += cmul(readc(&locals, parent, k), dp) * binom;
+            acc += cmul(readc(1u, parent, k), dp) * binom;
         }
-        let existing = readc(&locals, node, l);
-        writec(&locals, node, l, existing + acc);
+        let existing = readc(1u, node, l);
+        writec(1u, node, l, existing + acc);
     }
 }
 
@@ -2959,14 +3044,14 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var l = 0u; l <= 4u; l = l + 1u) {
             if (l > params.expansionOrder) { break; }
             var local = vec2<f32>(0.0);
-            let a0 = readc(&multipoles, source, 0u);
+            let a0 = readc(0u, source, 0u);
             if (l == 0u) {
                 local += cmul(a0, clog(delta));
                 for (var k = 1u; k <= 4u; k = k + 1u) {
                     if (k > params.expansionOrder) { break; }
                     var power = vec2<f32>(1.0, 0.0);
                     for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
-                    local += cdiv(readc(&multipoles, source, k), power);
+                    local += cdiv(readc(0u, source, k), power);
                 }
             } else {
                 var deltaPower = vec2<f32>(1.0, 0.0);
@@ -2980,11 +3065,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
                     var binom = 1.0;
                     for (var b = 1u; b <= l; b = b + 1u) { binom *= f32(k + b - 1u) / f32(b); }
-                    local += cdiv(readc(&multipoles, source, k) * (sign_ak * binom), power);
+                    local += cdiv(readc(0u, source, k) * (sign_ak * binom), power);
                 }
             }
-            let existing = readc(&locals, targetNode, l);
-            writec(&locals, targetNode, l, existing + local);
+            let existing = readc(1u, targetNode, l);
+            writec(1u, targetNode, l, existing + local);
         }
     }
 
@@ -3007,18 +3092,133 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // P18-3: apply per-particle charge to P2L (List 4) translation
             // (was missing, inconsistent with core/adaptive_fmm.py:149).
             let qj = charges[pIdx] * w;
-            let existing0 = readc(&locals, targetNode, 0u);
-            writec(&locals, targetNode, 0u, existing0 + qj * clog(d));
+            let existing0 = readc(1u, targetNode, 0u);
+            writec(1u, targetNode, 0u, existing0 + qj * clog(d));
             for (var l = 1u; l <= 4u; l = l + 1u) {
                 if (l > params.expansionOrder) { break; }
                 let sign = select(1.0, -1.0, (l & 1u) == 0u);
                 var dp = vec2<f32>(1.0, 0.0);
                 for (var n2 = 0u; n2 < l; n2 = n2 + 1u) { dp = cmul(dp, d); }
-                let existing = readc(&locals, targetNode, l);
-                writec(&locals, targetNode, l, existing + qj * cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
+                let existing = readc(1u, targetNode, l);
+                writec(1u, targetNode, l, existing + qj * cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
             }
         }
     }
+}
+
+@compute @workgroup_size(64)
+fn p2l(@builtin(global_invocation_id) id: vec3<u32>) {
+    // List-4 P2L pass of the materialized far-field path (round 13): the
+    // List-4 block of the per-level m2l kernel, dispatched once over ALL
+    // nodes (P2L has no inter-level data dependency). Writes ONLY each
+    // node's own P2L contribution into locals; far_gather then folds every
+    // ancestor's part into each leaf with one-shot L2L shifts, so the P2L
+    // work stays shared per (node, source leaf) pair exactly as before.
+    if (id.x >= params.nodeCount) { return; }
+    let targetNode = id.x;
+    let targetCenter = nodeCenterSize[targetNode].xy;
+    let l4Offset = listOffsets[targetNode].w;
+    let l4Count = listCounts[targetNode].w;
+    for (var q = 0u; q < l4Count; q = q + 1u) {
+        let sourceNode = listData[l4Offset + q];
+        let range = nodeParticleRange[sourceNode];
+        if (range.y == 0u) { continue; }
+        // Bound the serial P2L loop: a saturated max-depth leaf can hold
+        // thousands of particles and this kernel runs one thread per target
+        // node — unbounded, that is a collapse-triggered stall. Stride-sample
+        // with a (target, source)-rotated offset and reweight by range.y/cnt.
+        let cnt = min(range.y, 128u);
+        let skip = (targetNode * 2654435761u + q * 40503u) % range.y;
+        let w = f32(range.y) / f32(cnt);
+        for (var n = 0u; n < cnt; n = n + 1u) {
+            let pIdx = particleIndices[range.x + ((skip + n) % range.y)];
+            let d = targetCenter - particles[pIdx].pos;
+            let qj = charges[pIdx] * w;
+            let existing0 = readc(1u, targetNode, 0u);
+            writec(1u, targetNode, 0u, existing0 + qj * clog(d));
+            for (var l = 1u; l <= 4u; l = l + 1u) {
+                if (l > params.expansionOrder) { break; }
+                let sign = select(1.0, -1.0, (l & 1u) == 0u);
+                var dp = vec2<f32>(1.0, 0.0);
+                for (var n2 = 0u; n2 < l; n2 = n2 + 1u) { dp = cmul(dp, d); }
+                let existing = readc(1u, targetNode, l);
+                writec(1u, targetNode, l, existing + qj * cdiv(vec2<f32>(sign / f32(l), 0.0), dp));
+            }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn far_gather(@builtin(global_invocation_id) id: vec3<u32>) {
+    // Materialized far-field evaluation (round 13): one thread per LEAF
+    // gathers the leaf's CSR of List-2 M2L sources across ALL levels of its
+    // ancestor chain, applying each source through the precomputed
+    // per-(level, offset) operator row (two loads + a 5x5 complex matvec —
+    // no clog/cdiv chains) and recentering each level's partial expansion
+    // onto the leaf with one exact L2L shift per level run. This replaces
+    // the per-level m2l (List-2 part) + l2l chain of the legacy path. The
+    // ancestors' List-4 P2L locals (written by the p2l pass) are folded in
+    // by the same shifts; a strict ancestor of a leaf is always internal,
+    // so no thread reads a leaf slot another thread writes.
+    if (id.x >= params.nodeCount) { return; }
+    let t = id.x;
+    if (!isTerminal(t)) { return; }
+    let tCenter = nodeCenterSize[t].xy;
+    let tLevel = u32(nodeCenterSize[t].w);
+    // Ancestor node index + center per level (entry [tLevel] is t itself).
+    var ancIdx: array<u32, 11>;
+    var ancCenter: array<vec2<f32>, 11>;
+    var a = t;
+    for (var l = tLevel; l > 0u; l = l - 1u) {
+        ancIdx[l] = a;
+        ancCenter[l] = nodeCenterSize[a].xy;
+        a = nodeMeta[a].x;
+    }
+    var acc = farZero();
+    // CSR run accumulator: same-level entries accumulate about that
+    // ancestor's center; on a level change the run is shifted to the leaf.
+    var lvl = farZero();
+    var runLevel = 0xFFFFFFFFu;
+    let cnt = farCountOf(t);
+    let start = farStartOf(t);
+    for (var e = 0u; e < cnt; e = e + 1u) {
+        let packed = farEntryAt(start + e);
+        let src = packed & 0x3FFFFFu;
+        let row = packed >> 22u;
+        let l = row / 49u;
+        if (l != runLevel) {
+            if (runLevel != 0xFFFFFFFFu) {
+                acc = farAdd(acc, farShift(lvl, tCenter - ancCenter[runLevel]));
+            }
+            lvl = farZero();
+            runLevel = l;
+        }
+        var mom = farZero();
+        for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+            mom[k] = readc(0u, src, k);
+        }
+        for (var m = 0u; m <= params.expansionOrder; m = m + 1u) {
+            var v = vec2<f32>(0.0);
+            for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+                v += cmul(farOpAt(row, m, k), mom[k]);
+            }
+            lvl[m] += v;
+        }
+    }
+    if (runLevel != 0xFFFFFFFFu) {
+        acc = farAdd(acc, farShift(lvl, tCenter - ancCenter[runLevel]));
+    }
+    // Fold the ancestors' P2L locals (List-4 parts written by p2l) with the
+    // same one-shot shifts; index tLevel is t itself, picking up t's own
+    // P2L entries with a zero shift.
+    for (var l = 1u; l <= tLevel; l = l + 1u) {
+        var pl = farZero();
+        for (var k = 0u; k <= params.expansionOrder; k = k + 1u) {
+            pl[k] = readc(1u, ancIdx[l], k);
+        }
+        acc = farAdd(acc, farShift(pl, tCenter - ancCenter[l]));
+    }
+    for (var k = 0u; k <= 4u; k = k + 1u) { writec(1u, t, k, acc[k]); }
 }
 
         @compute @workgroup_size(256)
@@ -3045,7 +3245,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
 
             for (var l = 0u; l <= 4u; l = l + 1u) {
                 if (l > params.expansionOrder) { break; }
-                let c = readc(&locals, targetNode, l);
+                let c = readc(1u, targetNode, l);
                 var power = vec2<f32>(1.0, 0.0);
                 for (var n = 0u; n < l; n = n + 1u) { power = cmul(power, dz); }
                 // Potential is the REAL part of the complex product, not a
@@ -3063,7 +3263,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             for (var q = 0u; q < list3Count; q = q + 1u) {
                 let source = listData[list3Offset + q];
                 let delta = particles[particle].pos - nodeCenterSize[source].xy;
-                let a0 = readc(&multipoles, source, 0u);
+                let a0 = readc(0u, source, 0u);
                 let inv = cdiv(vec2<f32>(1.0, 0.0), delta);
                 potential += cmul(a0, clog(delta)).x;
                 derivative += cmul(a0, inv);
@@ -3071,7 +3271,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     if (k > params.expansionOrder) { break; }
                     var power = vec2<f32>(1.0, 0.0);
                     for (var n = 0u; n < k; n = n + 1u) { power = cmul(power, delta); }
-                    let ak = readc(&multipoles, source, k);
+                    let ak = readc(0u, source, k);
                     potential += cdiv(ak, power).x;
                     derivative -= f32(k) * cmul(ak, cdiv(vec2<f32>(1.0, 0.0), cmul(power, delta)));
                 }
@@ -3842,6 +4042,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
         let adaptiveDepth = 4;             // Max quadtree depth; sized from N at build time (computeAdaptiveDepth)
         let useAdaptiveFmm = false;        // UI toggle: true = adaptive, false = fixed-grid
         let useAdaptiveNodeHash = true;    // funnel-hash occupied-node directory for adaptive mode (A/B via ?adaptiveHash=0). Default ON: interleaved-median A/B at 500k measures ~18% MORE steps/sec than the 2 MB leafForParticle array (110 vs 93; the compact directory is cache-resident).
+        let useMaterializedFar = true;     // materialized per-target far-field CSR + operator-table gather (A/B via ?materializedFar=0). Default ON (round 13): replaces the per-level m2l(List-2)+l2l chain with one flat per-leaf gather.
         let adaptiveNodeHashWarned = false; // one-shot warn flag for FunnelTable verify failure
         let p2pBudgetWarned = false;       // one-shot warn flag for P2P subsampling (see buildAdaptiveMetadata)
         // ?p2pbudget=N — override the adaptive near-field sampling budget
@@ -4053,7 +4254,10 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const mode = useAdaptiveFmm ? 'adaptive' : (webgpuFmmEnabled ? 'fixed' : 'off');
                 const quant = useQuantized ? 'on' : 'off';
                 const ahash = (useAdaptiveFmm && useAdaptiveNodeHash) ? 'on' : 'off';
-                el.innerText = `ff=gravity ${mode} p=${fmmOrder} / nf=${hash} / ahash=${ahash} / q=${quant}`;
+                const afar = (useAdaptiveFmm && useMaterializedFar
+                    && adaptiveMetadata && adaptiveMetadata.farEntries
+                    && adaptiveMetadata.farEntries.length > 0) ? 'mat' : 'chain';
+                el.innerText = `ff=gravity ${mode} p=${fmmOrder} / nf=${hash} / ahash=${ahash} / far=${afar} / q=${quant}`;
                 if (implEl) {
                     const mdInfo = (useAdaptiveFmm && adaptiveMetadata)
                         ? `quadtree depth ${adaptiveMetadata.depth}, ${adaptiveMetadata.totalNodes} nodes, near-field samples up to ${budget}/leaf${adaptiveMetadata.maxLeafParticles > budget ? ` (densest leaf has ${adaptiveMetadata.maxLeafParticles} - subsampled, reweighted)` : ''}. `
@@ -4727,6 +4931,72 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             return ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1;
         }
 
+        // Per-(level, offset) M2L operator table for the materialized
+        // far-field path (round 13). For a source at integer cell offset
+        // (dx, dy) = (ax - sx, ay - sy) from its List-2 target at level l,
+        // the M2L delta = target - source center is the fixed lattice vector
+        // (dx, dy) * 2^-l, so the whole (p+1)^2 complex operator collapses
+        // into a dense row indexed by (l, dx, dy) — the same precomputed-
+        // matrix move as core/adaptive_fmm_fast.py's per-(level, offset)
+        // M2L matrices (Gimbutas & Greengard, 2012, FMMLIB2D
+        // itable(-3:3,-3:3); Carrier, Greengard, & Rokhlin, 1988).
+        // Row layout: 25 complex = 50 f32, M[m][k] at row*50 + (m*5+k)*2,
+        // row = l*49 + (dy+3)*7 + (dx+3), matching the CSR entry packing in
+        // buildAdaptiveMetadata. Coefficients reproduce the WGSL m2l
+        // kernel's inline math exactly (clog monopole log term, (-1)-signed
+        // inverse powers, C(k+l-1, l) binomials), computed in f64, stored
+        // f32. Position-independent: rebuilt per metadata build only so the
+        // worker / Node emitter paths stay self-contained (sub-millisecond).
+        function buildFarOperatorTable() {
+            const table = new Float32Array(11 * 49 * 50);
+            const binoms = [[1, 1, 1, 1, 1], [0, 1, 2, 3, 4],
+                            [0, 1, 3, 6, 10], [0, 1, 4, 10, 20],
+                            [0, 1, 5, 15, 35]]; // C(k+l-1, l); col k=0 unused
+            for (let l = 0; l < 11; l++) {
+                const w = Math.pow(2, -l);
+                for (let oy = 0; oy < 7; oy++) {
+                    for (let ox = 0; ox < 7; ox++) {
+                        const dx = (ox - 3) * w, dy = (oy - 3) * w;
+                        const row = l * 49 + oy * 7 + ox;
+                        const put = (m, k, re, im) => {
+                            const base = row * 50 + (m * 5 + k) * 2;
+                            table[base] = re; table[base + 1] = im;
+                        };
+                        // clog(delta) = 0.5*ln|delta|^2 + i*atan2 (max-guard
+                        // mirrors the WGSL clog; only the (0,0) row can hit it).
+                        const r2 = Math.max(dx * dx + dy * dy, 1e-20);
+                        put(0, 0, 0.5 * Math.log(r2), Math.atan2(dy, dx));
+                        // 1/delta powers (conj(delta)/|delta|^2)^n, incremental.
+                        const invP = [[1.0, 0.0]];
+                        let pre = 1.0, pim = 0.0;
+                        for (let n = 1; n <= 8; n++) {
+                            const re = (pre * dx + pim * dy) / r2;
+                            const im = (pim * dx - pre * dy) / r2;
+                            invP.push([re, im]);
+                            pre = re; pim = im;
+                        }
+                        for (let m = 0; m < 5; m++) {
+                            for (let k = 0; k < 5; k++) {
+                                if (m === 0 && k === 0) { continue; }
+                                const inv = invP[m + k];
+                                if (m === 0) {
+                                    put(0, k, inv[0], inv[1]); // a_k / delta^k
+                                } else if (k === 0) {
+                                    const signA0 = (m & 1) === 1 ? 1.0 : -1.0;
+                                    put(m, 0, inv[0] * signA0 / m, inv[1] * signA0 / m);
+                                } else {
+                                    const signAk = (m & 1) === 1 ? -1.0 : 1.0;
+                                    const sc = signAk * binoms[m][k];
+                                    put(m, k, inv[0] * sc, inv[1] * sc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return table;
+        }
+
         // posStride: element stride between particles in `positions` (4 for
         // the live posVel layout x,y,vx,vy; 2 for the compacted x,y-only
         // snapshot the refresh worker transfers). Defaults to 4 so callers
@@ -4809,9 +5079,16 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             // Node data arrays
             const INVALID = 0xFFFFFFFF;
             const nodeCenterSize = new Float32Array(nodeCount * 4); // cx, cy, width, depth
+            // nodeMeta packs parent (.x) and terminal flag (.y) per node
+            // into ONE vec2<u32> buffer — the same packing the standalone
+            // core/webgpu_kernels/adaptive_fmm.wgsl uses to stay under the
+            // 16-storage-buffer per-stage limit (the materialized far-field
+            // CSR + operator table below take the slot separate arrays
+            // would cost). nodeParent stays a builder-internal mirror for
+            // the ancestor walks.
+            const nodeMeta = new Uint32Array(nodeCount * 2);
             const nodeParent = new Uint32Array(nodeCount);
             const nodeChildren = new Uint32Array(nodeCount * 4);
-            const nodeFlags = new Uint32Array(nodeCount);
             const nodeCell = new Uint32Array(nodeCount * 2);        // ix, iy at node level (list walks)
             const nodeParticleRange = new Uint32Array(nodeCount * 2); // offset, count
             const nodeIsLeaf = new Uint8Array(nodeCount);
@@ -4844,13 +5121,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             nodeChildren[parentIdx * 4 + childSlot] = idx;
                         }
                         if (!splitsAt(l, cell)) {
-                            nodeFlags[idx] = 1; // terminal
+                            nodeMeta[idx * 2 + 1] = 1; // terminal
                             nodeIsLeaf[idx] = 1;
                             leafIds.push(idx);
                         }
                     }
                 }
             }
+
+            // Parent column of nodeMeta derives from the INVALID-filled
+            // nodeParent mirror so the ROOT carries INVALID (parent 0 would
+            // alias node 0 and fail the structural check).
+            for (let i = 0; i < nodeCount; i++) { nodeMeta[i * 2] = nodeParent[i]; }
 
             // ---- 4) Particle assignment + counting sort by leaf ---------
             // leafForCell: level-D cell -> leaf node index (top-down fill).
@@ -5106,6 +5388,67 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
 
+            // ---- 6) Materialized per-target far-field CSR (round 13) -----
+            // For every LEAF t: the flat concatenation over levels l =
+            // t.level .. 1 of List-2(ancestor_l(t)) — exactly the M2L source
+            // set the per-level m2l+l2l chain delivers to t, resolved ONCE
+            // per metadata refresh so the GPU evaluates it as a flat gather
+            // (far_gather kernel) instead of per-level dispatches with inline
+            // transcendental M2L math. Each entry packs the source node index
+            // (low 22 bits) with the precomputed per-(level, offset)
+            // operator row index l*49 + (dy+3)*7 + (dx+3) (top 10 bits) into
+            // ONE u32; offsets are bounded to [-3,3] by the List-2
+            // construction (children of the parent's 3x3 colleague ring).
+            // Entries are grouped by descending level (leaf's own level
+            // first) so the kernel shifts each level's gathered run to the
+            // leaf center once per run.
+            const farStart = new Uint32Array(nodeCount);
+            const farCount = new Uint32Array(nodeCount);
+            let farEntriesArr = null;
+            if (nodeCount >= (1 << 22)) {
+                // Source index would overflow the 22-bit packing; the
+                // dispatcher falls back to the per-level chain (null
+                // farEntries is the flag). Unreachable below ~4M nodes.
+                console.warn('adaptive far CSR disabled: nodeCount ' + nodeCount + ' exceeds the 22-bit source packing.');
+            } else {
+                for (const b of leafIds) {
+                    let cnt = 0, a = b;
+                    for (let l = nodeCenterSize[b * 4 + 3] | 0; l >= 1; l--) {
+                        cnt += listCounts[a * 4 + 1];
+                        a = nodeParent[a];
+                    }
+                    farCount[b] = cnt;
+                }
+                let farTotal = 0;
+                for (const b of leafIds) {
+                    farStart[b] = farTotal;
+                    farTotal += farCount[b];
+                }
+                const farEntries = new Uint32Array(farTotal);
+                for (const b of leafIds) {
+                    let cur = farStart[b], a = b;
+                    for (let l = nodeCenterSize[b * 4 + 3] | 0; l >= 1; l--) {
+                        const ax = nodeCell[a * 2], ay = nodeCell[a * 2 + 1];
+                        const lo = listOffsets[a * 4 + 1], lc = listCounts[a * 4 + 1];
+                        for (let q = 0; q < lc; q++) {
+                            const src = listData[lo + q];
+                            const row = l * 49 + (ay - nodeCell[src * 2 + 1] + 3) * 7
+                                      + (ax - nodeCell[src * 2] + 3);
+                            farEntries[cur++] = src | (row << 22);
+                        }
+                        a = nodeParent[a];
+                    }
+                }
+                farEntriesArr = farEntries;
+                // Sizes logged once per rebuild (worker context) so the CSR
+                // cost stays visible in the console record.
+                console.debug('adaptive far CSR: leaves=' + leafIds.length + ' entries=' + farTotal +
+                    ' (' + (farTotal / Math.max(1, leafIds.length)).toFixed(1) + '/leaf,' +
+                    ' entries+header bytes=' + ((farTotal + 2 * nodeCount) * 4) +
+                    ', ops table bytes=' + (11 * 49 * 50 * 4) + ')');
+            }
+            const farOps = buildFarOperatorTable();
+
             // P2P budget subsampling warning: when the max leaf particle
             // count exceeds the WGSL p2pBudget (24/12/6 tiered by N), the
             // near-field P2P pass silently subsamples neighbors and accuracy
@@ -5175,15 +5518,18 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 levelStart,
                 levelCount,
                 nodeCenterSize,
-                nodeParent,
+                nodeMeta,
                 nodeChildren,
-                nodeFlags,
                 nodeParticleRange,
                 leafForParticle,
                 particleIndices,
                 listOffsets,
                 listCounts,
                 listData,
+                farStart,
+                farCount,
+                farEntries: farEntriesArr,
+                farOps,
                 nodeHashKeys: nodeHash ? nodeHash.keys : null,
                 nodeHashValues: nodeHash ? nodeHash.values : null,
                 nodeHashGeom: nodeHash ? nodeHash.geom.packed : null,
@@ -5439,7 +5785,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             if (adaptiveErrors.length > 0) throw new Error(`Adaptive WGSL compile failed: ${adaptiveErrors.map(m => m.message).join(' | ')}`);
 
                             webgpuDevice.pushErrorScope('validation');
-                            for (const ep of ['clear', 'p2m', 'm2m', 'l2l', 'm2l', 'l2p']) {
+                            for (const ep of ['clear', 'p2m', 'm2m', 'l2l', 'm2l', 'p2l', 'far_gather', 'l2p']) {
                                 webgpuAdaptivePipelines[ep] = webgpuDevice.createComputePipeline({
                                     label: `Adaptive ${ep}`,
                                     layout: adaptivePipelineLayout,
@@ -5466,9 +5812,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuAdaptiveBuffers.listOffsets = webgpuDevice.createBuffer({ size: Math.max(16, md.listOffsets.byteLength), usage: roStorage });
                             webgpuAdaptiveBuffers.listCounts = webgpuDevice.createBuffer({ size: Math.max(16, md.listCounts.byteLength), usage: roStorage });
                             webgpuAdaptiveBuffers.listData = webgpuDevice.createBuffer({ size: Math.max(16, md.listData.byteLength), usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeParent = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeParent.byteLength), usage: roStorage });
+                            webgpuAdaptiveBuffers.nodeMeta = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeMeta.byteLength), usage: roStorage });
                             webgpuAdaptiveBuffers.nodeChildren = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeChildren.byteLength), usage: roStorage });
-                            webgpuAdaptiveBuffers.nodeFlags = webgpuDevice.createBuffer({ size: Math.max(16, md.nodeFlags.byteLength), usage: roStorage });
+                            // Materialized far-field CSR buffer: interleaved
+                            // per-node start/count header + packed entries +
+                            // the (position-independent) operator table tail.
+                            webgpuAdaptiveBuffers.farCSR = webgpuDevice.createBuffer({ size: Math.max(16, farCSRBytes(md)), usage: roStorage });
                             // Funnel-hash occupied-node directory buffer (static,
                             // uploaded once + on metadata rebuild). geom|keys|
                             // values packed into ONE buffer (16-storage limit).
@@ -5493,9 +5842,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listOffsets, 0, md.listOffsets);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listCounts, 0, md.listCounts);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listData, 0, md.listData);
-                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
+                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeMeta, 0, md.nodeMeta);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
-                            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+                            uploadFarCSR(md);
                             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeHash, 0, md.nodeHashPacked);
 
                             // Store layout for bind group creation later (after webgpuFmmField exists)
@@ -5773,8 +6122,8 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const adaptMeta = md.leafForParticle.byteLength + md.particleIndices.byteLength +
                          md.nodeCenterSize.byteLength + md.nodeParticleRange.byteLength +
                          md.listOffsets.byteLength + md.listCounts.byteLength +
-                         md.listData.byteLength + md.nodeParent.byteLength +
-                         md.nodeChildren.byteLength + md.nodeFlags.byteLength;
+                         md.listData.byteLength + md.nodeMeta.byteLength +
+                         md.nodeChildren.byteLength + farCSRBytes(md);
                 const adaptHash = md.nodeHashPacked ? md.nodeHashPacked.byteLength : 0;
                 bytes += part('adaptDyn', adaptDyn, 'Adaptive tree',
                     'Adaptive quadtree dynamic data: per-node multipole moments + local expansions (3×vec4 each)');
@@ -5921,9 +6270,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     { binding: 9, resource: { buffer: webgpuAdaptiveBuffers.locals } },
                     { binding: 10, resource: { buffer: webgpuAdaptiveBuffers.fields } },
                     { binding: 11, resource: { buffer: webgpuAdaptiveParams, size: 256 } },
-                    { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeParent } },
+                    { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeMeta } },
                     { binding: 13, resource: { buffer: webgpuAdaptiveBuffers.nodeChildren } },
-                    { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.nodeFlags } },
+                    { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.farCSR } },
                     { binding: 15, resource: { buffer: webgpuChargesBuffer } },
                     // Funnel-hash occupied-node directory (read-only, packed:
                     // geom | keys | values in one buffer — see shader binding 16).
@@ -5935,6 +6284,33 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 console.error('Adaptive bind group creation failed:', bgErr);
                 webgpuAdaptiveEnabled = false;
             }
+        }
+
+        // Materialized far-field CSR GPU size: [2*nodeCount interleaved
+        // start/count header | entries | operator table (f32 bits)]. The
+        // table tail is position-independent but rides in the same buffer
+        // to respect the 16-storage-buffer per-stage limit.
+        function farCSRBytes(md) {
+            return (2 * md.totalNodes + (md.farEntries ? md.farEntries.length : 0)
+                + 11 * 49 * 50) * 4;
+        }
+        function uploadFarCSR(md) {
+            if (!webgpuAdaptiveBuffers.farCSR) return;
+            const n = md.totalNodes;
+            const entries = md.farEntries ? md.farEntries.length : 0;
+            // Interleave start/count into the shader's header layout.
+            const hdr = new Uint32Array(2 * n);
+            for (let i = 0; i < n; i++) {
+                hdr[2 * i] = md.farStart[i];
+                hdr[2 * i + 1] = md.farCount[i];
+            }
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR, 0, hdr);
+            if (entries > 0) {
+                webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR, 2 * n * 4, md.farEntries);
+            }
+            // Operator table tail at word offset 2n + entries.
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR,
+                (2 * n + entries) * 4, md.farOps);
         }
 
         function uploadAdaptiveMetadata(md) {
@@ -5961,9 +6337,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             resized = ensureSize('listOffsets', md.listOffsets.byteLength, roStorage) || resized;
             resized = ensureSize('listCounts', md.listCounts.byteLength, roStorage) || resized;
             resized = ensureSize('listData', md.listData.byteLength, roStorage) || resized;
-            resized = ensureSize('nodeParent', md.nodeParent.byteLength, roStorage) || resized;
+            resized = ensureSize('nodeMeta', md.nodeMeta.byteLength, roStorage) || resized;
             resized = ensureSize('nodeChildren', md.nodeChildren.byteLength, roStorage) || resized;
-            resized = ensureSize('nodeFlags', md.nodeFlags.byteLength, roStorage) || resized;
+            resized = ensureSize('farCSR', farCSRBytes(md), roStorage) || resized;
             resized = ensureSize('multipoles', md.totalNodes * 3 * 16, rwStorage) || resized;
             resized = ensureSize('locals', md.totalNodes * 3 * 16, rwStorage) || resized;
             resized = ensureSize('nodeHash', md.nodeHashPacked.byteLength, roStorage) || resized;
@@ -5988,9 +6364,9 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listOffsets, 0, md.listOffsets);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listCounts, 0, md.listCounts);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.listData, 0, md.listData);
-            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParent, 0, md.nodeParent);
+            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeMeta, 0, md.nodeMeta);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
-            webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeFlags, 0, md.nodeFlags);
+            uploadFarCSR(md);
             webgpuDevice.queue.writeBuffer(webgpuAdaptiveBuffers.nodeHash, 0, md.nodeHashPacked);
         }
 
@@ -6060,6 +6436,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 const glue = [
                     'let N = 0, initialPositions = null;',
                     'let useAdaptiveNodeHash = true, p2pBudgetOverride = 0;',
+                    // Round-12 tree-shape overrides: the builder reads these
+                    // page globals; without the declarations here the worker
+                    // threw ReferenceError on its first build and silently
+                    // fell back to synchronous rebuilds (diag "errors").
+                    'let adaptiveLeafTargetOverride = 0, adaptiveDepthOverride = 0;',
                     'let p2pBudgetWarned = false, adaptiveNodeHashWarned = false;',
                     'onmessage = (e) => {',
                     '    const m = e.data;',
@@ -6070,10 +6451,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     '    // inside the builder and have no consumer afterwards.',
                     '    md.nodeHashKeys = null; md.nodeHashValues = null; md.nodeHashGeom = null;',
                     '    const transfer = [md.levelStart.buffer, md.levelCount.buffer,',
-                    '        md.nodeCenterSize.buffer, md.nodeParent.buffer, md.nodeChildren.buffer,',
-                    '        md.nodeFlags.buffer, md.nodeParticleRange.buffer, md.leafForParticle.buffer,',
+                    '        md.nodeCenterSize.buffer, md.nodeMeta.buffer, md.nodeChildren.buffer,',
+                    '        md.nodeParticleRange.buffer, md.leafForParticle.buffer,',
                     '        md.particleIndices.buffer, md.listOffsets.buffer, md.listCounts.buffer,',
-                    '        md.listData.buffer, md.nodeHashPacked.buffer];',
+                    '        md.listData.buffer, md.farStart.buffer, md.farCount.buffer,',
+                    '        md.farOps.buffer, md.nodeHashPacked.buffer];',
+                    '    if (md.farEntries) transfer.push(md.farEntries.buffer);',
                     '    postMessage({ gen: m.gen, md: md }, transfer);',
                     '};'
                 ].join('\n');
@@ -6942,6 +7325,7 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                     aU[base + 6] = md.levelCount[l]; // dispatchCount (per-level m2m/l2l/m2l guard)
                     aU[base + 7] = useAdaptiveNodeHash ? 1 : 0; // useAdaptiveNodeHash
                     aU[base + 8] = p2pBudgetOverride; // 0 = auto tier 24/12/6; ?p2pbudget= override
+                    aU[base + 9] = md.farEntries ? md.farEntries.length : 0; // farEntryCount (farOps tail base)
                 }
                 webgpuDevice.queue.writeBuffer(webgpuAdaptiveParams, 0, adaptiveParamData);
 
@@ -6978,16 +7362,29 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuPassTimings.fmmBuild = performance.now() - cpuT0Build;
                 const cpuT0M2l = performance.now();
 
-                // Pass B (downward + evaluation): per level L2L then M2L
-                // (l2l(l) must see m2l(l-1)'s locals — in-pass dispatch order
-                // guarantees that), then L2P at particles (List 3 M2P and
-                // List 1 P2P included).
+                // Pass B (downward + evaluation). Default (round 13): the
+                // MATERIALIZED far field — one whole-range p2l pass (List-4
+                // P2L per node, no inter-level dependency) followed by one
+                // far_gather pass (per leaf: flat CSR gather of List-2
+                // sources across all ancestor levels through the
+                // per-(level, offset) operator table + one-shot L2L folds
+                // of the ancestors' P2L locals). Legacy chain (?materializedFar=0
+                // or CSR unavailable): per level L2L then M2L (l2l(l) must
+                // see m2l(l-1)'s locals — in-pass dispatch order guarantees
+                // that). L2P at particles (List 3 M2P and List 1 P2P
+                // included) is common to both paths.
+                const farPath = useMaterializedFar && md.farEntries && md.farEntries.length > 0;
                 const downPass = commandEncoder.beginComputePass();
-                for (let l = 1; l <= depth; l++) {
-                    const lc = Math.ceil(md.levelCount[l] / 64);
-                    if (lc === 0) continue;
-                    runAdaptive(downPass, 'l2l', lc, l);
-                    runAdaptive(downPass, 'm2l', lc, l);
+                if (farPath) {
+                    runAdaptive(downPass, 'p2l', Math.ceil(nn / 64), 0);
+                    runAdaptive(downPass, 'far_gather', Math.ceil(nn / 64), 0);
+                } else {
+                    for (let l = 1; l <= depth; l++) {
+                        const lc = Math.ceil(md.levelCount[l] / 64);
+                        if (lc === 0) continue;
+                        runAdaptive(downPass, 'l2l', lc, l);
+                        runAdaptive(downPass, 'm2l', lc, l);
+                    }
                 }
                 webgpuPassTimings.fmmM2l = performance.now() - cpuT0M2l;
                 const cpuT0L2p = performance.now();
@@ -8071,6 +8468,12 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
             if (ahParam !== null) {
                 useAdaptiveNodeHash = ahParam !== '0';
             }
+            // ?materializedFar=0|1: A/B the materialized per-target far-field
+            // CSR gather vs the legacy per-level m2l+l2l chain (round 13).
+            const mfParam = qs.get('materializedFar');
+            if (mfParam !== null) {
+                useMaterializedFar = mfParam !== '0';
+            }
             // ?p2pbudget=N: override the adaptive near-field sampling budget
             // (auto tier 24/12/6 by N). Raise for accuracy, lower for speed.
             const pbParam = parseInt(qs.get('p2pbudget') || '', 10);
@@ -8129,6 +8532,11 @@ fn m2l(@builtin(global_invocation_id) id: vec3<u32>) {
                 gpuCompleteMs: +webgpuGpuCompleteMs.toFixed(4),
                 leafBits: fmmLeafBits,
                 p2pRadius,
+                materializedFar: useMaterializedFar
+                    && !!(adaptiveMetadata && adaptiveMetadata.farEntries
+                        && adaptiveMetadata.farEntries.length > 0),
+                farEntries: adaptiveMetadata && adaptiveMetadata.farEntries
+                    ? adaptiveMetadata.farEntries.length : 0,
                 funnel: (useFunnelHash && funnelGeometry) ? {
                     probeBound: funnelGeometry.probeBound,
                     totalInsertProbes: funnelProbeCountVal,

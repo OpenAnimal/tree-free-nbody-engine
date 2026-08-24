@@ -45,6 +45,9 @@ const CONFIGS = [
     { label: 'fixed+funnel',    url: '',                toggle: { hashMode: 'funnel' } },
     { label: 'adaptive+ahash1', url: '',                toggle: { fmmMode: 'adaptive' } },
     { label: 'adaptive+ahash0', url: '?adaptiveHash=0', toggle: { fmmMode: 'adaptive' } },
+    // Round 13 A/B: the materialized far-field CSR gather (default ON since
+    // round 13) vs the legacy per-level m2l+l2l chain (?materializedFar=0).
+    { label: 'adaptive+far0',   url: '?materializedFar=0', toggle: { fmmMode: 'adaptive' } },
 // CONFIG=<label> runs a single config in a fresh process — at 5M the fifth
 // in-process navigation stalls (cumulative GPU memory across contexts), so
 // extreme-N runs isolate each config in its own browser via CONFIG.

@@ -244,12 +244,29 @@ def pad_levels_to_workgroup(d: dict, wg: int = 64):
     l_data2 = remap(l_data)
     leaf2 = remap(leaf)
 
+    # Round 13 materialized far CSR: pad node-indexed arrays, remap entry
+    # source ids. Node order is preserved (padding only inserts inert nodes
+    # between levels), so per-leaf start offsets are unchanged.
+    far_s2 = np.zeros(total, dtype=np.uint32)
+    far_c2 = np.zeros(total, dtype=np.uint32)
+    fe = d["far_entries"].astype(np.uint64)
+    fe_src = (fe & np.uint64(0x3FFFFF)).astype(np.uint32)
+    fe_row = (fe >> np.uint64(22)).astype(np.uint32)
+    far_e2 = (remap(fe_src).astype(np.uint64)
+              | (fe_row.astype(np.uint64) << np.uint64(22))).astype(np.uint32)
+    for old in range(node_count):
+        new = int(o2n[old])
+        if new != 0xFFFFFFFF:
+            far_s2[new] = d["far_start"][old]
+            far_c2[new] = d["far_count"][old]
+
     padded = dict(d)
     padded.update(
         node_center_size=cs2, node_parent=parent2_v, node_children=children2_v,
         node_flags=flags2, node_particle_range=rng2, list_offsets=l_off2,
         list_counts=l_cnt2, list_data=l_data2, leaf_node_for_particle=leaf2,
-        particle_indices=pidx,
+        particle_indices=pidx, far_start=far_s2, far_count=far_c2,
+        far_entries=far_e2,
         info=dict(d["info"], nodeCount=np.uint32(total)),
     )
     return padded, (present, new_starts, new_counts)
@@ -272,7 +289,8 @@ def _device_or_skip():
 
 
 def run_adaptive_wgsl(d: dict, charges: np.ndarray, order: int,
-                      zero_near_p2p: bool, grid_dim: int):
+                      zero_near_p2p: bool, grid_dim: int,
+                      materialized: bool = False):
     """Dispatch the adaptive multipole chain of adaptive_fmm.wgsl.
 
     Returns (pot, fx, fy) as float64 arrays of length N read back from the
@@ -320,6 +338,17 @@ def run_adaptive_wgsl(d: dict, charges: np.ndarray, order: int,
     params_buf = mkraw(32, wgpu.BufferUsage.UNIFORM | CD)
     device.queue.write_buffer(params_buf, 0, np.zeros(8, np.uint32).tobytes())
 
+    far_csr = None
+    n_far = int(pd["far_count"].sum())
+    if materialized:
+        # Packed farCSR u32 buffer: [2*nodeCount interleaved start/count |
+        # entries | farOps f32 bits] — the same layout index.html uploads.
+        far_csr = np.zeros(2 * node_count + n_far + 26950, dtype=np.uint32)
+        far_csr[0::2][:node_count] = pd["far_start"]
+        far_csr[1::2][:node_count] = pd["far_count"]
+        far_csr[2 * node_count:2 * node_count + n_far] = pd["far_entries"]
+        far_csr[2 * node_count + n_far:].view(np.float32)[:] = d["far_ops"]
+
     bufs = {
         0: mk(particles),                       # particles
         1: mk(pd["node_center_size"]),          # nodeCenterSize
@@ -340,11 +369,17 @@ def run_adaptive_wgsl(d: dict, charges: np.ndarray, order: int,
         17: mkraw(3 * nc * 4),                  # cellArrays count|cursor|start
         20: mkraw(n * 4),                       # sortedIndex
     }
+    if materialized:
+        bufs[14] = mk(far_csr)                  # farCSR (round 13)
     binding_ids = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 20]
+    if materialized:
+        binding_ids.append(14)
     ro = {"type": "read-only-storage"}
     rw = {"type": "storage"}
     types = [ro, ro, ro, ro, ro, ro, ro, ro, rw, rw, rw,
              {"type": "uniform"}, ro, ro, ro, {"type": "uniform"}, rw, rw]
+    if materialized:
+        types.append(ro)
     COMP = wgpu.ShaderStage.COMPUTE
     bgl = device.create_bind_group_layout(entries=[
         {"binding": bid, "visibility": COMP, "buffer": t}
@@ -371,6 +406,7 @@ def run_adaptive_wgsl(d: dict, charges: np.ndarray, order: int,
         params[3] = level_count
         params[4] = level_base
         params[5] = 1 if zero_near_p2p else 0
+        params[6] = n_far  # farEntryCount (farOps tail base in farCSR)
         device.queue.write_buffer(params_buf, 0, params.tobytes())
         enc = device.create_command_encoder()
         cp = enc.begin_compute_pass()
@@ -400,10 +436,17 @@ def run_adaptive_wgsl(d: dict, charges: np.ndarray, order: int,
     dispatch("p2m", ceil64(node_count))
     for i in range(len(present) - 2, -1, -1):
         dispatch("m2m", ceil64(counts[i]), starts[i], counts[i])
-    # 4. top-down per level: M2L (List 2 + List 4 P2L), then L2L.
-    for i in range(1, len(present)):
-        dispatch("m2l", ceil64(counts[i]), starts[i], counts[i])
-        dispatch("l2l", ceil64(counts[i]), starts[i], counts[i])
+    # 4. Downward far field: the legacy per-level chain (M2L List 2 +
+    #    List 4 P2L, then L2L), or the round-13 materialized path (whole-range
+    #    p2l for the List-4 parts + far_gather's per-leaf CSR/operator-table
+    #    gather) when materialized=True.
+    if materialized:
+        dispatch("p2l", ceil64(node_count))
+        dispatch("far_gather", ceil64(node_count))
+    else:
+        for i in range(1, len(present)):
+            dispatch("m2l", ceil64(counts[i]), starts[i], counts[i])
+            dispatch("l2l", ceil64(counts[i]), starts[i], counts[i])
     # 5. counting-sort CSR cell lists for the near-field P2P.
     if not zero_near_p2p:
         dispatch("clear_cells", ceil256(nc))
@@ -549,6 +592,30 @@ def test_adaptive_far_field_mixed_depth():
     rp, rfx, rfy = direct_far_field(d, charges)
     _report("GPU far field (P2M+M2M+M2L+P2L+L2L+L2P+M2P) vs masked direct O(N^2)",
             (pot, fx, fy), (rp, rfx, rfy), FAR_POT_TOL, FAR_FORCE_TOL)
+
+
+def test_adaptive_materialized_far_field():
+    """Round-13 materialized far path: p2l + far_gather (flat per-leaf CSR
+    gather through the per-(level, offset) operator table) replace the
+    per-level m2l/l2l chain. Checked against the masked direct far field
+    AND against the legacy-chain GPU run on the identical tree (the two
+    paths compute the same sum in a different order, so their agreement is
+    bounded by f32 rounding, far below the truncation gates)."""
+    scene, n, depth, order = CFG_MIXED
+    d, stats = build_scene_metadata(scene, n, depth)
+    charges = _scene_charges(n)
+    grid_dim = 1 << depth
+
+    pot_m, fx_m, fy_m = run_adaptive_wgsl(d, charges, order, True, grid_dim,
+                                          materialized=True)
+    rp, rfx, rfy = direct_far_field(d, charges)
+    _report("GPU materialized far field (P2M+M2M+p2l+far_gather+L2P+M2P) "
+            "vs masked direct O(N^2)",
+            (pot_m, fx_m, fy_m), (rp, rfx, rfy), FAR_POT_TOL, FAR_FORCE_TOL)
+
+    pot_c, fx_c, fy_c = run_adaptive_wgsl(d, charges, order, True, grid_dim)
+    _report("materialized vs legacy chain (same tree, f32 reorder only)",
+            (pot_m, fx_m, fy_m), (pot_c, fx_c, fy_c), 1e-3, 1e-2)
 
 
 def test_adaptive_full_pipeline_uniform_depth():

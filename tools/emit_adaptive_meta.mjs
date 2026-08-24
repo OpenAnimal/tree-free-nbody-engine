@@ -9,6 +9,11 @@
 // page. Only the FunnelTable dependency is stubbed (it is not consumed by
 // the Python emulator; the nodeHash arrays are emitted as zeros of the right
 // shape so byte layouts stay stable).
+//
+// Round 13: the emitted binary carries the materialized far-field CSR
+// (nodeMeta packing + farStart/farCount/farEntries + the farOps operator
+// table) so tools/validate_adaptive_js.py can validate the materialized
+// far_gather path, not just the legacy chain.
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const [scene, nStr, depthStr, outPath] = process.argv.slice(2);
@@ -78,7 +83,7 @@ const initialPositions = pos;
 const jsModule = new Function(
     'N', 'initialPositions', 'FunnelTable', 'p2pBudgetWarned', 'adaptiveNodeHashWarned',
     'useAdaptiveNodeHash', 'p2pBudgetOverride', 'adaptiveLeafTargetOverride', 'adaptiveDepthOverride',
-    source + '\nreturn { buildAdaptiveMetadata, computeAdaptiveDepth, computeAdaptiveLeafTarget, cellsTouch };'
+    source + '\nreturn { buildAdaptiveMetadata, computeAdaptiveDepth, computeAdaptiveLeafTarget, cellsTouch, buildFarOperatorTable };'
 );
 // useAdaptiveNodeHash=false: the page-level `let useAdaptiveNodeHash` (index.html)
 // gates the FunnelTable occupied-node directory build inside buildAdaptiveMetadata;
@@ -89,25 +94,31 @@ const api = jsModule(N, pos, FunnelTable, false, false, false, 0, 0, 0);
 const md = api.buildAdaptiveMetadata(depth, pos);
 
 // Binary layout (little-endian):
-//   u32 magic 'ADPM', u32 N, u32 nodeCount, u32 numLevels, u32 depth, u32 leafCount
+//   u32 magic 'ADPM', u32 N, u32 nodeCount, u32 numLevels, u32 depth,
+//   u32 leafCount, u32 farEntryCount
 //   f32[N*2] positions (x,y)
 //   f32[nodeCount*4] nodeCenterSize
-//   u32[nodeCount] nodeParent
+//   u32[nodeCount*2] nodeMeta (parent | terminal-flag interleaved)
 //   u32[nodeCount*4] nodeChildren
-//   u32[nodeCount] nodeFlags
 //   u32[nodeCount*2] nodeParticleRange
 //   u32[nodeCount*4] listOffsets
 //   u32[nodeCount*4] listCounts
 //   u32[listData.length] listData
+//   u32[nodeCount] farStart            (materialized far CSR, round 13)
+//   u32[nodeCount] farCount
+//   u32[farEntryCount] farEntries      (srcIdx | row << 22)
+//   f32[26950] farOps                  (per-(level,offset) M2L operator table)
 //   u32[N] leafForParticle
 //   u32[N] particleIndices
-const header = new Uint32Array([0x4D504441, N, md.totalNodes, md.numLevels, md.depth, md.leafCount]);
+const header = new Uint32Array([0x4D504441, N, md.totalNodes, md.numLevels, md.depth, md.leafCount,
+    md.farEntries.length]);
 const pos2 = new Float32Array(N * 2);
 for (let i = 0; i < N; i++) { pos2[i * 2] = pos[i * 4]; pos2[i * 2 + 1] = pos[i * 4 + 1]; }
 const parts = [
-    header.buffer, pos2.buffer, md.nodeCenterSize.buffer, md.nodeParent.buffer,
-    md.nodeChildren.buffer, md.nodeFlags.buffer, md.nodeParticleRange.buffer,
+    header.buffer, pos2.buffer, md.nodeCenterSize.buffer, md.nodeMeta.buffer,
+    md.nodeChildren.buffer, md.nodeParticleRange.buffer,
     md.listOffsets.buffer, md.listCounts.buffer, md.listData.buffer,
+    md.farStart.buffer, md.farCount.buffer, md.farEntries.buffer, md.farOps.buffer,
     md.leafForParticle.buffer, md.particleIndices.buffer,
 ];
 const totalLen = parts.reduce((s, b) => s + b.byteLength, 0);
@@ -118,4 +129,5 @@ writeFileSync(outPath, out);
 console.log(JSON.stringify({
     scene, N, depth: md.depth, leafTarget: md.leafTarget, nodes: md.totalNodes,
     leaves: md.leafCount, maxLeaf: md.maxLeafParticles, listEntries: md.listData.length,
+    farEntries: md.farEntries.length,
 }));
