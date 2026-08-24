@@ -15,6 +15,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install numpy scipy matplotlib
+        run: pip install numpy scipy matplotlib pytest
       - name: Run verification matrix
         run: python -X utf8 tools/run_all.py
