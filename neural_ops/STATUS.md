@@ -68,6 +68,20 @@ are near-constant within clusters (s_qk ≪ 1), or when the application
 tolerates O(B·s_qk) rel-L2. The spatial geometry term (A·(cell/σ)²) is
 benign for σ ≳ cell.
 
+**Round-14 re-gate + refuted fix:** the claimed regime is now ASSERTED in
+CI (`test_farfield_error_law`: const-K and small-K (s_qk ≈ 0.08) reach
+rel-L2 < 0.1 for σ ≥ 2·cell at every depth; randn-K stays above 0.1,
+monotonically worse than small-K — the finding itself is asserted so it
+cannot silently regress into an over-claim). A moment-based repair was
+implemented, measured, and REVERTED: the second-order cluster-covariance
+weight correction exp(τ²/2 q^T Σ_c q) relieved rel-L2 by only ~5–10%
+(B: 0.59 → 0.56), and adding the first-order value-feature cross moment
+Σ_j δk_j ⊗ v_j was non-monotone (≈2× better at depth 3–4, ≈2× worse at
+depth 5–6 with σ/cell = 8). Root cause: the exact per-cluster value sum
+Σ_j exp(τ q·k_j) v_j is lognormal-concentrated — dominated by the
+within-cluster max of q·k — so no finite-moment expansion recovers it at
+O(1) in-cluster spread. (Module docstring of the test records the same.)
+
 A third, smaller term — the collapse of v_j onto cluster moments in the
 value aggregation — is absorbed into the fit's residual (RSS = 0.31).
 

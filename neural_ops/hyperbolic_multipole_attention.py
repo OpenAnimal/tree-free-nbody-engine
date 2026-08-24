@@ -25,7 +25,7 @@ def mobius_add(u: np.ndarray, v: np.ndarray, c: float = 1.0) -> np.ndarray:
 
 
 def poincare_distance(u: np.ndarray, v: np.ndarray, c: float = 1.0) -> np.ndarray:
-    """
+    r"""
     Computes hyperbolic geodesic distance in the Poincaré ball:
     d_c(u, v) = (2 / sqrt(c)) * artanh(sqrt(c) * || -u \oplus_c v ||)
     """
