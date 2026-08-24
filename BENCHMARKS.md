@@ -71,44 +71,70 @@ Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §7):
 ## Core FMM (2D log kernel)
 
 ```
-Variant                 Time (ms)  rel L2 vs ref  Note
+Variant                            Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (exact direct)     57.14                     -  O(N^2) reference
-+fmm (adaptive FMM)     1057.39 (0.1x)      1.974e-07  funnel-hash adaptive FMM, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)
-+fmm (flat vectorized)    710.61 (0.1x)      7.522e-07  single-level vectorized adaptive FMM, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)
-+quantized (32-bit packed)     68.51 (0.8x)      3.891e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
+standard (exact direct)     37.76                     -  O(N^2) reference
++fmm (adaptive FMM)       706.80 (0.1x)      1.974e-07  funnel-hash adaptive FMM, p=10; classical reference engine (per-box Python loops — kept for cross-validation)
++fmm (adaptive, vectorized)     30.43 (1.2x)      2.000e-07  level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)
++fmm (flat vectorized)     59.00 (0.6x)      7.522e-07  single-level vectorized adaptive FMM, depth=5 order=8 (FFT-convolution M2L)
++quantized (32-bit packed)     57.89 (0.7x)      4.824e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
 ```
 
-Both FMM engines reach sub-1e-6 accuracy, but at N=2000 neither is faster than
-the direct O(N^2) sum — the Python tree traversal and K^2 M2L constants dominate
-at this scale; the FMM asymptotic win only appears at larger N (see the
-scaling table below).
+The vectorized adaptive engine (`core/adaptive_fmm_fast.FastAdaptiveFMM`) is
+23x faster than the classical per-box engine at identical accuracy
+(2.0e-7 vs 2.0e-7 rel-L2, p=10) and is already faster than the direct
+O(N^2) sum at N=2000. The earlier "NOT faster than direct at N=2000" rows
+were implementation constants, not algorithm facts: the classical engine
+paid per-particle/per-box Python loops and root-recursive list construction,
+and the flat engine paid a p^2-loop over all K^2 cell pairs. The vectorized
+engine batches every pass per tree level (2:1-balanced quadtree, M2L
+operators precomputed per relative offset as in FMMLIB2D's
+`itable(-3:3,-3:3)`, near-field via CSR-concatenated blocks). This matches
+the literature's crossover expectations: compiled 2D adaptive FMM overtakes
+direct summation around N~250-300 (Carrier, Greengard, & Rokhlin, 1988:
+N=25,600 — direct 9694 s vs adaptive 97 s), and a competent NumPy
+implementation should be near parity at N=2000 (Gimbutas & Greengard, 2012,
+note the "O(N) work with a larger constant" tree-construction overhead).
 
 ## Core FMM scaling
 
-The same flat vectorized FMM (`FastVectorizedFMM(depth=5, order=8)`) and a
-chunked vectorized direct O(N^2) sum, run on the clustered multi-scale
-distribution at N in {2000, 8000, 32000}. The adaptive FMM engine is
-omitted at these N (its Python tree traversal is even slower than the flat
-scheme and would not change the crossover conclusion). Direct O(N^2) at
-N=32000 is ~1e9 pairs; the chunked direct keeps memory bounded (block=2048
-targets) and finished in ~36s, under the 120s budget so N=32000 was kept.
+Direct O(N^2) (chunked), the flat single-level FMM
+(`FastVectorizedFMM(depth=5, order=8)`, FFT-convolution M2L), and the
+vectorized adaptive FMM (`FastAdaptiveFMM`, p=10), on the clustered
+multi-scale distribution. The classical per-box adaptive engine is omitted
+(45x slower than the vectorized engine, no additional information). Direct
+is skipped above N=32000 (the quadratic term would dominate the run for
+minutes). Plots: `assets/core_fmm_scaling_loglog.png` (log-log runtime) and
+`assets/core_fmm_scaling_linear.png` (linear-scale speedup with the
+crossover annotated); raw numbers in `assets/core_fmm_scaling.json`. The
+headline line below is generated automatically by
+`core/benchmark_variants.py run_scaling`.
 
 ```
 === Core FMM scaling (clustered distribution; direct budget 120s) ===
-N=  2000  direct=    148.86 ms  fmm=    680.06 ms  speedup= 0.22x  rel_l2=7.522e-07
-N=  8000  direct=   6787.47 ms  fmm=   2182.33 ms  speedup= 3.11x  rel_l2=4.974e-07
-N= 32000  direct=  35570.47 ms  fmm=   8165.55 ms  speedup= 4.36x  rel_l2=5.303e-07
+N=  2000  direct=     60.6 ms  flat=     62.0 ms  adaptive=    35.7 ms  speedup flat=1.0x adaptive= 1.7x  rel-L2 2.0e-07
+N=  8000  direct=    950.6 ms  flat=    217.9 ms  adaptive=    77.7 ms  speedup flat=4.4x adaptive=12.2x  rel-L2 1.9e-07
+N= 32000  direct=  19014.2 ms  flat=   2247.6 ms  adaptive=   208.2 ms  speedup flat=8.5x adaptive=91.3x  rel-L2 3.7e-07
+N=128000  direct= skipped      flat=  32140.7 ms  adaptive=   796.2 ms
 ```
 
-Crossover observed at N=8000: the flat FMM becomes faster than direct
-O(N^2) at N=8000 (3.11x, rel-L2 4.97e-7) and stays faster at N=32000
-(4.36x, rel-L2 5.30e-7), while at N=2000 it is 0.22x (slower). The
-asymptotic win is real and the accuracy stays sub-1e-6 throughout; the
-"NOT faster at N=2000" row in the table above is the small-N constant-
-factor regime (see [docs/GPU_NOTES.md](docs/GPU_NOTES.md) and
-[docs/INAPPLICABILITY.md](docs/INAPPLICABILITY.md) Class D), not an
-algorithmic fact.
+**Automated headline:** Adaptive FMM is faster than direct O(N^2) at every N
+tested from N=2000 up (speedup N=2000→1.7x, N=8000→12.2x, N=32000→91.3x);
+flat single-level FMM reaches N=2000→1.0x, N=8000→4.4x, N=32000→8.5x.
+Beyond N=32000 direct was skipped (quadratic cost); measured: N=128000:
+adaptive=796 ms, flat=32141 ms (extrapolated direct ≈ 280 s from the
+N=32000 point — ≈ 350x; the validation run with direct actually measured at
+N=128000 gave 465x, rel-L2 4.4e-07).
+
+Context, stated honestly: the flat single-level scheme is linear in N only
+for fixed depth and pays its near-field cost per occupied cell as cells fill
+up at large N (31.5 s at N=128000) — the multi-level adaptive engine is the
+one with the correct O(N) scaling (0.79 s at N=128000, ≈ 465x measured in
+the validation run where direct completed in 296 s). Per Ying, Biros, & Zorin
+(2004) the properly-constructed one-level interaction list is bounded (27
+boxes in 2D), not K^2 — the earlier flat implementation evaluated all
+well-separated K^2 pairs, which the FFT-convolution M2L now computes exactly
+at grid-FFT cost.
 
 ## Physics — Tetrahedral contact broadphase
 

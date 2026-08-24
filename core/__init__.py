@@ -21,6 +21,7 @@ from .adaptive_gpu_metadata import (
     build_flat_adaptive_metadata,
     MAX_INTERACTIONS_PER_NODE,
 )
+from .adaptive_fmm_fast import FastAdaptiveFMM
 from .adaptive_fmm import (
     AdaptiveFMM,
     TreeFreeElasticAdaptiveFMM,
@@ -160,6 +161,7 @@ __all__ = [
     "MAX_INTERACTIONS_PER_NODE",
     "AdaptiveFMM",
     "TreeFreeElasticAdaptiveFMM",
+    "FastAdaptiveFMM",
     "GreengardRokhlin87RegularFMM",
     "AdaptiveQuadTree",
     "QuadBox",

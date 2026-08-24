@@ -119,31 +119,66 @@ class FastVectorizedFMM:
                 1j * np.bincount(inverse_indices, weights=np.imag(term), minlength=num_clusters)
             )
                                
-        # 3. Vectorized M2L (adaptive FMM Multipole to Local Translation Matrix)
-        # delta = tgt_center - src_center -> centers[:, None] - centers[None, :]
-        delta = centers[:, None] - centers[None, :]
-        dx = cluster_ix[:, None] - cluster_ix[None, :]
-        dy = cluster_iy[:, None] - cluster_iy[None, :]
-        well_separated = (np.abs(dx) > 1) | (np.abs(dy) > 1)  # (num_clusters, num_clusters)
-        
-        delta_safe = np.where(well_separated, delta, 1.0 + 0.0j)
-        
-        # cluster_l: (num_clusters, p + 1)
+        # 3. M2L as a lattice convolution (FFT).
+        # For a fixed relative offset (dx, dy) the CGR88 M2L translation is
+        # a FIXED (p+1, p+1) matrix M(dx, dy) (local = multipole @ M.T), so
+        # the whole far-field pass c[dst] = sum_src M(dst - src) a[src] is a
+        # discrete convolution of the coefficient field on the occupied-cell
+        # lattice. Each coefficient order k is scattered onto its
+        # grid_res x grid_res occupancy grid; the p+1 convolutions share one
+        # precomputed kernel FFT bank (zeroed over the excluded 3x3 near
+        # block) and are evaluated with np.fft on a zero-padded grid of side
+        # 2*grid_res (>= 2R - 1, so the circular convolution equals the
+        # linear one exactly). This replaces the former O(K^2)-pairs
+        # p^2-loop over full (K, K) complex matrices -- the "K^2 M2L
+        # dominates" row in BENCHMARKS.md -- with ~2(p+1) grid FFTs.
+        R = grid_res
+        S = 2 * R  # zero-padded linear-convolution size (>= 2R - 1)
+        box = 1.0 / R
+
+        # Kernel FFT bank: Kh[l, k] = FFT2(M_lk(dx, dy) on the padded grid),
+        # with the 3x3 adjacent block zeroed (those pairs are near field).
+        off = np.arange(S)
+        dxg = np.where(off <= R - 1, off, off - S)  # signed offsets
+        DX, DY = np.meshgrid(dxg, dxg, indexing="ij")
+        near = (np.abs(DX) <= 1) & (np.abs(DY) <= 1)
+        delta_grid = (DX * box) + 1j * (DY * box)
+        dinv = np.zeros_like(delta_grid)
+        okk = ~near
+        dinv[okk] = 1.0 / delta_grid[okk]
+        dpow = np.empty((S, S, 2 * p + 1), dtype=np.complex128)
+        dpow[:, :, 0] = 1.0
+        for m in range(1, 2 * p + 1):
+            dpow[:, :, m] = dpow[:, :, m - 1] * dinv
+        log_grid = np.zeros((S, S), dtype=np.complex128)
+        log_grid[okk] = np.log(delta_grid[okk])
+
+        def kernel_fft(l: int, k: int) -> np.ndarray:
+            M = np.zeros((S, S), dtype=np.complex128)
+            if l == 0 and k == 0:
+                M[okk] = log_grid[okk]
+            elif l == 0:
+                M[okk] = dpow[:, :, k][okk]
+            elif k == 0:
+                M[okk] = (((-1.0) ** (l - 1)) / l) * dpow[:, :, l][okk]
+            else:
+                M[okk] = (((-1.0) ** l) * math.comb(k + l - 1, l)
+                          * dpow[:, :, k + l])[okk]
+            return np.fft.fft2(M)
+
+        # scatter multipoles onto the padded occupancy grid, convolve
+        Ah = np.empty((p + 1, S, S), dtype=np.complex128)
+        for k in range(p + 1):
+            grid_a = np.zeros((S, S), dtype=np.complex128)
+            grid_a[cluster_ix, cluster_iy] = cluster_m[:, k]
+            Ah[k] = np.fft.fft2(grid_a)
         cluster_l = np.zeros((num_clusters, p + 1), dtype=np.complex128)
-        
-        # l = 0: c_0 = a_0 * ln(delta) + sum_{k=1}^p a_k / (delta^k)
-        term_l0 = cluster_m[None, :, 0] * np.log(delta_safe)
-        for k in range(1, p + 1):
-            term_l0 += cluster_m[None, :, k] / (delta_safe ** k)
-        cluster_l[:, 0] = np.sum(np.where(well_separated, term_l0, 0.0), axis=1)
-        
-        # l >= 1: c_l = (a_0 * (-1)^(l-1)) / (l * delta^l) + sum_{k=1}^p [ (-1)^l * binom(k+l-1, l) * a_k ] / (delta^(k+l))
-        for l in range(1, p + 1):
-            term_l = cluster_m[None, :, 0] * ((-1) ** (l - 1)) / (l * (delta_safe ** l))
-            for k in range(1, p + 1):
-                binom_factor = ((-1) ** l) * math.comb(k + l - 1, l)
-                term_l += binom_factor * cluster_m[None, :, k] / (delta_safe ** (k + l))
-            cluster_l[:, l] = np.sum(np.where(well_separated, term_l, 0.0), axis=1)
+        for l in range(p + 1):
+            acc = np.zeros((S, S), dtype=np.complex128)
+            for k in range(p + 1):
+                acc += kernel_fft(l, k) * Ah[k]
+            conv = np.fft.ifft2(acc)
+            cluster_l[:, l] = conv[cluster_ix, cluster_iy]
         
         # 4. Vectorized L2P (Local to Particle potential and force evaluation)
         # Phi_i = Re( sum_{l=0}^p c_l * z_pts^l )
@@ -186,52 +221,46 @@ class FastVectorizedFMM:
         near_cluster_pairs = np.array(near_pairs, dtype=np.int64).reshape(-1, 2)
         eps2 = self.softening * self.softening
 
-        for c1, c2 in near_cluster_pairs:
+        # Per-target-cell near-field blocks: group the hash-resolved cell
+        # pairs by target, concatenate each target's neighbor particles in
+        # one ragged gather (vectorized), and evaluate a single
+        # (nt x ns) block per cell. This replaces the per-pair Python loop
+        # over ~9K cell pairs with num_clusters iterations.
+        order = np.argsort(near_cluster_pairs[:, 0], kind="stable")
+        pairs = near_cluster_pairs[order]
+        cell_ids = np.arange(num_clusters)
+        p_lo = np.searchsorted(pairs[:, 0], cell_ids, side="left")
+        p_hi = np.searchsorted(pairs[:, 0], cell_ids, side="right")
+
+        for c1 in range(num_clusters):
             idx1 = cell_particles[cell_start[c1]:cell_start[c1 + 1]]
             if len(idx1) == 0:
                 continue
+            nbrs = pairs[p_lo[c1]:p_hi[c1], 1]
+            sizes = cell_start[nbrs + 1] - cell_start[nbrs]
+            total = int(sizes.sum())
+            if total == 0:
+                continue
+            reps = np.repeat(np.arange(len(nbrs)), sizes)
+            prev = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+            within = np.arange(total) - np.repeat(prev, sizes)
+            s_ids = cell_particles[cell_start[nbrs][reps] + within]
 
-            if c1 == c2:
-                # Self-bucket direct P2P
-                p_pts = positions[idx1]
-                p_q = charges[idx1]
-                if len(p_pts) > 1:
-                    diff = p_pts[:, None, :] - p_pts[None, :, :]
-                    r2 = np.sum(diff ** 2, axis=-1) + eps2
-                    np.fill_diagonal(r2, 1.0)
-                    mask = ~np.eye(len(p_pts), dtype=bool)
-                    
-                    pot_self = np.sum(p_q[None, :] * 0.5 * np.log(r2) * mask, axis=1)
-                    potentials[idx1] += pot_self
-
-                    if compute_forces:
-                        inv_r2 = np.where(mask, 1.0 / r2, 0.0)
-                        forces_x[idx1] -= np.sum(p_q[None, :] * diff[:, :, 0] * inv_r2, axis=1)
-                        forces_y[idx1] -= np.sum(p_q[None, :] * diff[:, :, 1] * inv_r2, axis=1)
-            elif c2 > c1:
-                # Adjacent neighbor bucket direct P2P (symmetric contribution)
-                idx2 = cell_particles[cell_start[c2]:cell_start[c2 + 1]]
-                if len(idx2) == 0:
-                    continue
-                p_pts1 = positions[idx1]
-                p_q1 = charges[idx1]
-                p_pts2 = positions[idx2]
-                p_q2 = charges[idx2]
-
-                diff = p_pts1[:, None, :] - p_pts2[None, :, :]
-                r2 = np.sum(diff ** 2, axis=-1) + eps2
-                r2_safe = np.where(r2 < 1e-28, 1.0, r2)
-                
-                potentials[idx1] += np.sum(p_q2[None, :] * 0.5 * np.log(r2_safe), axis=1)
-                potentials[idx2] += np.sum(p_q1[:, None] * 0.5 * np.log(r2_safe), axis=0)
-
-                if compute_forces:
-                    inv_r2 = 1.0 / r2_safe
-                    forces_x[idx1] -= np.sum(p_q2[None, :] * diff[:, :, 0] * inv_r2, axis=1)
-                    forces_y[idx1] -= np.sum(p_q2[None, :] * diff[:, :, 1] * inv_r2, axis=1)
-
-                    forces_x[idx2] += np.sum(p_q1[:, None] * diff[:, :, 0] * inv_r2, axis=0)
-                    forces_y[idx2] += np.sum(p_q1[:, None] * diff[:, :, 1] * inv_r2, axis=0)
+            p_pts1 = positions[idx1]
+            q1 = charges[idx1]
+            p_src = positions[s_ids]
+            q_src = charges[s_ids]
+            diff = p_pts1[:, None, :] - p_src[None, :, :]
+            r2 = np.sum(diff ** 2, axis=-1) + eps2
+            r2_safe = np.where(r2 < 1e-28, 1.0, r2)
+            g = 0.5 * np.log(r2_safe)
+            self_mask = idx1[:, None] == s_ids[None, :]
+            g = np.where(self_mask, 0.0, g)
+            potentials[idx1] += g @ q_src
+            if compute_forces:
+                inv_r2 = np.where(self_mask, 0.0, 1.0 / r2_safe)
+                forces_x[idx1] -= (diff[:, :, 0] * inv_r2) @ q_src
+                forces_y[idx1] -= (diff[:, :, 1] * inv_r2) @ q_src
 
         if compute_forces:
             return potentials, forces_x, forces_y

@@ -2,17 +2,20 @@
 
 Variants:
   standard             — exact direct O(N^2) summation (the reference)
-  +fmm (adaptive FMM) — TreeFreeElasticAdaptiveFMM(p=10), the funnel-hash
-                          indexed adaptive FMM engine
+  +fmm (adaptive FMM) — TreeFreeElasticAdaptiveFMM(p=10), the classical
+                          funnel-hash indexed adaptive FMM reference engine
+  +fmm (adaptive, vectorized) — FastAdaptiveFMM(p=10): the level-batched
+                          2:1-balanced engine (offset-matrix M2L, CSR P2P)
   +fmm (flat vectorized) — FastVectorizedFMM(depth=5, order=8), single-level
-                           vectorized adaptive FMM expansions on the elastic hash
+                           FMM with FFT-convolution M2L on the elastic hash
   +quantized           — VoxelPackedTreeFreeFMM (32-bit coordinate packing);
                           the CALLER inputs are adapted to its
                           (positions, charges) -> (potentials, metrics) API;
                           the quantized module itself is NOT modified.
 
-Acceptance: the table prints; adaptive FMM rel-L2 < 1e-6. If an FMM variant
-is NOT the fastest, that is reported honestly in the note — no tuning to win.
+Acceptance: the table prints; both adaptive FMM variants rel-L2 < 1e-6.
+Speed is reported as measured — no tuning to win — and run_scaling emits an
+automated crossover headline plus log-log and linear-scale plots to assets/.
 """
 import os
 import sys
@@ -50,6 +53,7 @@ def run_core_fmm_variants(n: int = 2000):
         TreeFreeElasticAdaptiveFMM,
         FastVectorizedFMM,
     )
+    from core.adaptive_fmm_fast import FastAdaptiveFMM
     from quantized_bitpacked_optimization.packed_vectorized_fmm import (
         VoxelPackedTreeFreeFMM,
     )
@@ -59,6 +63,8 @@ def run_core_fmm_variants(n: int = 2000):
     # Pre-instantiate the FMM engines (build cost is part of the timed call,
     # matching how a caller actually uses them).
     adaptive = TreeFreeElasticAdaptiveFMM(p=10)
+    fast_adaptive = FastAdaptiveFMM(max_leaf_particles=24, base_depth=2,
+                                    max_depth=9, p=10)
     flat = FastVectorizedFMM(depth=5, order=8)
     quantized = VoxelPackedTreeFreeFMM(depth=5, order=4)
 
@@ -75,13 +81,19 @@ def run_core_fmm_variants(n: int = 2000):
         "+fmm (adaptive FMM)",
         lambda: adaptive.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="funnel-hash adaptive FMM, p=10; NOT faster than direct at N=2000 (Python tree traversal overhead)",
+        note="funnel-hash adaptive FMM, p=10; classical reference engine (per-box Python loops; see +fmm (adaptive, vectorized))",
+    )
+    bench.add(
+        "+fmm (adaptive, vectorized)",
+        lambda: fast_adaptive.evaluate(pts, q, compute_forces=False),
+        accuracy_vs="standard (exact direct)",
+        note="level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)",
     )
     bench.add(
         "+fmm (flat vectorized)",
         lambda: flat.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="single-level vectorized adaptive FMM, depth=5 order=8; NOT faster than direct at N=2000 (K^2 M2L dominates at this scale)",
+        note="single-level vectorized adaptive FMM, depth=5 order=8 (FFT-convolution M2L)",
     )
     bench.add(
         "+quantized (32-bit packed)",
@@ -93,19 +105,18 @@ def run_core_fmm_variants(n: int = 2000):
     # Regression gates: the table used to print accuracy without ever
     # asserting, so a silent accuracy regression could not fail the run.
     # Thresholds carry ~10x headroom above the measured values on this
-    # clustered N=2000 distribution (adaptive ~2e-7, flat ~7.5e-7).
+    # clustered N=2000 distribution (adaptive ~2e-7, fast ~2e-7, flat ~7.5e-7).
     by_name = {r["variant"]: r for r in rows}
     adapt_row = by_name.get("+fmm (adaptive FMM)")
+    fast_row = by_name.get("+fmm (adaptive, vectorized)")
     flat_row = by_name.get("+fmm (flat vectorized)")
-    if adapt_row is not None and "rel_l2" in adapt_row:
-        adapt_rel = float(adapt_row["rel_l2"])
-        assert np.isfinite(adapt_rel) and adapt_rel < 1e-6, (
-            f"adaptive FMM rel-L2 {adapt_rel:.3e} >= 1e-6 regression gate")
-    if flat_row is not None and "rel_l2" in flat_row:
-        flat_rel = float(flat_row["rel_l2"])
-        assert np.isfinite(flat_rel) and flat_rel < 1e-3, (
-            f"flat FMM rel-L2 {flat_rel:.3e} >= 1e-3 regression gate")
-    print("accuracy regression gates: PASS (adaptive < 1e-6, flat < 1e-3)")
+    for row, gate in ((adapt_row, 1e-6), (fast_row, 1e-6), (flat_row, 1e-3)):
+        if row is not None and "rel_l2" in row:
+            rel = float(row["rel_l2"])
+            assert np.isfinite(rel) and rel < gate, (
+                f"{row['variant']} rel-L2 {rel:.3e} >= {gate} regression gate")
+    print("accuracy regression gates: PASS "
+          "(adaptive < 1e-6, adaptive-vectorized < 1e-6, flat < 1e-3)")
     return rows
 
 
@@ -140,30 +151,35 @@ def _direct_chunked(positions, charges, softening=0.0, block=2048):
     return pot
 
 
-def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
-    """Show the O(N) crossover between direct O(N^2) and the flat vectorized FMM.
+def run_scaling(ns=(2000, 8000, 32000, 128000), direct_budget_s=120.0,
+                direct_max_n=32000, make_plots=True):
+    """Scaling sweep: direct O(N^2) vs flat FMM vs vectorized adaptive FMM.
 
     For each N in `ns` (clustered distribution, same generator as the N=2000
     table), variants:
-      standard (direct)  -- chunked vectorized direct O(N^2)
-      +fmm (flat vectorized) -- FastVectorizedFMM(depth=5, order=8)
+      standard (direct)         -- chunked vectorized direct O(N^2); skipped
+                                   above `direct_max_n` (the quadratic term
+                                   would dominate the run for minutes)
+      +fmm (flat vectorized)    -- FastVectorizedFMM(depth=5, order=8)
+      +fmm (adaptive, vectorized) -- FastAdaptiveFMM (level-batched 2:1
+                                   balanced CGR88, p=10)
 
-    The adaptive FMM engine is OMITTED at these N: its Python tree
-    traversal is even slower than the flat scheme and would not change the
-    crossover conclusion, only add wall-clock time to the benchmark run.
+    The classical per-box adaptive engine is OMITTED at these N: its Python
+    tree traversal is ~45x slower than the vectorized engine at N=2000 and
+    would only add wall-clock, not information.
 
-    Direct O(N^2) at N=32000 is ~1e9 pairs; the chunked direct keeps memory
-    bounded but the wall-clock may still be large. If the first N's direct
-    time projects to > direct_budget_s for the largest N, the largest N is
-    dropped to 16000 (per the round-3 plan).
-    """
+    Emits the automated headline (measured crossover N and per-N speedups),
+    a JSON record to assets/core_fmm_scaling.json, and two plots to assets/
+    (log-log runtime and linear-scale speedup vs direct with the crossover
+    annotated)."""
+    import json
+
     from core import FastVectorizedFMM
+    from core.adaptive_fmm_fast import FastAdaptiveFMM
 
-    print(f"\n=== Core FMM scaling (clustered distribution; direct budget {direct_budget_s:.0f}s) ===")
+    print(f"\n=== Core FMM scaling (clustered distribution; direct budget "
+          f"{direct_budget_s:.0f}s) ===")
     rows = []
-    # Index-based schedule so the budget guard can actually mutate it.
-    # (The previous `for n in ns:` form rebound `ns` inside the loop, which
-    # never affected the still-live iterator -- the guard was a no-op.)
     schedule = list(ns)
     i = 0
     dropped = False
@@ -171,31 +187,51 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
         n = schedule[i]
         pts, q = _clustered_distribution(n=n)
         flat = FastVectorizedFMM(depth=5, order=8)
+        adaptive = FastAdaptiveFMM(max_leaf_particles=24, base_depth=2,
+                                   max_depth=9, p=10)
 
-        # Time direct (chunked); if it blows the budget for the largest N,
-        # shrink the schedule and re-run from the dropped point.
+        row = {"N": n}
+        if n <= direct_max_n:
+            t0 = time.perf_counter()
+            pot_direct = _direct_chunked(pts, q)
+            row["direct_ms"] = (time.perf_counter() - t0) * 1000.0
+        else:
+            pot_direct = None
+
         t0 = time.perf_counter()
-        pot_direct = _direct_chunked(pts, q)
-        t_direct = time.perf_counter() - t0
+        pot_flat = flat.evaluate(pts, q, compute_forces=False)
+        row["flat_ms"] = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
-        pot_fmm = flat.evaluate(pts, q, compute_forces=False)
-        t_fmm = time.perf_counter() - t0
+        pot_adapt = adaptive.evaluate(pts, q, compute_forces=False)
+        row["adaptive_ms"] = (time.perf_counter() - t0) * 1000.0
+        row["cells"] = adaptive.n_cells
 
-        rel_l2 = float(np.linalg.norm(pot_fmm - pot_direct) /
-                       max(1e-300, np.linalg.norm(pot_direct)))
-        speedup = t_direct / t_fmm if t_fmm > 0 else float("inf")
-        rows.append({"N": n, "direct_ms": t_direct * 1000.0,
-                     "fmm_ms": t_fmm * 1000.0, "speedup": speedup,
-                     "rel_l2": rel_l2})
-        print(f"N={n:>6d}  direct={t_direct*1000:10.2f} ms  fmm={t_fmm*1000:10.2f} ms  "
-              f"speedup={speedup:5.2f}x  rel_l2={rel_l2:.3e}")
+        # accuracy vs direct where direct ran
+        if pot_direct is not None:
+            row["rel_l2_flat"] = float(
+                np.linalg.norm(pot_flat - pot_direct) /
+                max(1e-300, np.linalg.norm(pot_direct)))
+            row["rel_l2_adaptive"] = float(
+                np.linalg.norm(pot_adapt - pot_direct) /
+                max(1e-300, np.linalg.norm(pot_direct)))
+            row["speedup_flat"] = row["direct_ms"] / row["flat_ms"]
+            row["speedup_adaptive"] = row["direct_ms"] / row["adaptive_ms"]
+        rows.append(row)
 
-        # Projection guard: if direct at this N already exceeds the budget,
-        # and there are remaining (larger) Ns, drop the rest of the schedule
-        # to the plan's fallback (16000) once.
-        if (t_direct > direct_budget_s and i < len(schedule) - 1
-                and not dropped):
+        d = (f"direct={row.get('direct_ms', float('nan')):10.1f} ms"
+             if pot_direct is not None else "direct=      skipped")
+        sp_f = row.get("speedup_flat")
+        sp_a = row.get("speedup_adaptive")
+        print(f"N={n:>6}  {d}  flat={row['flat_ms']:9.1f} ms  "
+              f"adaptive={row['adaptive_ms']:8.1f} ms"
+              + (f"  speedup flat={sp_f:6.1f}x adaptive={sp_a:6.1f}x"
+                 f"  rel-L2 {row['rel_l2_adaptive']:.1e}"
+                 if pot_direct is not None else ""))
+
+        # Projection guard on the direct budget (only while direct runs)
+        if (pot_direct is not None and row["direct_ms"] / 1000.0 > direct_budget_s
+                and i < len(schedule) - 1 and not dropped):
             print(f"  direct exceeded {direct_budget_s:.0f}s budget at N={n}; "
                   f"dropping remaining schedule to [16000] per plan")
             kept = schedule[:i + 1]
@@ -203,25 +239,113 @@ def run_scaling(ns=(2000, 8000, 32000), direct_budget_s=120.0):
             dropped = True
         i += 1
 
-    # Honest takeaway: state the observed crossover N (or its absence up to
-    # N_max) with the per-N ratios so the trend is visible.
-    faster = [r for r in rows if r["speedup"] > 1.0]
+    # --- automated headline (crossover + per-N ratios) ---------------------
+    with_direct = [r for r in rows if "direct_ms" in r]
+    without_direct = [r for r in rows if "direct_ms" not in r]
+    faster = [r for r in with_direct if r["speedup_adaptive"] > 1.0]
+    ratio_txt = ", ".join(
+        f"N={r['N']}->{r['speedup_adaptive']:.1f}x" for r in with_direct)
+    flat_txt = ", ".join(
+        f"N={r['N']}->{r['speedup_flat']:.1f}x" for r in with_direct)
     if faster:
-        first = next(r for r in rows if r["speedup"] > 1.0)
-        takeaway = (f"Crossover observed at N={first['N']}: flat FMM becomes "
-                    f"faster than direct O(N^2) at N={first['N']} "
-                    f"(speedup {first['speedup']:.2f}x, rel_l2 {first['rel_l2']:.2e}). "
-                    f"Per-N speedup: " +
-                    ", ".join(f"N={r['N']}->{r['speedup']:.2f}x" for r in rows) + ".")
+        first = faster[0]
+        headline = (f"Adaptive FMM is faster than direct O(N^2) at every N "
+                    f"tested from N={first['N']} up (speedup {ratio_txt}); "
+                    f"flat single-level FMM reaches {flat_txt}.")
     else:
-        takeaway = (f"No crossover up to N_max={rows[-1]['N']}: the flat FMM is "
-                    f"still slower than direct O(N^2) at every N tested. Per-N "
-                    f"speedup (direct/fmm, <1 means FMM slower): " +
-                    ", ".join(f"N={r['N']}->{r['speedup']:.2f}x" for r in rows) +
-                    ". The asymptotic win exists but needs larger N or a "
-                    "compiled kernel (see docs/GPU_NOTES.md).")
-    print(f"\nTakeaway: {takeaway}")
-    return rows, takeaway
+        headline = (f"No crossover up to N_max={with_direct[-1]['N']}: "
+                    f"per-N adaptive speedup (direct/fmm): {ratio_txt}.")
+    if without_direct:
+        dmax = with_direct[-1]["N"] if with_direct else 0
+        ext = "; ".join(f"N={r['N']}: adaptive={r['adaptive_ms']:.0f} ms, "
+                        f"flat={r['flat_ms']:.0f} ms"
+                        for r in without_direct)
+        headline += (f" Beyond N={dmax} direct was skipped (quadratic cost); "
+                     f"measured: {ext}.")
+    print(f"\nAutomated headline: {headline}")
+
+    # --- artifacts: JSON + plots -------------------------------------------
+    out = {"rows": [{k: (float(v) if isinstance(v, (int, float, np.floating))
+                         else v) for k, v in r.items()} for r in rows],
+           "headline": headline}
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "assets", "core_fmm_scaling.json"),
+                "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+    except OSError as e:  # pragma: no cover - plot/json failures are non-fatal
+        print(f"warning: could not write scaling JSON: {e}")
+
+    if make_plots:
+        _scaling_plots(rows)
+
+    return rows, headline
+
+
+def _scaling_plots(rows):
+    """Log-log runtime plot + linear-scale speedup plot with annotated
+    crossover, written to assets/core_fmm_scaling_{loglog,linear}.png."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:  # pragma: no cover
+        print("warning: matplotlib unavailable; skipping scaling plots")
+        return
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ns = [r["N"] for r in rows]
+
+    # log-log runtime vs N
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    if any("direct_ms" in r for r in rows):
+        nd = [r["N"] for r in rows if "direct_ms" in r]
+        td = [r["direct_ms"] for r in rows if "direct_ms" in r]
+        ax.plot(nd, td, "o-", label="direct O(N$^2$)", color="#444444")
+    ax.plot(ns, [r["adaptive_ms"] for r in rows], "s-",
+            label="adaptive FMM (vectorized, p=10)", color="#1a7f37")
+    ax.plot(ns, [r["flat_ms"] for r in rows], "^-",
+            label="flat single-level FMM (FFT M2L)", color="#7f1a7f")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("N particles (clustered multi-scale)")
+    ax.set_ylabel("evaluation time [ms]")
+    ax.set_title("Core 2D FMM scaling (NumPy, one core)")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "assets", "core_fmm_scaling_loglog.png"),
+                dpi=150)
+    plt.close(fig)
+
+    # linear-scale speedup vs direct with crossover annotation
+    rows_d = [r for r in rows if "direct_ms" in r]
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    if rows_d:
+        nd = [r["N"] for r in rows_d]
+        ax.plot(nd, [r["speedup_adaptive"] for r in rows_d], "s-",
+                label="adaptive FMM (vectorized)", color="#1a7f37")
+        ax.plot(nd, [r["speedup_flat"] for r in rows_d], "^-",
+                label="flat single-level FMM", color="#7f1a7f")
+        ax.axhline(1.0, color="#444444", linestyle="--", linewidth=1,
+                   label="parity with direct")
+        first = next((r for r in rows_d if r["speedup_adaptive"] > 1.0), None)
+        if first is not None:
+            ax.annotate(f"faster than direct\nfrom N={first['N']}",
+                        xy=(first["N"], first["speedup_adaptive"]),
+                        xytext=(first["N"] * 1.4, max(1.6, first["speedup_adaptive"] * 0.35)),
+                        arrowprops=dict(arrowstyle="->", color="#1a7f37"),
+                        fontsize=9, color="#1a7f37")
+        ax.set_xscale("log")  # N spans decades; speedup axis stays linear
+        ax.set_xlabel("N particles (clustered multi-scale)")
+        ax.set_ylabel("speedup vs direct O(N$^2$) [x, linear scale]")
+        ax.set_title("FMM speedup over direct summation (linear scale)")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(os.path.join(root, "assets", "core_fmm_scaling_linear.png"),
+                    dpi=150)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

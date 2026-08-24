@@ -1,0 +1,44 @@
+{
+  "rows": [
+    {
+      "N": 2000.0,
+      "direct_ms": 60.62469999596942,
+      "flat_ms": 61.9522000051802,
+      "adaptive_ms": 35.74039999512024,
+      "cells": 416.0,
+      "rel_l2_flat": 7.522283916881757e-07,
+      "rel_l2_adaptive": 2.0001383879289637e-07,
+      "speedup_flat": 0.9785721893798803,
+      "speedup_adaptive": 1.6962513011674945
+    },
+    {
+      "N": 8000.0,
+      "direct_ms": 950.5613999936031,
+      "flat_ms": 217.93179999804124,
+      "adaptive_ms": 77.7347999974154,
+      "cells": 1436.0,
+      "rel_l2_flat": 4.973788201230312e-07,
+      "rel_l2_adaptive": 1.8998483025100046e-07,
+      "speedup_flat": 4.361737938208865,
+      "speedup_adaptive": 12.228260702094921
+    },
+    {
+      "N": 32000.0,
+      "direct_ms": 19014.241500000935,
+      "flat_ms": 2247.6118999911705,
+      "adaptive_ms": 208.21530000830535,
+      "cells": 4996.0,
+      "rel_l2_flat": 5.30252410905229e-07,
+      "rel_l2_adaptive": 3.7181151495303126e-07,
+      "speedup_flat": 8.459752993866793,
+      "speedup_adaptive": 91.32009751080967
+    },
+    {
+      "N": 128000.0,
+      "flat_ms": 32140.680800002883,
+      "adaptive_ms": 796.2363999977242,
+      "cells": 18812.0
+    }
+  ],
+  "headline": "Adaptive FMM is faster than direct O(N^2) at every N tested from N=2000 up (speedup N=2000->1.7x, N=8000->12.2x, N=32000->91.3x); flat single-level FMM reaches N=2000->1.0x, N=8000->4.4x, N=32000->8.5x. Beyond N=32000 direct was skipped (quadratic cost); measured: N=128000: adaptive=796 ms, flat=32141 ms."
+}

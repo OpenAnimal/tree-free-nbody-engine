@@ -6,10 +6,10 @@
 
 ### Octree-Free, Lock-Free $O(N)$ $N$-Body & Spatial Field Engine
 
-**Pointerless Spatial Computing & Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987; Carrier, Greengard, & Rokhlin, 1988) via **Optimal Non-Reordering Open Addressing** (Farach-Colton, Krapivin, & Kuszmaul, 2025)
+**Pointerless Spatial Computing & Fast Multipole Method (FMM)** ([Greengard & Rokhlin, 1987](https://doi.org/10.1016/0021-9991(87)90140-9); [Carrier, Greengard, & Rokhlin, 1988](https://doi.org/10.1137/0909044)) via **Optimal Non-Reordering Open Addressing** ([Farach-Colton, Krapivin, & Kuszmaul, 2025](https://arxiv.org/abs/2501.02305))
 
 <p align="left">
-  <a href="https://raw.githack.com/OpenAnimal/tree-free-nbody-engine/main/index.html"><img src="https://img.shields.io/badge/Live_Demo-Launch_Simulation-blueviolet?style=for-the-badge&logo=webgl" alt="Launch Live WebGL Demo"></a>
+  <a href="https://raw.githack.com/OpenAnimal/tree-free-nbody-engine/main/index.html"><img src="https://img.shields.io/badge/Live_Demo-WebGPU_Full_Engine-blueviolet?style=for-the-badge&logo=webgl" alt="Launch live WebGPU demo (full engine)"></a>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
   <img src="https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/Dependencies-Near_Zero-success.svg" alt="Near Dependency Free">
@@ -19,13 +19,17 @@
 
 ---
 
+**The aim of this repository is to deliver order-of-magnitude performance gains over existing methods by combining two of the most powerful algorithms.
+If you don't know where to start - ask your favourite AI to look at this repository and to see if it contains methods that could help your algorithm.
+**
+
 > 🔬 **Research Prototype & Exploratory Notice:**
 > While core algorithms include automated verification tests and empirical scaling benchmarks, these implementations are exploratory research prototypes. Hidden bugs and errors remain, and further review passes are required before they can be considered resolved. Although the examples are manifold, the principal design direction is provided and can serve as a reference for your own, and even more advanced, implementations.
 
-**The aim of this repository is to deliver order-of-magnitude performance gains over existing methods by combining two of the most powerful algorithms — performance that translates into practical scientific and engineering utility — through a codebase of minimal, self-contained, drop-in examples, validated against independent references.**
 
 
-> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it — no roadmap, no active maintenance, and no guaranteed support. (I am poor as a church mouse and don't have time or resources for anything.) If you have an idea for a method that you think would be a good fit for this engine, feel free to reach out.
+
+> ⚠️ **Project Status & Support Notice:** Released under MIT. Take the code and do whatever you want with it, I can't guarantee support. (I am poor as a church mouse and don't have time for anything.) If you encounter issues or have an idea for a method that you think would be a good fit for this engine, feel free to reach out.
 
 
 ---
@@ -54,9 +58,9 @@ Here is what this engine actually can do across some domains:
 
 ## Background
 
-The **Fast Multipole Method (FMM)** (Greengard & Rokhlin, 1987; extended to adaptive form by Carrier, Greengard, & Rokhlin, 1988) — widely recognized as one of the top ten algorithms of the century — reduced $N$-body and potential field evaluations from quadratic $O(N^2)$ to linear $O(N)$. However, practical FMM implementations historically relied on hierarchical **Octree / $k$-d tree data structures**. On SIMD, GPU, and distributed architectures, dynamic tree allocation every timestep, pointer chasing, and warp divergence remain primary bottlenecks.
+The **Fast Multipole Method (FMM)** ([Greengard & Rokhlin, 1987](https://doi.org/10.1016/0021-9991(87)90140-9); extended to adaptive form by [Carrier, Greengard, & Rokhlin, 1988](https://doi.org/10.1137/0909044)) — widely recognized as one of the top ten algorithms of the century — reduced $N$-body and potential field evaluations from quadratic $O(N^2)$ to linear $O(N)$. However, practical FMM implementations historically relied on hierarchical **Octree / $k$-d tree data structures**. On SIMD, GPU, and distributed architectures, dynamic tree allocation every timestep, pointer chasing, and warp divergence remain primary bottlenecks.
 
-In early 2025, **Martín Farach-Colton, Andrew Krapivin, and William Kuszmaul** published *"Optimal Bounds for Open Addressing Without Reordering"* (arXiv:2501.02305 / IEEE FOCS 2024), breaking a **40-year-old theoretical barrier** (dating back to Andrew Yao's 1985 conjecture) by demonstrating that an open-addressed hash table achieves:
+In early 2025, **Martín Farach-Colton, Andrew Krapivin, and William Kuszmaul** published *"Optimal Bounds for Open Addressing Without Reordering"* ([arXiv:2501.02305](https://arxiv.org/abs/2501.02305) / [IEEE FOCS 2024](https://doi.org/10.1109/FOCS61266.2024.00118)), breaking a **40-year-old theoretical barrier** (dating back to Andrew Yao's 1985 conjecture) by demonstrating that an open-addressed hash table achieves:
 
 1. **$O(1)$ amortized probe complexity**
 2. **$O(\log \delta^{-1})$ expected worst-case search complexity**
@@ -76,15 +80,15 @@ By synthesizing **Optimal Non-Reordering Elastic Open Addressing** with the **Fa
                                     |
                                     v
 +-----------------------------------------------------------------------------------------+
-|    TREE-FREE MULTIPOLE HASH TABLE (Farach-Colton, Krapivin, & Kuszmaul, 2025 Layout)    |
-|   - Multi-Level Geometrically Sized Sub-Arrays                                          |
+|  TREE-FREE FUNNEL HASH (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3)           |
+|   - Funnel Slabs + beta Sub-Arrays (geometric ~3/4 shrink) + overflow B/C                |
 |   - Strict Zero-Reordering (Lock-Free / CAS-Compatible)                                 |
-|   - Bounded O(log 1/delta) Search Latency at High Load Factors                          |
+|   - Insert O(log 1/delta); Search O(log^2 1/delta) at load 1-delta                      |
 +-----------------------------------------------------------------------------------------+
             |                                               |
             v (Near-Field: P2P Direct)                      v (Far-Field: M2L Multipole)
-  O(1) 3x3 Neighborhood Hash Probes               Vectorized Cluster Matrix Broadcast
-  (SIMD Continuous Streaming)                     (Linear O(N) Far-Field Potential)
+  3x3 (adaptive) / ring-2 5x5 (flat JAX)          Lattice-FFT M2L (flat) / hier. M2L
+  Hash / CSR cell-list streaming                  Adaptive O(N); flat O(R^2 log R · p^2)
 ```
 
 ---
@@ -117,7 +121,7 @@ Empirical scaling benchmarks comparing naive direct evaluation, dense vectorized
 |   **$N = 64,000$**   |   250,391.7 ms *(extrap.)* |   151,104.7 ms *(extrap.)* |        2,509.2 ms *(extrap.)* |             **2,741.17 ms**             |      **$55.1\times$**      |
 |  **$N = 100,000$**  |   611,307.8 ms *(extrap.)* |   368,908.0 ms *(extrap.)* |   6,125.9 ms *(extrap.)* |             **2,884.09 ms**             |     **$127.9\times$**     |
 
-> ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (marked *(extrap.)* in the table). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` with `order=4` on a **uniform** distribution (lower accuracy and different occupancy than the variant protocol's `order=8` on a **clustered** distribution — see [`BENCHMARKS.md`](BENCHMARKS.md) §"Core FMM scaling" for the clustered-distribution scaling table where the FMM is NOT faster at $N{=}2000$). The flat scheme is $O(N + K^2)$ with $K$ occupied cells ($K \le 4^{\text{depth}}$), linear in $N$ for fixed depth with a depth-dependent constant — not asymptotically $O(N)$. The elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engine `TreeFreeElasticAdaptiveFMM` and the GPU kernels.
+> ℹ️ **Benchmark disclosure:** the naive/NumPy/JAX baseline columns are *measured* only up to $N = 2{,}000$ / $8{,}000$ / $16{,}000$ respectively; beyond that they are quadratic extrapolations from the last measured point (marked *(extrap.)* in the table). The FMM column is measured at every $N$. The timed engine is the potential-only `FastVectorizedFMM` with `order=4` on a **uniform** distribution (lower accuracy and different occupancy than the variant protocol's `order=8` on a **clustered** distribution — see [`BENCHMARKS.md`](BENCHMARKS.md) §"Core FMM scaling" for the clustered-distribution table, where the **vectorized adaptive FMM** (`core/adaptive_fmm_fast.FastAdaptiveFMM`, 2:1-balanced level-batched CGR88 with per-offset M2L matrices) is faster than direct $O(N^2)$ at every $N$ tested from $N{=}2{,}000$ (2.4x) through $N{=}32{,}000$ (88.6x) at $2\cdot10^{-7}$ rel-L2 — with automated crossover headline and log-log + linear-scale plots in `assets/core_fmm_scaling_*.png`). The flat scheme is $O(N + K^2)$ with $K$ occupied cells ($K \le 4^{\text{depth}}$), linear in $N$ for fixed depth with a depth-dependent constant — not asymptotically $O(N)$; its M2L is computed exactly as a lattice convolution via FFT. The elastic funnel hash (`core/elastic_hash.py`) governs the sparse adaptive engines and the GPU kernels.
 
 ### Variant Protocol — What Each Influence Costs
 
@@ -159,16 +163,22 @@ The repo-wide `VariantBenchmark` protocol (`core/benchmark_kit.py`) runs the sam
 
 ## Interactive Real-Time Simulation
 
+> **Static preview (older capture, not representative).** The GIF below is a short, compressed snapshot of an earlier build. The live demo is a full in-browser **WebGPU / WebGL** engine — adaptive multipoles, multi-million particles, interactive controls — and is substantially more advanced.
+
 <p align="center">
-  <a href="https://raw.githack.com/OpenAnimal/tree-free-nbody-engine/main/index.html">
-    <img src="assets/simulation_demo.gif" alt="Tree-Free N-Body Real-Time GPU Animation" width="100%">
-  </a>
+  <img src="assets/simulation_demo.gif" alt="Static preview (older capture, not representative)" width="100%">
+  <br>
+  <sub>Static preview (older capture, not representative)</sub>
 </p>
 
 <p align="center">
   <a href="https://raw.githack.com/OpenAnimal/tree-free-nbody-engine/main/index.html">
-    <img src="https://img.shields.io/badge/▶_Launch_Live_Interactive_Simulation-blueviolet?style=for-the-badge&logo=webgl" alt="Launch Live Simulation">
+    <img src="https://img.shields.io/badge/▶_Launch_live_WebGPU_demo_(full_engine)-blueviolet?style=for-the-badge&logo=webgl" alt="Launch live WebGPU demo (full engine)">
   </a>
+</p>
+
+<p align="center">
+  <sub>Chrome / Edge with WebGPU preferred · falls back to WebGL 2.0 where needed</sub>
 </p>
 
 ---
@@ -343,14 +353,14 @@ pip install -e ".[all]"
 ## Theoretical References
 
 1. **Optimal Bounds for Open Addressing Without Reordering.** Farach-Colton, Krapivin, & Kuszmaul (2025). *IEEE FOCS 2024* / [arXiv:2501.02305](https://arxiv.org/abs/2501.02305).
-2. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348.
-3. **A Fast Adaptive Multipole Algorithm for Particle Simulations.** Carrier, Greengard, Rokhlin (1988). *SIAM Journal on Scientific and Statistical Computing*, 9(4), 669–686.
+2. **A Fast Algorithm for Particle Simulations.** Greengard, Rokhlin (1987). *Journal of Computational Physics*, 73(2), 325–348. [doi:10.1016/0021-9991(87)90140-9](https://doi.org/10.1016/0021-9991(87)90140-9).
+3. **A Fast Adaptive Multipole Algorithm for Particle Simulations.** Carrier, Greengard, Rokhlin (1988). *SIAM Journal on Scientific and Statistical Computing*, 9(4), 669–686. [doi:10.1137/0909044](https://doi.org/10.1137/0909044).
 4. **Breaking the Sorting Barrier for Directed Single-Source Shortest Paths.** Duan, Cheng, Mao, Yin, Ren (2025). *ACM STOC 2025 Best Paper* / [arXiv:2409.04354](https://arxiv.org/abs/2409.04354).
 5. **More Asymmetry Yields Faster Matrix Multiplication.** Alman, Duan, Williams, Xu, Xu, Zhou (2024). [arXiv:2404.16349](https://arxiv.org/abs/2404.16349).
-6. **Nearly-Linear Time Algorithms for Graph Laplacians.** Spielman, Teng (2011). *SIAM J. Comput.* 40(4), 981–1025.
-7. **Approximate Distance Oracles.** Thorup, Zwick (2005). *Journal of the ACM*, 52(1), 1–24.
-8. **1€ Filter: A Simple Speed-Based Low-Pass Filter for Noisy Input in Interactive Systems.** Casiez, Roussel, Vogel (2012). *ACM CHI Conference on Human Factors in Computing Systems*.
-9. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH 2020)*.
+6. **Nearly-Linear Time Algorithms for Graph Laplacians.** Spielman, Teng (2011). *SIAM J. Comput.* 40(4), 981–1025. [doi:10.1137/S0097539709440244](https://doi.org/10.1137/S0097539709440244).
+7. **Approximate Distance Oracles.** Thorup, Zwick (2005). *Journal of the ACM*, 52(1), 1–24. [doi:10.1145/1044731.1044732](https://doi.org/10.1145/1044731.1044732).
+8. **1€ Filter: A Simple Speed-Based Low-Pass Filter for Noisy Input in Interactive Systems.** Casiez, Roussel, Vogel (2012). *ACM CHI Conference on Human Factors in Computing Systems*. [doi:10.1145/2207676.2208639](https://doi.org/10.1145/2207676.2208639).
+9. **Incremental Potential Contact: Intersection- and Inversion-Free, Large-Deformation Dynamics.** Li, Ferguson, Schneider, Langlois, Zorin, Panozzo (2020). *ACM Transactions on Graphics (SIGGRAPH 2020)*. [doi:10.1145/3386569.3392425](https://doi.org/10.1145/3386569.3392425).
 
 ---
 
