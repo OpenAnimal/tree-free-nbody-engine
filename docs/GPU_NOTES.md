@@ -744,9 +744,14 @@ The §8.1 materialize_ranges fix holds structurally.
 
 ### 9.3 Python core: the "NOT faster than direct at N=2000" rows are gone
 
-New engine `core/adaptive_fmm_fast.FastAdaptiveFMM` (level-batched,
-2:1-balanced CGR88 with per-(level,offset) M2L matrices, vectorized List-4
-P2L via reduceat segment sums, CSR near-field): 30 ms at N=2000 (23x faster
+The level-batched engine (2:1-balanced CGR88 with per-(level,offset) M2L
+matrices, vectorized List-4 P2L via reduceat segment sums, CSR near-field)
+-- originally shipped as `core/adaptive_fmm_fast.FastAdaptiveFMM` and since
+consolidated into `core/adaptive_fmm.AdaptiveFMM` (alias `FastAdaptiveFMM`;
+the classical per-box engines stay in that module as
+`ClassicalAdaptiveFMM` / `TreeFreeElasticAdaptiveFMM` slow cross-validation
+references, exercised by tests/core/test_adaptive_fmm_fast.py and
+tests/core/test_adaptive_fmm_reference.py): 30 ms at N=2000 (23x faster
 than the classical per-box engine, 1.2-2.4x faster than direct) at the SAME
 2e-7 rel-L2; 91-112x at 32k; 465x at 128k (direct measured 296 s).
 `FastVectorizedFMM` M2L rewritten as an exact FFT lattice convolution
@@ -754,3 +759,189 @@ than the classical per-box engine, 1.2-2.4x faster than direct) at the SAME
 710 -> 90 ms at N=2000, unchanged accuracy. See BENCHMARKS.md "Core FMM"
 for tables, automated crossover headline, and plots
 (assets/core_fmm_scaling_{loglog,linear}.png).
+## 10. Round-13: materialized far-field interaction lists
+
+### 10.1 Design
+
+Section 9.1 identified materialized per-target far-field lists as the
+structural fix for the adaptive-vs-fixed gap. This round implements it: each
+target LEAF's far-field interaction list is resolved ONCE per metadata
+refresh (worker-side, during the existing Web Worker build of section 8.2)
+and evaluated on the GPU as a flat gather — the same move that closed the
+near-field hash gap in section 8.1.
+
+**CSR contents.** For every leaf `t`, the flat concatenation over levels
+`l = t.level .. 1` of `List-2(ancestor_l(t))` — exactly the M2L source set
+the per-level `m2l` + `l2l` chain delivers to `t`. Each entry is ONE u32:
+source node index (low 22 bits) | operator row index (top 10 bits), row =
+`l*49 + (dy+3)*7 + (dx+3)` for the source's cell offset from its List-2
+target at that level (offsets are bounded to [-3,3] by the List-2
+construction — children of the parent's 3x3 colleague ring). Entries are
+grouped by descending level so the kernel shifts each level's gathered run
+to the leaf center once per run. Per-node `start`/`count` ride the same
+buffer as an interleaved 2N-word header.
+
+**Operator table.** For a source at integer offset `(dx, dy)` from its
+List-2 target at level `l`, the M2L delta is the fixed lattice vector
+`(dx, dy)*2^-l`, so the whole (p+1)^2 complex operator collapses into a
+dense row indexed by `(l, dx, dy)` — the same precomputed-matrix move as
+`core/adaptive_fmm_fast.py`'s per-(level, offset) M2L matrices (Gimbutas &
+Greengard, 2012, FMMLIB2D `itable(-3:3,-3:3)`; Carrier, Greengard, &
+Rokhlin, 1988). 11 levels x 49 offsets x 25 complex = 26,950
+f32 (107,800 bytes), built in f64 by `buildFarOperatorTable()` with the
+identical closed form as the WGSL `m2l` kernel (clog monopole log term,
+(-1)-signed inverse powers, C(k+l-1, l) binomials), stored f32. The table
+is position-independent but rides in the same storage buffer as the CSR
+(header | entries | table) to respect the 16-storage-buffer per-stage
+limit; `nodeParent`+`nodeFlags` were packed into one `nodeMeta` vec2
+buffer (the packing the standalone kernel already used) to free the slot.
+
+**New kernels** (identical text in index.html and
+`core/webgpu_kernels/adaptive_fmm.wgsl` — `tools/check_wgsl_sync.py` now
+verifies the shared functions textually, including the new ones):
+
+- `p2l` — the List-4 P2L block of the old per-level `m2l`, dispatched once
+  over ALL nodes (P2L has no inter-level dependency), writing ONLY each
+  node's own P2L contribution into `locals`. P2L stays shared per
+  (node, source-leaf) pair exactly as before.
+- `far_gather` — one thread per leaf: walk the ancestor chain (<= 10
+  `nodeMeta` pointer hops, once per LEAF not per particle), then for each
+  CSR entry read the source's 5 moments and the operator row and apply a
+  5x5 complex matvec (two loads + FMA — no clog/cdiv chains), accumulating
+  per level and recentering each level's run onto the leaf with ONE exact
+  L2L shift per level (composition of exact polynomial shifts equals the
+  legacy chain's level-by-level shifts). The ancestors' P2L locals are
+  folded in by the same shifts (a strict ancestor of a leaf is always
+  internal, so no thread reads a slot another thread writes). List-3 M2P
+  per particle and List-1 P2P in `l2p` are unchanged — List-3 sources can
+  be several levels FINER than the leaf and hugging its boundary, where
+  folding them into the leaf's local expansion would place source points
+  inside the evaluation disk (|src - leaf center| >= 0.5w + w_src can fall
+  below the 0.707w evaluation radius), so CGR88's per-particle M2P form is
+  mathematically required there.
+
+The legacy chain stays selectable with `?materializedFar=0` (default ON),
+mirroring `?adaptiveHash=0`; the sidebar axis line shows `far=mat|chain`.
+
+**Measured CSR sizes** (logged once per rebuild via console.debug from the
+worker): 120k ~ 0.24-1.1M entries (1.0-4.6 MB header+entries, ~122
+entries/leaf); 500k ~ 2.8-4.3M entries (11-17 MB, ~120/leaf) with the ops
+table a constant 0.11 MB. Upload cost is part of the per-refresh
+`uploadAdaptiveMetadata` (measured mean 17 ms / worst 29 ms per refresh at
+500k, including all metadata arrays and occasional buffer + bind-group
+recreation).
+
+### 10.2 Validation
+
+- `tools/check_wgsl_sync.py`: PASS — the new `p2l`/`far_gather` and the
+  far CSR accessors are TEXTUALLY IDENTICAL between the page and the
+  standalone kernel (the inline `readc`/`writec` were converted to the
+  standalone's selector form to make this possible).
+- `tools/validate_adaptive_js.py`: 7/7 scenes PASS for BOTH paths at the
+  same tolerances as before (e.g. hardedge p=2: chain rel_pot 5.2e-4 /
+  rel_f 1.8e-2, materialized identical; gates 3e-3 / 4e-2). The
+  materialized-vs-chain deviation in the f64 emulator is 2-14e-9 (pure
+  reordering); the emitted JS operator table matches the Python reference
+  closed form to 4.7e-8; the CSR content check verifies every leaf's entry
+  list equals the ancestor-chain List-2 sets with correct operator rows
+  and descending-level grouping.
+- `tests/core/test_adaptive_wgsl_numeric.py::test_adaptive_materialized_far_field`
+  (new): executes the actual WGSL `p2l` + `far_gather` via wgpu-py on a
+  mixed-depth tree — rel-L2 vs masked direct O(N^2): pot 2.2e-5 / force
+  6.0e-4 (gates 5e-4 / 5e-3); vs the legacy WGSL chain on the SAME tree:
+  pot 1.1e-7 / force 5.5e-8 — the two paths agree to f32 rounding.
+
+### 10.3 Measured verdict (the gap did NOT close at 500k+)
+
+Cross-bench, same loaded-GPU environment, medians of 3 interleaved rounds
+(2026-08-24; absolute numbers depressed by background GPU load, ratios
+same-run):
+
+| N     | count | openaddr | funnel | adapt+dir (mat) | adapt+no-dir | adapt+chain |
+|-------|-------|----------|--------|-----------------|--------------|-------------|
+| 120k  | 225   | 215      | 214    | 366             | 541          | 349         |
+| 500k  | 160   | 167      | 161    | 52              | 43           | 52          |
+| 2M*   | 34    | —        | —      | 11              | —            | —           |
+
+(*isolated `CONFIG=` processes, medians of 3.)
+
+1. **The materialized gather is a small real win where the far field is a
+   visible share**: +5% at 120k (366 vs 349 same-run). At 500k it is
+   performance-neutral (52 vs 52). Numerically it is exact (above), and it
+   removes ~2*depth per-level dispatches per frame — but it does not move
+   500k steps/sec.
+2. **The section 9.1 hypothesis is refuted by direct measurement**: the
+   divergent per-target far-field walk is NOT the 500k bottleneck.
+   Decomposition at 500k (3 rounds each, same protocol): adaptive default
+   (near-field P2P budget 24/leaf) 50; budget 6/leaf 184 (3.7x, matching
+   the fixed grid); budget 1/leaf 316 (6.3x); multipole order p=0 50 (no
+   effect); far chain vs mat 49 vs 50 (no effect). The dominant cost is
+   the l2p NEAR FIELD — the List-1 budgeted walk (up to 32 adjacent leaves
+   x budget samples per particle, ~11x the fixed grid's ~69-pair 3x3
+   uniform neighborhood at leafBits 8) — plus the metadata refresh
+   pipeline.
+3. **Why mat = chain at 500k despite the table**: the per-leaf CSR
+   DUPLICATES each ancestor's List-2 across all descendant leaves (~4.3M
+   entries at 500k vs ~1M per-node List-2 pairs for the chain, a ~4x
+   duplication factor), which cancels the ~3-4x per-operator gain of FMA
+   matvecs over the inline clog/cdiv math. The duplication-free variant
+   (per-level table-based m2l into shared per-node locals + far_gather
+   folding only) is the obvious refinement, but per (2) it would not move
+   the 500k number either.
+4. **Adaptive throughput is strongly phase-dependent** — a measurement
+   caveat for every table in this file: the galaxy ICs are unseeded
+   (`Math.random`), so the quadtree swings between ~1k and ~55k nodes over
+   one run and adaptive steps/sec swings 24-213 with it (the 500k
+   adaptive+dir rounds above: 52, 51, 128). Section 8.4's 56 and section
+   9.1's 48 were single-phase samples of the clustered phase the
+   crossbench window lands in; medians over interleaved rounds are the
+   honest comparator.
+
+**Bug fixed along the way (pre-existing since round 12)**: the metadata
+worker's glue did not declare `adaptiveLeafTargetOverride` /
+`adaptiveDepthOverride`, so every worker build threw ReferenceError and the
+page silently fell back to synchronous main-thread rebuilds — visible only
+in the diag channel's `errors` array (crossbench `diagErrRounds` was 2-3
+of 3). With the glue fixed, the diag errors are empty and the far CSR
+build + upload run off the main thread as designed. Crossbench now reports
+`diagErrRounds: 0`.
+
+### 10.4 Identified next step (measured, not hypothesized)
+
+Close the near-field gap the same way section 8.1 closed the hash gap: the
+adaptive List-1 walk should be budgeted PER PARTICLE (a total sample budget
+spread across the leaf's adjacency list, stride-reweighted), not per
+adjacent leaf — at 500k that is the measured 3.7-6.3x lever, and at budget
+~6 the adaptive pipeline already matches the fixed grid (184 vs 148-163
+same-run). The accuracy trade is the same unbiased-stride-reweighting
+scheme section 5.4 documents for the current per-leaf budget.
+
+## 11. Round-14: core-side hash benchmark tie-in
+
+The Python-side head-to-head (funnel vs linear probing vs CPython dict vs
+the compiled Zig port, `benchmarks/bench_hash_backends.py`, table in
+BENCHMARKS.md "Core hash tables") puts numbers on what the demo's
+near-field backend switch CANNOT show: after `materialize_ranges` (§8.1)
+the demo hash only builds the structure, so counting-sort / open-addressing
+/ funnel measure equal within steps/sec. Where the funnel table's
+guarantees are visible instead:
+
+- **Worst-case latency**: absent-key lookups pay exactly the deterministic
+  bound (157-543 probes at delta = 0.125-0.01) at any n, where linear
+  probing's tail reaches 22,216 probes at n = 1M, alpha = 0.99. On GPU,
+  that tail is warp divergence inside a memory pass — a per-thread
+  worst-case cap is a latency guarantee median steps/sec cannot express.
+- **The far-field node directory** (adaptive+dir vs adaptive+no-dir) is
+  the one place the hash backend choice still moves demo numbers:
+  no-dir wins on small trees (120k: 541 vs 366, §10.3), medians put no-dir
+  slightly ahead at 500k (43 vs 52), and the directory wins at 5M
+  (5 vs 7, §8.4 — small sample). **Recommendation (not implemented)**:
+  default remains no-dir; enable the directory by a node-count threshold
+  (~100k nodes, i.e. the >= 2M-particle regime) where the sample says it
+  pays. Re-measure with interleaved medians first — §10.3 (4) shows
+  single-window samples swing 24-213 steps/s with the tree phase.
+
+Audit: the elastic-hashing table (`ElasticBatchingHashTable`, paper
+Section 2) is reference/experimental — it is not used by any pipeline
+(Python, Zig, WGSL, or demo) and loses to the funnel table in every
+measured regime (see BENCHMARKS.md section for the numbers).

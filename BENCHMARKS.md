@@ -12,76 +12,95 @@ including "not faster at this scale" results.
 
 Reproduced with `node tools/browser_crossbench.js [N] [rounds]` against a
 local `python -m http.server 8123` (headless full Chromium — the headless
-shell has no WebGPU adapter — WebGPU/D3D11, RTX 4070 SUPER, 2026-08-23).
-Frames run uncapped (`?uncapped=1`; the page now defaults to the
-vsync-locked loop), so the metric is true steps/sec.
+shell has no WebGPU adapter — WebGPU/D3D11, RTX 4070 SUPER, 2026-08-24).
+Frames run uncapped (`?uncapped=1`; the page defaults to the vsync-locked
+loop), so the metric is true steps/sec. Adaptive rows default to the round-13
+materialized far-field CSR gather (`?materializedFar=0` A/Bs the legacy
+per-level m2l+l2l chain).
 
-**Environment caveat**: measured while a background process held ~80% GPU
-utilization — absolute numbers are depressed vs an idle GPU; ratios between
-configs measured in the same run remain meaningful. 5M rows ran each config
-in an isolated browser process (`CONFIG=<label>`; the fifth in-process
-navigation stalls on cumulative GPU memory at that size), 1 round each.
+**Environment caveat**: measured while a background process held a large
+share of GPU — absolute numbers are depressed vs an idle GPU; ratios between
+configs measured in the same run remain meaningful. 2M rows ran each config
+in an isolated browser process (`CONFIG=<label>`).
 
 ```
-N=120k (3 rounds)          median steps/sec   rounds
-fixed + counting-sort      236                226, 236, 240
-fixed + open-addressing    214                211, 230, 214
-fixed + funnel             226                234, 226, 213
-adaptive + node-hash dir   356                358, 349, 356
-adaptive + leafForParticle 509                509, 517, 478
+N=120k (3 rounds)            median steps/sec   rounds
+fixed + counting-sort        225                216, 225, 225
+fixed + open-addressing      215                206, 226, 215
+fixed + funnel               214                229, 213, 214
+adaptive + node-hash dir     366                436, 357, 366
+adaptive + leafForParticle   541                603, 538, 541
+adaptive + far chain (A/B)   349                403, 349, 349
 
-N=500k (3 rounds)          median steps/sec   rounds
-fixed + counting-sort      172                172, 163, 181
-fixed + open-addressing    174                178, 174, 173
-fixed + funnel             172                172, 170, 175
-adaptive + node-hash dir   56                 62, 56, 52
-adaptive + leafForParticle 45                 45, 44, 45
+N=500k (3 rounds)            median steps/sec   rounds
+fixed + counting-sort        160                168, 155, 160
+fixed + open-addressing      167                167, 180, 161
+fixed + funnel               161                153, 168, 161
+adaptive + node-hash dir     52                 52, 51, 128
+adaptive + leafForParticle   43                 43, 42, 51
+adaptive + far chain (A/B)   52                 49, 52, 77
 
-N=5M (1 round, isolated)   median steps/sec
-fixed + counting-sort      12   (~60M particle-updates/sec)
-fixed + open-addressing    10
-fixed + funnel             10
-adaptive + node-hash dir   7
-adaptive + leafForParticle 5
+N=2M (3 rounds, isolated)    median steps/sec
+fixed + counting-sort        34
+adaptive + node-hash dir     11
+
+N=500k far-field/near-field decomposition (3 rounds)
+adaptive default (p2p budget 24/leaf)   50    48, 50, 52
+adaptive p2p budget 6/leaf              184   189, 184, 169
+adaptive p2p budget 1/leaf              316   345, 314, 316
+adaptive multipole order p=0            50    49, 51, 50
 ```
 
-Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §7):
+Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §8 and §10):
 
-- **Near-field hash backends are now equal** (counting/open-addr/funnel
-  within noise at every N). A new `materialize_ranges` pass resolves the
-  hash table into the dense `cellStart`/`cellCount` arrays once per frame —
-  one probe per leaf cell instead of one probe per neighbor-cell visit in
-  every P2P consumer — so the hash modes' hot loops are the same two direct
-  loads as the counting sort. The hash table remains the structure built
-  each frame; its value is the worst-case probe bound and compactness, not
-  throughput.
-- **Adaptive FMM crosses over**: at 120k it is *faster* than the fixed grid
-  (few tree nodes make the per-level chains cheap while the fixed grid
-  always evaluates the full 128x128 lattice); at 500k+ the adaptive node
-  count grows (~23k nodes) and fixed wins. Its value at large N is accuracy
-  on clustered distributions, not throughput.
-- **The funnel occupied-node directory pays off as the tree grows** (7 vs 5
-  steps/sec at 5M, 56 vs 45 at 500k) but costs at small trees (356 vs 509
-  at 120k) — probe vs one-indirection trade.
-- The adaptive metadata rebuild now runs in a Web Worker sliced verbatim
-  from the page's own script (see `getAdaptiveMetaWorker` in index.html),
-  so the periodic refresh no longer hitches the render loop; the "adaptive
-  is CPU-bound on its rebuild" caveat from earlier rounds is gone.
+- **Near-field hash backends are equal** (counting/open-addr/funnel within
+  noise at every N): the `materialize_ranges` pass resolves the hash table
+  into the dense `cellStart`/`cellCount` arrays once per frame, so every
+  consumer does two direct loads. The hash table remains the structure
+  built each frame; its value is the worst-case probe bound and
+  compactness, not throughput.
+- **Round 13 materialized far field**: the adaptive far field is now a flat
+  per-leaf CSR gather of List-2 sources through a precomputed
+  per-(level, offset) M2L operator table (validated to 1e-7 against the
+  legacy chain on GPU). It is ~5% faster than the legacy chain at 120k and
+  performance-neutral at 500k — the remaining adaptive-vs-fixed gap at
+  500k+ is NOT the far field: dropping the near-field P2P budget 24 -> 6
+  gives 3.7x (50 -> 184, matching the fixed grid), while zeroing the
+  multipole order or reverting the far-field rewrite changes nothing.
+- **Adaptive FMM crosses over** at 120k (few tree nodes make the per-level
+  chains cheap while the fixed grid always evaluates the full lattice); at
+  500k+ the adaptive node count grows and the budgeted List-1 near-field
+  walk dominates. Its value at large N is accuracy on clustered
+  distributions, not throughput.
+- **Adaptive throughput is phase-dependent**: the galaxy ICs are unseeded
+  (`Math.random`), so the quadtree swings between ~1k and ~55k nodes over a
+  run and adaptive steps/sec swings with it (rounds above show single
+  phases, e.g. 128 vs 51; medians over 3 interleaved rounds are the honest
+  comparator).
+- The adaptive metadata rebuild (now including the far CSR) runs in a Web
+  Worker sliced verbatim from the page's own script
+  (`getAdaptiveMetaWorker` in index.html); a round-12 regression that
+  silently disabled the worker (missing override globals in the glue) was
+  found by the diag channel and fixed in round 13.
 
 ## Core FMM (2D log kernel)
 
 ```
 Variant                            Time (ms)  rel L2 vs ref  Note
 ------------------------------------------------------------------------------
-standard (exact direct)     37.76                     -  O(N^2) reference
-+fmm (adaptive FMM)       706.80 (0.1x)      1.974e-07  funnel-hash adaptive FMM, p=10; classical reference engine (per-box Python loops — kept for cross-validation)
-+fmm (adaptive, vectorized)     30.43 (1.2x)      2.000e-07  level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)
-+fmm (flat vectorized)     59.00 (0.6x)      7.522e-07  single-level vectorized adaptive FMM, depth=5 order=8 (FFT-convolution M2L)
-+quantized (32-bit packed)     57.89 (0.7x)      4.824e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
+standard (exact direct)     36.37                     -  O(N^2) reference
++fmm (adaptive FMM)       716.64 (0.1x)      1.974e-07  funnel-hash adaptive FMM, p=10; slow classical reference engine kept for cross-validation (per-box Python loops; canonical engine is +fmm (adaptive, vectorized))
++fmm (adaptive, vectorized)     29.59 (1.2x)      2.000e-07  CANONICAL core.adaptive_fmm.AdaptiveFMM (alias FastAdaptiveFMM): level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)
++fmm (flat vectorized)     57.21 (0.6x)      7.522e-07  single-level vectorized adaptive FMM, depth=5 order=8 (FFT-convolution M2L)
++quantized (32-bit packed)     54.46 (0.7x)      4.824e-01  VoxelPackedTreeFreeFMM; module documents ~1.2e-1 rel-L2 packed cost (this clustered N=2000 distribution measures higher — see table)
 ```
 
-The vectorized adaptive engine (`core/adaptive_fmm_fast.FastAdaptiveFMM`) is
-23x faster than the classical per-box engine at identical accuracy
+One canonical adaptive engine: `core.adaptive_fmm.AdaptiveFMM` (alias
+`FastAdaptiveFMM`) is the level-batched 2:1-balanced CGR88 engine; the two
+classical per-box engines (`ClassicalAdaptiveFMM`,
+`TreeFreeElasticAdaptiveFMM`, the "+fmm (adaptive FMM)" row) remain in the
+same module ONLY as slow cross-validation references. The canonical engine
+is 24x faster than the classical per-box engine at identical accuracy
 (2.0e-7 vs 2.0e-7 rel-L2, p=10) and is already faster than the direct
 O(N^2) sum at N=2000. The earlier "NOT faster than direct at N=2000" rows
 were implementation constants, not algorithm facts: the classical engine
@@ -96,45 +115,155 @@ N=25,600 — direct 9694 s vs adaptive 97 s), and a competent NumPy
 implementation should be near parity at N=2000 (Gimbutas & Greengard, 2012,
 note the "O(N) work with a larger constant" tree-construction overhead).
 
+External-reference cross-validation, stated honestly: the right external
+check for a 2D log-kernel FMM is FMMLIB2D (Gimbutas & Greengard, 2012)
+via the `pyfmmlib` PyPI package (its `lfmm2d` uses the identical kernel
+and sign convention, sum q_j ln|r_i - r_j|). That package is sdist-only
+and its meson build requires a Fortran compiler (ifort/ifx/gfortran/flang),
+none of which exists on this Windows machine, so the pyfmmlib cross-check in
+`tests/core/test_adaptive_fmm_reference.py` SKIPS here (it runs with real
+gates wherever pyfmmlib is importable, e.g. Linux CI). Every other
+pip-installable candidate was checked and rejected for a 2D log kernel:
+`pyfmmlib2d` (GitHub-only, also gfortran+f2py), `fmm2dpy` (gone from PyPI),
+`fmm3dpy` (Windows wheels but strictly 3D Laplace 1/r), `jaxfmm` (pure wheel
+but 3D Coulomb 1/(4 pi r)). The always-running fallbacks in that test file
+are the CGR88-internal references: geometric-in-p multipole-order
+convergence (measured: two-box M2L error 1.8e-3 at p=4 falling to 3.1e-13
+at p=20, ~0.35 per order as the CGR88 bound predicts; full engine 1.9e-4 at
+p=4 to 5.6e-10 at p=16), exact translation-chain round-trip identities,
+agreement with both retained classical engines (mutual 7.0e-9 at p=10) and
+with the Greengard & Rokhlin (1987) uniform-grid engine, and direct O(N^2)
+agreement on uniform/two-cluster/spiral distributions with potentials and
+forces.
+
 ## Core FMM scaling
 
 Direct O(N^2) (chunked), the flat single-level FMM
 (`FastVectorizedFMM(depth=5, order=8)`, FFT-convolution M2L), and the
-vectorized adaptive FMM (`FastAdaptiveFMM`, p=10), on the clustered
-multi-scale distribution. The classical per-box adaptive engine is omitted
-(45x slower than the vectorized engine, no additional information). Direct
-is skipped above N=32000 (the quadratic term would dominate the run for
-minutes). Plots: `assets/core_fmm_scaling_loglog.png` (log-log runtime) and
+canonical vectorized adaptive FMM (`core.adaptive_fmm.AdaptiveFMM`, alias
+`FastAdaptiveFMM`, p=10), on the clustered multi-scale distribution. Each
+point is the minimum of 3 fresh build+evaluate runs (this machine runs
+concurrent background training, so single shots are noise-dominated; the
+min-of-k statistic is applied identically to every variant). The classical
+per-box adaptive engine is omitted (24x slower than the vectorized engine,
+no additional information). Direct is skipped above N=32000 (the quadratic
+term would dominate the run for minutes). Plots:
+`assets/core_fmm_scaling_loglog.png` (log-log runtime) and
 `assets/core_fmm_scaling_linear.png` (linear-scale speedup with the
 crossover annotated); raw numbers in `assets/core_fmm_scaling.json`. The
 headline line below is generated automatically by
 `core/benchmark_variants.py run_scaling`.
 
 ```
-=== Core FMM scaling (clustered distribution; direct budget 120s) ===
-N=  2000  direct=     60.6 ms  flat=     62.0 ms  adaptive=    35.7 ms  speedup flat=1.0x adaptive= 1.7x  rel-L2 2.0e-07
-N=  8000  direct=    950.6 ms  flat=    217.9 ms  adaptive=    77.7 ms  speedup flat=4.4x adaptive=12.2x  rel-L2 1.9e-07
-N= 32000  direct=  19014.2 ms  flat=   2247.6 ms  adaptive=   208.2 ms  speedup flat=8.5x adaptive=91.3x  rel-L2 3.7e-07
-N=128000  direct= skipped      flat=  32140.7 ms  adaptive=   796.2 ms
+=== Core FMM scaling (clustered distribution; direct budget 120s; min of 3 runs) ===
+N=  2000  direct=     57.9 ms  flat=     58.1 ms  adaptive=    30.3 ms  speedup flat=1.0x adaptive= 1.9x  rel-L2 2.0e-07
+N=  4000  direct=    222.9 ms  flat=     91.3 ms  adaptive=    43.0 ms  speedup flat=2.4x adaptive= 5.2x  rel-L2 1.6e-07
+N=  8000  direct=    918.3 ms  flat=    196.1 ms  adaptive=   135.9 ms  speedup flat=4.7x adaptive= 6.8x  rel-L2 1.9e-07
+N= 32000  direct=  17418.0 ms  flat=   2170.6 ms  adaptive=   211.3 ms  speedup flat=8.0x adaptive=82.4x  rel-L2 3.7e-07
+N=128000  direct= skipped      flat=  34071.7 ms  adaptive=   993.7 ms
 ```
 
 **Automated headline:** Adaptive FMM is faster than direct O(N^2) at every N
-tested from N=2000 up (speedup N=2000→1.7x, N=8000→12.2x, N=32000→91.3x);
-flat single-level FMM reaches N=2000→1.0x, N=8000→4.4x, N=32000→8.5x.
-Beyond N=32000 direct was skipped (quadratic cost); measured: N=128000:
-adaptive=796 ms, flat=32141 ms (extrapolated direct ≈ 280 s from the
-N=32000 point — ≈ 350x; the validation run with direct actually measured at
-N=128000 gave 465x, rel-L2 4.4e-07).
+tested from N=2000 up (speedup N=2000→1.9x, N=4000→5.2x, N=8000→6.8x,
+N=32000→82.4x); flat single-level FMM reaches N=2000→1.0x, N=4000→2.4x,
+N=8000→4.7x, N=32000→8.0x. Flat FMM overtakes direct at N=4000 (2.4x and
+rising) (below parity at N=2000→1.00x). Beyond N=32000 direct was skipped
+(quadratic cost); measured: N=128000: adaptive=994 ms, flat=34072 ms
+(extrapolated direct ≈ 280 s from the N=32000 point — ≈ 280x; the earlier
+validation run that measured direct at N=128000 gave 465x, rel-L2 4.4e-07).
 
-Context, stated honestly: the flat single-level scheme is linear in N only
-for fixed depth and pays its near-field cost per occupied cell as cells fill
-up at large N (31.5 s at N=128000) — the multi-level adaptive engine is the
-one with the correct O(N) scaling (0.79 s at N=128000, ≈ 465x measured in
-the validation run where direct completed in 296 s). Per Ying, Biros, & Zorin
-(2004) the properly-constructed one-level interaction list is bounded (27
-boxes in 2D), not K^2 — the earlier flat implementation evaluated all
+Crossover context, stated honestly: the ADAPTIVE engine is faster than
+direct at every N measured down to N=2000 (1.9x); a finer exploratory sweep
+(single-shot, same distribution) brackets its crossover between N=1000
+(0.7x) and N=1500 (1.3x). The FLAT single-level engine reaches parity at
+N≈2000 (0.997x in this table; 1.1x in the finer sweep — parity within
+measurement noise) and is clearly faster from N=4000 (2.4x) — its
+small-N deficit is the honest constant-factor cost of a scheme that pays
+O(p^2) FFT-convolution M2L over the whole occupied lattice plus per-cell
+near-field Python loops. The flat scheme is linear in N only for fixed
+depth and pays its near-field cost per occupied cell as cells fill up at
+large N (34.1 s at N=128000) — the multi-level adaptive engine is the one
+with the correct O(N) scaling (0.99 s at N=128000; ≈ 465x against a direct
+run of 296 s in the earlier validation measurement). Per Ying, Biros, &
+Zorin (2004) the properly-constructed one-level interaction list is bounded
+(27 boxes in 2D), not K^2 — the earlier flat implementation evaluated all
 well-separated K^2 pairs, which the FFT-convolution M2L now computes exactly
 at grid-FFT cost.
+
+## Core hash tables (funnel vs elastic vs baselines)
+
+Reproduce with `python -X utf8 benchmarks/bench_hash_backends.py` (few
+minutes; `--quick` for the reduced grid; JSON written to
+`benchmarks/hash_backends_results.json`). Backends: the funnel hash table
+of Farach-Colton, Krapivin, & Kuszmaul (2025) (`core.elastic_hash.
+ElasticHashTable` — the default occupied-cell index of every core FMM
+engine), a fair open-addressing linear-probe baseline with the same
+splitmix64 finalizer and slot budget, the CPython dict, and the compiled
+Zig port (`zig/funnel_hash.zig`). The worst-case bound is additionally
+verified as a standing test in `tests/core/test_elastic_hash_bounds.py`
+(measured max search-probe count ≤ the documented
+α·β + B + 2C bound at δ = 1/8 and δ = 1/64, seeded key sets, including
+delete/reinsert churn; no key ever drops at rated load).
+
+Headline, n = 100,000 (scalar Python paths under identical interpreter
+conditions; "abs max" = worst probe count over absent-key lookups):
+
+| α | funnel bound | funnel abs-max | funnel hit-max | linear abs-max | linear hit-max |
+| --- | --- | --- | --- | --- | --- |
+| 0.50 | 157 | 157 | 22 | 26 | 26 |
+| 0.75 | 157 | 157 | 39 | 160 | 144 |
+| 0.90 | 193 | 193 | 77 | 1181 | 873 |
+| 0.95 | 277 | 277 | 119 | 2204 | 2092 |
+| 0.99 | 543 | 543 | 269 | 21178 | 21192 |
+
+The funnel table's worst case is a **deterministic cap** — every absent
+lookup pays exactly the bound and no search can exceed it, at any n (at
+n = 1,000,000 / α = 0.99 the linear baseline reaches 22,216 probes while
+funnel stays at its 543 cap, a 41× worst-case gap that grows with n).
+Linear probing's mean is fine at low load but its tail is unbounded and
+load-sensitive; that tail is a real latency cliff for GPU warp divergence
+and real-time pipelines, which is the regime the paper's scheme targets.
+
+Delete/reinsert churn (delete 10% of keys, reinsert fresh ones,
+n = 100,000): funnel post-churn worst lookup stays at its bound
+(25 / 49 / 189 / 277 / 543 across α = 0.5 → 0.99) while linear probing
+degrades to 30 / 144 / 873 / 2588 / 21723. Honest caveat, both directions:
+funnel tombstones never reclaim slots, so at α ≥ 0.95 a 10%-churn cycle
+drops reinserted keys (4738 and 8991 of 10,000 at α = 0.95 / 0.99;
+zero drops at α ≤ 0.9) — churn-heavy workloads must size δ for the churn
+volume, which `tests/core/test_elastic_hash_bounds.py` quantifies.
+
+Throughput and memory, stated plainly (n = 100,000):
+
+| backend | build M keys/s | lookup M keys/s | bytes/key |
+| --- | --- | --- | --- |
+| CPython dict (C) | 6.8–7.7 | 3.2–3.6 | 52 (getsizeof; excl. objects) |
+| linear probe (scalar) | 0.4–1.1 | 0.4–1.0 | 8.1–16.0 |
+| funnel (scalar) | 0.12–0.40 | 0.12–0.39 | 9.1–18.0 |
+| funnel (NumPy `funnel_probe`) | — | 0.19–0.55 | — |
+| funnel (Zig, compiled) | 15–34 | 13–32 | 9 |
+
+Where the funnel table wins: deterministic worst-case search bound (above),
+inserts that never displace a resident key and never drop at rated load,
+~9 bytes/key of slot storage at high load (vs 52+ for dict before counting
+key/value objects), and a probe sequence that is a pure function of the
+key — which makes the whole lookup vectorizable (`funnel_probe`: 2–5× the
+scalar path in plain NumPy) and portable: the same geometry and bound hold
+in the Zig backend (15–34 M keys/s insert, 2–7 M/s for absent lookups that
+pay the full bounded sequence) and the WGSL port (docs/GPU_NOTES.md §5.2).
+Where it does not win: raw pure-Python throughput — the C dict builds
+~20× faster and the linear-probe baseline is 2–3× faster in Python at low
+load. The funnel table is chosen for its worst-case and portability
+guarantees, not its interpreter speed.
+
+The elastic-hashing table (`core.elastic_hash.ElasticBatchingHashTable`,
+the paper's Section 2 scheme) is **reference/experimental only** — it is
+not used by any pipeline. Measured head-to-head at its rated load
+(δ = 1/8): build 0.002 M keys/s vs funnel 0.25, mean hit probes 3340 vs
+17 at n = 10,000, and absent lookups degrade to a full-array scan — the
+greedy cascade plus its O(capacity) duplicate pre-scan loses to the
+funnel table in every measurable regime in Python. It is kept solely as
+an executable exploration of the Section 2 construction.
 
 ## Physics — Tetrahedral contact broadphase
 
