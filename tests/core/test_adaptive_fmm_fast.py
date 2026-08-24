@@ -1,6 +1,7 @@
-"""Cross-validation for the level-batched vectorized adaptive FMM engine
-(``core.adaptive_fmm_fast.FastAdaptiveFMM``) against exact direct summation,
-the classical CGR88 engines, and 2:1 balance invariants.
+"""Cross-validation for the canonical level-batched vectorized adaptive FMM
+engine (``core.adaptive_fmm.AdaptiveFMM``, alias ``FastAdaptiveFMM``) against
+exact direct summation, the classical CGR88 reference engines, and 2:1
+balance invariants.
 
 Run standalone from the repo root:
     python -m tests.core.test_adaptive_fmm_fast
@@ -18,7 +19,7 @@ from core.adaptive_fmm import (  # noqa: E402
     exact_direct_nbody_2d,
     exact_direct_nbody_forces_2d,
 )
-from core.adaptive_fmm_fast import FastAdaptiveFMM, _m2l_matrix  # noqa: E402
+from core.adaptive_fmm import FastAdaptiveFMM, _m2l_matrix  # noqa: E402
 
 
 def _clustered(n, seed=707):
@@ -188,4 +189,4 @@ if __name__ == "__main__":
     print("tiny inputs: PASS")
     test_uniform_distribution()
     print("uniform distribution: PASS")
-    print("all adaptive_fmm_fast tests PASS")
+    print("all canonical adaptive engine (AdaptiveFMM / FastAdaptiveFMM) tests PASS")

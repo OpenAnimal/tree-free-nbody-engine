@@ -2,43 +2,54 @@
   "rows": [
     {
       "N": 2000.0,
-      "direct_ms": 60.62469999596942,
-      "flat_ms": 61.9522000051802,
-      "adaptive_ms": 35.74039999512024,
+      "direct_ms": 57.89319999166764,
+      "flat_ms": 58.05500000133179,
+      "adaptive_ms": 30.330700014019385,
       "cells": 416.0,
       "rel_l2_flat": 7.522283916881757e-07,
       "rel_l2_adaptive": 2.0001383879289637e-07,
-      "speedup_flat": 0.9785721893798803,
-      "speedup_adaptive": 1.6962513011674945
+      "speedup_flat": 0.9972129875176912,
+      "speedup_adaptive": 1.908732734981665
+    },
+    {
+      "N": 4000.0,
+      "direct_ms": 222.90849999990314,
+      "flat_ms": 91.29640000173822,
+      "adaptive_ms": 42.95589998946525,
+      "cells": 588.0,
+      "rel_l2_flat": 4.100149086059296e-07,
+      "rel_l2_adaptive": 1.6427064595240979e-07,
+      "speedup_flat": 2.4415913441894657,
+      "speedup_adaptive": 5.189240594529982
     },
     {
       "N": 8000.0,
-      "direct_ms": 950.5613999936031,
-      "flat_ms": 217.93179999804124,
-      "adaptive_ms": 77.7347999974154,
+      "direct_ms": 918.3387999946717,
+      "flat_ms": 196.05880000744946,
+      "adaptive_ms": 135.90120000299066,
       "cells": 1436.0,
       "rel_l2_flat": 4.973788201230312e-07,
       "rel_l2_adaptive": 1.8998483025100046e-07,
-      "speedup_flat": 4.361737938208865,
-      "speedup_adaptive": 12.228260702094921
+      "speedup_flat": 4.683996841558647,
+      "speedup_adaptive": 6.7574002288019726
     },
     {
       "N": 32000.0,
-      "direct_ms": 19014.241500000935,
-      "flat_ms": 2247.6118999911705,
-      "adaptive_ms": 208.21530000830535,
+      "direct_ms": 17418.004700011807,
+      "flat_ms": 2170.633999980055,
+      "adaptive_ms": 211.26829998684116,
       "cells": 4996.0,
       "rel_l2_flat": 5.30252410905229e-07,
       "rel_l2_adaptive": 3.7181151495303126e-07,
-      "speedup_flat": 8.459752993866793,
-      "speedup_adaptive": 91.32009751080967
+      "speedup_flat": 8.02438582468157,
+      "speedup_adaptive": 82.44495128278443
     },
     {
       "N": 128000.0,
-      "flat_ms": 32140.680800002883,
-      "adaptive_ms": 796.2363999977242,
+      "flat_ms": 34071.6972000082,
+      "adaptive_ms": 993.6591000005137,
       "cells": 18812.0
     }
   ],
-  "headline": "Adaptive FMM is faster than direct O(N^2) at every N tested from N=2000 up (speedup N=2000->1.7x, N=8000->12.2x, N=32000->91.3x); flat single-level FMM reaches N=2000->1.0x, N=8000->4.4x, N=32000->8.5x. Beyond N=32000 direct was skipped (quadratic cost); measured: N=128000: adaptive=796 ms, flat=32141 ms."
+  "headline": "Adaptive FMM is faster than direct O(N^2) at every N tested from N=2000 up (speedup N=2000->1.9x, N=4000->5.2x, N=8000->6.8x, N=32000->82.4x); flat single-level FMM reaches N=2000->1.0x, N=4000->2.4x, N=8000->4.7x, N=32000->8.0x. Flat FMM overtakes direct at N=4000 (2.4x and rising) (below parity at N=2000->1.00x). Beyond N=32000 direct was skipped (quadratic cost); measured: N=128000: adaptive=994 ms, flat=34072 ms."
 }

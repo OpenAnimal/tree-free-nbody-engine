@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from core import (
-    AdaptiveFMM,
+    ClassicalAdaptiveFMM,
     TreeFreeElasticAdaptiveFMM,
     GreengardRokhlin87RegularFMM,
     FastVectorizedFMM,
@@ -287,7 +287,7 @@ def test_adaptive_fmm_convergence_vs_order(p):
     charges = np.random.uniform(-1.0, 1.0, size=N)
     
     exact_pot = exact_direct_nbody_2d(pos, charges)
-    fmm = AdaptiveFMM(max_leaf_particles=15, max_depth=6, p=p)
+    fmm = ClassicalAdaptiveFMM(max_leaf_particles=15, max_depth=6, p=p)
     fmm_pot = fmm.evaluate(pos, charges, compute_forces=False)
     
     rel_err = np.linalg.norm(fmm_pot - exact_pot) / np.linalg.norm(exact_pot)
@@ -321,7 +321,7 @@ def test_adaptive_fmm_multi_cluster_nonuniform():
     exact_pot = exact_direct_nbody_2d(pos, charges)
     exact_fx, exact_fy = exact_direct_nbody_forces_2d(pos, charges)
     
-    fmm = AdaptiveFMM(max_leaf_particles=15, max_depth=8, p=10)
+    fmm = ClassicalAdaptiveFMM(max_leaf_particles=15, max_depth=8, p=10)
     fmm_pot, fmm_fx, fmm_fy = fmm.evaluate(pos, charges, compute_forces=True)
     
     err_pot = np.linalg.norm(fmm_pot - exact_pot) / np.linalg.norm(exact_pot)
@@ -349,7 +349,7 @@ def test_adaptive_fmm_singular_boundary_distribution():
     charges = np.random.uniform(-1.0, 1.0, size=N)
     
     exact_pot = exact_direct_nbody_2d(pos, charges)
-    fmm = AdaptiveFMM(max_leaf_particles=12, max_depth=7, p=10)
+    fmm = ClassicalAdaptiveFMM(max_leaf_particles=12, max_depth=7, p=10)
     fmm_pot = fmm.evaluate(pos, charges, compute_forces=False)
     
     err_pot = np.linalg.norm(fmm_pot - exact_pot) / np.linalg.norm(exact_pot)
@@ -371,8 +371,10 @@ def test_multi_engine_cross_validation():
     exact_pot = exact_direct_nbody_2d(pos, charges)
     exact_fx, exact_fy = exact_direct_nbody_forces_2d(pos, charges)
     
-    # 2. Adaptive FMM
-    cgr_fmm = AdaptiveFMM(max_leaf_particles=20, max_depth=6, p=10)
+    # 2. Adaptive FMM (classical per-box reference; the canonical fast
+    # engine has its own gates in tests/core/test_adaptive_fmm_fast.py and
+    # tests/core/test_adaptive_fmm_reference.py)
+    cgr_fmm = ClassicalAdaptiveFMM(max_leaf_particles=20, max_depth=6, p=10)
     cgr_pot, cgr_fx, cgr_fy = cgr_fmm.evaluate(pos, charges, compute_forces=True)
     
     # 3. Regular FMM (Greengard & Rokhlin 1987)
@@ -430,7 +432,7 @@ def test_tree_free_elastic_adaptive_equivalence():
     exact_pot = exact_direct_nbody_2d(pos, charges)
     exact_fx, exact_fy = exact_direct_nbody_forces_2d(pos, charges)
 
-    cgr_tree = AdaptiveFMM(max_leaf_particles=15, max_depth=7, p=10)
+    cgr_tree = ClassicalAdaptiveFMM(max_leaf_particles=15, max_depth=7, p=10)
     pot_tree, fx_tree, fy_tree = cgr_tree.evaluate(pos, charges, compute_forces=True)
 
     tf_cgr = TreeFreeElasticAdaptiveFMM(max_leaf_particles=15, base_depth=2, max_depth=7, p=10)

@@ -3,8 +3,10 @@
 Variants:
   standard             — exact direct O(N^2) summation (the reference)
   +fmm (adaptive FMM) — TreeFreeElasticAdaptiveFMM(p=10), the classical
-                          funnel-hash indexed adaptive FMM reference engine
-  +fmm (adaptive, vectorized) — FastAdaptiveFMM(p=10): the level-batched
+                          funnel-hash indexed adaptive FMM slow reference
+                          engine kept for cross-validation
+  +fmm (adaptive, vectorized) — core.adaptive_fmm.AdaptiveFMM(p=10) (alias
+                          FastAdaptiveFMM): the canonical level-batched
                           2:1-balanced engine (offset-matrix M2L, CSR P2P)
   +fmm (flat vectorized) — FastVectorizedFMM(depth=5, order=8), single-level
                            FMM with FFT-convolution M2L on the elastic hash
@@ -53,7 +55,7 @@ def run_core_fmm_variants(n: int = 2000):
         TreeFreeElasticAdaptiveFMM,
         FastVectorizedFMM,
     )
-    from core.adaptive_fmm_fast import FastAdaptiveFMM
+    from core.adaptive_fmm import AdaptiveFMM as FastAdaptiveFMM
     from quantized_bitpacked_optimization.packed_vectorized_fmm import (
         VoxelPackedTreeFreeFMM,
     )
@@ -81,13 +83,13 @@ def run_core_fmm_variants(n: int = 2000):
         "+fmm (adaptive FMM)",
         lambda: adaptive.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="funnel-hash adaptive FMM, p=10; classical reference engine (per-box Python loops; see +fmm (adaptive, vectorized))",
+        note="funnel-hash adaptive FMM, p=10; slow classical reference engine kept for cross-validation (per-box Python loops; canonical engine is +fmm (adaptive, vectorized))",
     )
     bench.add(
         "+fmm (adaptive, vectorized)",
         lambda: fast_adaptive.evaluate(pts, q, compute_forces=False),
         accuracy_vs="standard (exact direct)",
-        note="level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)",
+        note="CANONICAL core.adaptive_fmm.AdaptiveFMM (alias FastAdaptiveFMM): level-batched 2:1-balanced adaptive FMM, p=10 (offset-matrix M2L, CSR P2P)",
     )
     bench.add(
         "+fmm (flat vectorized)",
@@ -151,8 +153,8 @@ def _direct_chunked(positions, charges, softening=0.0, block=2048):
     return pot
 
 
-def run_scaling(ns=(2000, 8000, 32000, 128000), direct_budget_s=120.0,
-                direct_max_n=32000, make_plots=True):
+def run_scaling(ns=(2000, 4000, 8000, 32000, 128000), direct_budget_s=120.0,
+                direct_max_n=32000, make_plots=True, reps=3):
     """Scaling sweep: direct O(N^2) vs flat FMM vs vectorized adaptive FMM.
 
     For each N in `ns` (clustered distribution, same generator as the N=2000
@@ -161,24 +163,38 @@ def run_scaling(ns=(2000, 8000, 32000, 128000), direct_budget_s=120.0,
                                    above `direct_max_n` (the quadratic term
                                    would dominate the run for minutes)
       +fmm (flat vectorized)    -- FastVectorizedFMM(depth=5, order=8)
-      +fmm (adaptive, vectorized) -- FastAdaptiveFMM (level-batched 2:1
+      +fmm (adaptive, vectorized) -- core.adaptive_fmm.AdaptiveFMM (alias
+                                   FastAdaptiveFMM; level-batched 2:1
                                    balanced CGR88, p=10)
+
+    Each point is the MINIMUM of `reps` fresh build+evaluate runs (the
+    machine runs concurrent background training, so single shots are
+    noise-dominated; min-of-k is the standard interference-robust timing
+    statistic and is applied identically to every variant).
 
     The classical per-box adaptive engine is OMITTED at these N: its Python
     tree traversal is ~45x slower than the vectorized engine at N=2000 and
     would only add wall-clock, not information.
 
-    Emits the automated headline (measured crossover N and per-N speedups),
-    a JSON record to assets/core_fmm_scaling.json, and two plots to assets/
-    (log-log runtime and linear-scale speedup vs direct with the crossover
-    annotated)."""
+    Emits the automated headline (measured crossovers for BOTH the adaptive
+    and the flat engine and per-N speedups), a JSON record to
+    assets/core_fmm_scaling.json, and two plots to assets/ (log-log runtime
+    and linear-scale speedup vs direct with the crossover annotated)."""
     import json
 
     from core import FastVectorizedFMM
-    from core.adaptive_fmm_fast import FastAdaptiveFMM
+    from core.adaptive_fmm import AdaptiveFMM as FastAdaptiveFMM
+
+    def best_of(fn):
+        best = float("inf")
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            out = fn()
+            best = min(best, time.perf_counter() - t0)
+        return best * 1000.0, out
 
     print(f"\n=== Core FMM scaling (clustered distribution; direct budget "
-          f"{direct_budget_s:.0f}s) ===")
+          f"{direct_budget_s:.0f}s; min of {reps} runs) ===")
     rows = []
     schedule = list(ns)
     i = 0
@@ -192,19 +208,15 @@ def run_scaling(ns=(2000, 8000, 32000, 128000), direct_budget_s=120.0,
 
         row = {"N": n}
         if n <= direct_max_n:
-            t0 = time.perf_counter()
-            pot_direct = _direct_chunked(pts, q)
-            row["direct_ms"] = (time.perf_counter() - t0) * 1000.0
+            row["direct_ms"], pot_direct = best_of(
+                lambda: _direct_chunked(pts, q))
         else:
             pot_direct = None
 
-        t0 = time.perf_counter()
-        pot_flat = flat.evaluate(pts, q, compute_forces=False)
-        row["flat_ms"] = (time.perf_counter() - t0) * 1000.0
-
-        t0 = time.perf_counter()
-        pot_adapt = adaptive.evaluate(pts, q, compute_forces=False)
-        row["adaptive_ms"] = (time.perf_counter() - t0) * 1000.0
+        row["flat_ms"], pot_flat = best_of(
+            lambda: flat.evaluate(pts, q, compute_forces=False))
+        row["adaptive_ms"], pot_adapt = best_of(
+            lambda: adaptive.evaluate(pts, q, compute_forces=False))
         row["cells"] = adaptive.n_cells
 
         # accuracy vs direct where direct ran
@@ -255,6 +267,18 @@ def run_scaling(ns=(2000, 8000, 32000, 128000), direct_budget_s=120.0,
     else:
         headline = (f"No crossover up to N_max={with_direct[-1]['N']}: "
                     f"per-N adaptive speedup (direct/fmm): {ratio_txt}.")
+    flat_first = next((r for r in with_direct if r["speedup_flat"] > 1.0), None)
+    if flat_first is not None:
+        prev = [r for r in with_direct if r["N"] < flat_first["N"]]
+        prev_txt = (f" (below parity at "
+                    + ", ".join(f"N={r['N']}->{r['speedup_flat']:.2f}x"
+                                for r in prev) + ")") if prev else ""
+        headline += (f" Flat FMM overtakes direct at N={flat_first['N']} "
+                     f"({flat_first['speedup_flat']:.1f}x and rising)"
+                     f"{prev_txt}.")
+    elif with_direct:
+        headline += (" Flat single-level FMM does not overtake direct within "
+                     f"the measured range (max N={with_direct[-1]['N']}).")
     if without_direct:
         dmax = with_direct[-1]["N"] if with_direct else 0
         ext = "; ".join(f"N={r['N']}: adaptive={r['adaptive_ms']:.0f} ms, "
