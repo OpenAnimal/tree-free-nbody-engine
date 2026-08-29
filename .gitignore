@@ -33,3 +33,14 @@ index.before-fmm.html
 # adaptive screenshots next to the repo root; data lives in BENCHMARKS.md)
 /crossbench_*.png
 
+# Long-run bench & probe artifacts (results summarized in BENCHMARKS.md
+# and docs/GPU_NOTES.md; keep the .js harnesses tracked)
+tools/*.jsonl
+tools/*.log
+tools/bench_fps_longrun_results*.json
+tools/probe_*.json
+tools/*.png
+
+# Local HTML backups (any date)
+index.backup.*.html
+

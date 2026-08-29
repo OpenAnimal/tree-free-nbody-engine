@@ -4,8 +4,8 @@ Regression test (was RED before the fix):
   - R10-E3: pack_particles_64bit_3d silently truncated coordinates for
     depth > 8 (8-bit fields) — pack(0.9) at depth=9 unpacked to 0.4.
 
-Durable independent-oracle gates promoted from
-tools/review_round10/probe_wavee_2_quantized.py:
+Durable independent-oracle gates promoted from the Round-10 Wave E
+quantized probe (one-off review scaffolding, since removed):
   - Morton inc/dec register arithmetic vs scalar decode-offset-encode
   - FastMortonNeighborTable2D exhaustive vs scalar reference
   - pack/unpack roundtrips and boundaries (64-bit 3D, 32-bit 2D)

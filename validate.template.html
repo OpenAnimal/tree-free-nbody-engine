@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<!--
+ ============================================================================
+ validate.html — WebGPU far-field CROSS-VALIDATION RIG (test rig, NOT the demo)
+ ============================================================================
+ Purpose: run the SAME seeded galaxy initial conditions through all four
+ far-field modes of the demo — Direct All-Pairs O(N²), Uniform-Lattice
+ FMM, Adaptive FMM, and None (analytic cores only) — and report the
+ NUMERIC error of each mode against the Direct reference, replacing
+ eyeballing of particle behavior with measured rel-L2 / max-abs / cosine
+ numbers (same convention as core/validation.py).
+
+ Provenance: the three WGSL kernel sources (wgslComputeSource,
+ wgslFmmSource, wgslAdaptiveFmmSource), the funnel-hash JS
+ (computeFunnelGeometry / hashU32JS / FunnelTable), the adaptive metadata
+ builder (computeAdaptiveDepth / computeAdaptiveLeafTarget / cellsTouch /
+ buildFarOperatorTable / buildAdaptiveMetadata), the buffer/bind-group
+ creation, the per-mode dispatch sequences, and updateGalaxyCores are all
+ COPIED VERBATIM from index.html (snapshot 2026-08-26). They were spliced in
+ by a build step — do not hand-edit them here; edit index.html and re-splice.
+ The demo remains index.html; this file is a test rig validated headless by
+ tools/smoke_validator.js.
+
+ Determinism: the demo's galaxy ICs call Math.random(); this rig pins
+ Math.random to a seeded mulberry32 around generateParticles() so every run
+ (and every mode within a run) starts from the identical particle state.
+ One exception to "verbatim": the two DOM-update lines at the end of
+ generateParticles() are dropped (this page has no HUD).
+
+ Expected model asymmetry (INFO row, not a failure): "off" mode runs the
+ analytic cores at FULL GM=0.00075 with zero particle-particle gravity;
+ FMM/direct/adaptive run cores at HALF GM=0.000375 plus particle
+ self-gravity Gp=0.015/N. The off-vs-direct gap is a MODEL gap (no
+ self-gravity, full-mass cores), labeled INFO — it is exactly the physics
+ difference this rig documents.
+
+ STANDARD SCENARIOS (round 19; ?ic=plummer|collapse; GPU_NOTES §15): the
+ same cross-validation machinery runs on initial conditions defined in the
+ engine's own 2D log-gravity force law (attractive, confining pair potential
+ U = +(Gp/2)ln(r^2+eps^2), analytic cores OFF, mouse OFF, Gp=mu/N with
+ mu=2e-3, G=1):
+   - ic=plummer: virialized log-disk, Sigma(R) ~ (1+R^2/a^2)^-2, a=0.1,
+     supported by rotation + dispersion (v_phi = v_c*sqrt(1-s^2), sigma =
+     s*v_c, s=0.3; virial 2K = sum R*F by construction, NOT an exact DF
+     solution — the exact isotropic Jeans dispersion of this profile
+     diverges centrally, see §15) — tests bound-state maintenance (r80
+     drift) and energy conservation dE/E per mode.
+   - ic=collapse: cold uniform disk Q=0, R0=0.3, analytic free-fall time
+     t_ff = pi*R0/(2*sqrt(G*mu)) ~= 10.53 t.u. (~439 steps at dt=0.024) —
+     tests dE/E through the singularity-adjacent maximum-density state and
+     the r50 collapse signature (checked once steps*dt > 0.6*t_ff).
+ dE/E is evaluated with the exact softened Hamiltonian by the demo's
+ energy_phi O(N^2) kernel; Direct is the leapfrog floor, the FMM modes add
+ their force-approximation error on top.
+
+ URL params: ?n=<count> (default 8000, max 32000)  ?steps=<K> (default 120)
+             ?tolmult=<factor> (multiplies every PASS threshold)
+             ?p2pbudget=<int>  (pass-through of the demo's adaptive List-1
+                               near-field samples/particle override; 0/absent
+                               = demo auto tier: full 4096 at N≤32k, 48
+                               mid-N, 32 above 2M — p2pBudgetAutoForN)
+             ?ic=flyby|plummer|collapse (galaxy initial conditions; the two
+                               standard scenarios add the dE/E + Lagrangian
+                               radii checks described above)
+ Extra controls beyond the four demo modes (both reported, never substituted):
+   - direct is run a SECOND time: direct-vs-direct is the GPU determinism
+     noise floor every other number must be read against.
+   - adaptive-fullNF: the adaptive mode re-run with p2pbudget=4096
+     (exhaustive List-1 near field). Attribution control — run only when
+     the demo auto tier at this n is a SAMPLED budget (48 mid-N / 32
+     above 2M): if the default-budget adaptive row FAILs on dvRelL2 while
+     adaptive-fullNF PASSES, the dominant error is the tier's near-field
+     subsampling (GPU_NOTES §10.4), not the multipole far field. At
+     n ≤ 32k the auto tier is already full traversal, so the control is
+     skipped and noted (set ?p2pbudget=48 to measure the sampler's cost).
+     Thresholds are never weakened; this row only explains a failure.
+ HASH BACKEND SCOPE: this rig deliberately uses counting-sort CSR for the fixed-grid FMM rows so force-approximation measurements are not confounded by hash lookup cost. The interactive index.html variant benchmark is the separate hash comparison: its open-addressing and funnel rows enable live probes in the P2P loop and report median per-step latency. The hash mode is a near-field membership axis, not a replacement for the far-field FMM comparison.
+Result:     window.__validatorResult = { meta, rows, pass } and one
+             `VALIDATE {json}` console.log line.
+ ============================================================================
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,"><!-- no favicon request: keeps headless console clean -->
+<meta name="description" content="Numeric cross-validation of the demo's four gravity far-field modes (Direct All-Pairs, Uniform-Lattice FMM, Adaptive FMM, analytic None) against the Direct O(N²) reference on identical seeded initial conditions — including the standard self-gravity scenarios (log-Plummer equilibrium, cold collapse) with exact-Hamiltonian ΔE/E and Lagrangian-radii checks.">
+<title>Tree-Free N-Body Engine — Far-Field Cross-Validation Rig</title>
+<style>
+    html, body { background:#0a0e14; color:#cfd8e3; font:12px/1.5 "Cascadia Mono", Consolas, monospace; margin:16px; }
+    h1 { font-size:14px; color:#7fd3ff; margin:0 0 8px 0; letter-spacing:1px; }
+    #status { white-space:pre-wrap; margin:0 0 12px 0; color:#9fb0c3; }
+    table { border-collapse:collapse; margin:0 0 12px 0; }
+    th, td { border:1px solid #263140; padding:3px 10px; text-align:right; }
+    th { color:#7fd3ff; background:#101722; font-weight:normal; }
+    td:first-child, th:first-child { text-align:left; }
+    .PASS { color:#5dd39e; }
+    .FAIL { color:#ff6b6b; }
+    .INFO { color:#e8c547; }
+    #notes { white-space:pre-wrap; color:#78899c; }
+</style>
+</head>
+<body>
+<h1>FAR-FIELD CROSS-VALIDATION RIG (Direct All-Pairs vs Uniform-Lattice FMM vs Adaptive FMM vs None)</h1>
+<pre id="status">initializing…</pre>
+<div id="tableHost"></div>
+<pre id="notes"></pre>
+<script>
+"use strict";
+
+// ========================================================================
+// VERBATIM BLOCKS FROM index.html (2026-08-26) — spliced by the build step.
+// ========================================================================
+/*__WGSL_COMPUTE__*/
+/*__WGSL_FMM__*/
+/*__WGSL_ADAPTIVE__*/
+/*__JS_FUNNEL__*/
+/*__JS_ADAPTIVE_META__*/
+/*__JS_UPDATE_CORES__*/
+/*__JS_SEEDED_RANDOM__*/
+/*__JS_GENERATE__*/
+
+// ========================================================================
+// RIG CONFIGURATION
+// ========================================================================
+const urlParams = new URLSearchParams(location.search);
+const N_REQ = parseInt(urlParams.get('n') || '8000', 10);
+const N = Math.max(256, Math.min(32000, Number.isFinite(N_REQ) ? N_REQ : 8000));
+const STEPS = Math.max(1, Math.min(2000, parseInt(urlParams.get('steps') || '120', 10) || 120));
+const TOLMULT = (parseFloat(urlParams.get('tolmult') || '1') || 1);
+// Galaxy initial conditions (round 19): 'flyby' = the dual-core encounter;
+// 'plummer' / 'collapse' = the standard self-gravity scenarios (GPU_NOTES
+// §15). galaxyIC is declared by the spliced generateParticles block above;
+// select the URL value before the seeded generation runs.
+const IC_PARAM = (urlParams.get('ic') || 'flyby').toLowerCase();
+const STANDARD_IC = (IC_PARAM === 'plummer' || IC_PARAM === 'collapse');
+galaxyIC = STANDARD_IC ? IC_PARAM : 'flyby';
+// Analytic free-fall time of the cold-collapse IC (unsoftened limit):
+// t_ff = pi * R0 / (2 sqrt(G*M)) with G=1, M=mu, R0=COLD_COLLAPSE_R0.
+const COLLAPSE_T_FF = Math.PI * COLD_COLLAPSE_R0 / (2.0 * Math.sqrt(SELF_GRAV_MU));
+// Optional pass-through of the demo's ?p2pbudget= override (adaptive List-1
+// near-field samples/particle; 0 = demo auto tier: full 4096 at N<=32k,
+// 48 mid-N, 32 above 2M — p2pBudgetAutoForN).
+const P2P_BUDGET_URL = Math.max(0, parseInt(urlParams.get('p2pbudget') || '0', 10) || 0);
+const DT = 0.024;                 // demo frameLoop() fixed dt
+const SIM_SPEED = 1.0;            // demo default simSpeed
+const P2P_RADIUS = 0.035;         // demo default p2pRadius
+const FMM_ORDER = 2;              // demo default fmmOrder (quadrupole)
+const ADAPTIVE_REFRESH_INTERVAL = 24; // demo cadence at N < 500k (ADAPTIVE_REFRESH_INTERVAL)
+const MODES = ['direct', 'direct#2', 'fixed', 'adaptive', 'off']; // direct FIRST = reference
+
+// Thresholds (defaults; every one multiplied by ?tolmult=). The direct
+// self-noise floor F is also applied as a scale factor max(1, F/1e-4) on the
+// dv thresholds: below the device's own nondeterminism floor, deltas are not
+// attributable to the mode under test. Raw values are always reported.
+const THRESH = {
+    directSelfNoiseDvRelL2: 0.01,
+    fixedDvRelL2: 0.08,
+    adaptiveDvRelL2: 0.12,
+    adaptiveVsFixedDvRelL2: 0.10,
+    finalPosRms: 0.05,            // normalized units; the domain is [0,1]^2
+    // Standard-scenario checks (?ic=plummer|collapse; GPU_NOTES §15).
+    // The demo integrator is symplectic Euler (v += a*dt; x += v*dt), whose
+    // SHADOW-Hamiltonian offset at dt=0.024 is measured at +3.4% on these
+    // ICs — identical across modes. Direct dE/E is therefore reported as
+    // that integrator floor; the meaningful FMM check is the energy drift
+    // RELATIVE to the direct floor (force-approximation-induced error,
+    // measured ~0.003% fixed / ~0.02% adaptive at n=8000).
+    directEnergyAbs: 0.05,        // |dE/E| incl. the symplectic-Euler floor
+    fixedEnergyAbs: 0.05,
+    adaptiveEnergyAbs: 0.05,
+    fixedEnergyVsDirect: 0.01,    // |dE/E_fixed - dE/E_direct| (measured
+                                  // 0.006% through cold collapse at n=8000)
+    adaptiveEnergyVsDirect: 0.02, // measured 1.15% through cold collapse to
+                                  // ~the softening scale: the adaptive far
+                                  // field softens only the monopole term, and
+                                  // at maximum compression (leaf size ~ eps)
+                                  // the unsoftened higher-order multipoles
+                                  // inject this apparent drift (forces still
+                                  // agree with direct at dvRelL2 ~0.9%)
+    plummerR80RatioLo: 0.75,      // equilibrium maintenance: r80(t)/r80(0)
+    plummerR80RatioHi: 1.40,
+    collapseR50RatioMax: 0.75,    // r50(t)/r50(0) once t > 0.6*t_ff
+};
+
+// ========================================================================
+// Globals the verbatim blocks reference (names match index.html).
+// ========================================================================
+let scenario = 'galaxy';
+let scenarioId = 0;
+let simSpeed = SIM_SPEED;
+let adaptiveDepthOverride = 0;
+let adaptiveLeafTargetOverride = 0;
+let p2pBudgetOverride = P2P_BUDGET_URL;
+let p2pBudgetWarned = false;
+let useAdaptiveNodeHash = true;   // demo default
+let adaptiveNodeHashWarned = false;
+let adaptiveDriftPerRefresh = 0.03 * 0.024 * 48; // demo prior (see index.html)
+let adaptiveDepth = 4;
+let adaptiveMetadata = null;
+let core1 = null, core2 = null;
+const initialPositions = new Float32Array(N * 4); // [x, y, vx, vy]
+const initialExtras = new Float32Array(N * 4);    // [prevVx, prevVy, group, state]
+let simTime = 0;
+
+// Fixed-grid geometry helpers (verbatim math from index.html, override knobs
+// removed: the rig always uses the demo defaults).
+const LEAF_BITS_MIN = 6, LEAF_BITS_MAX = 10;
+function leafBitsForCount(n) {
+    const targetSide = Math.sqrt(n / 12);
+    let bits = Math.ceil(Math.log2(targetSide));
+    if (bits < LEAF_BITS_MIN) bits = LEAF_BITS_MIN;
+    if (bits > LEAF_BITS_MAX) bits = LEAF_BITS_MAX;
+    return bits;
+}
+function nextPow2(x) { let p = 1; while (p < x) p <<= 1; return p; }
+const fmmLeafBits = leafBitsForCount(N);
+function fmmLevelCount() { return Math.max(1, fmmLeafBits - 2); }
+function fmmLevelRes(level) { return 1 << (fmmLeafBits - level); }
+function fmmTotalMomCells() { let c = 0; for (let l = 0; l <= K; l++) c += fmmLevelRes(l) ** 2; return c; }
+function fmmTotalLocalCells() { let c = 0; for (let l = 1; l <= K; l++) c += fmmLevelRes(l) ** 2; return c; }
+const K = fmmLevelCount();
+const leafCells = 1 << (2 * fmmLeafBits);
+
+function computeBoundedAdaptiveDepth() {
+    const leafDepth = computeAdaptiveDepth(N, computeAdaptiveLeafTarget(N));
+    const driftCap = Math.floor(Math.log2(1.0 / Math.max(adaptiveDriftPerRefresh, 1e-4)));
+    return Math.max(3, Math.min(leafDepth, 10, driftCap));
+}
+
+// ========================================================================
+// SEEDED INITIAL CONDITIONS — generateParticles() runs verbatim, but with
+// Math.random pinned to a seeded mulberry32 so the rig is reproducible and
+// every mode starts from the byte-identical state.
+// ========================================================================
+(function generateParticlesSeeded() {
+    const origRandom = Math.random;
+    let s = 0x600D5EED >>> 0;
+    Math.random = function () {
+        s = (s + 0x6D2B79F5) | 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    try { generateParticles(); } finally { Math.random = origRandom; }
+})();
+const CORE_INIT = { c1: { ...core1 }, c2: { ...core2 } };
+
+// ========================================================================
+// RIG STATE
+// ========================================================================
+let device = null, gpuDescription = 'unknown GPU';
+let posVelA = null, posVelB = null, extrasBuf = null;
+let fmmFieldBuf = null, sortedIndexBuf = null, sortedParticlesBuf = null, chargesBuf = null;
+let cellCountBuf = null, cellCursorBuf = null, cellStartBuf = null;
+let ehKeysBuf = null, ehCountBuf = null, ehStartBuf = null, ehCursorBuf = null;
+let momentsBuf = null, localsBuf = null;
+let funnelGeomBuf = null, funnelProbeCountBuf = null;
+let uniformBuf = null, fmmParamsBuf = null, adaptiveParamsBuf = null;
+let diagLayout = null, diagPipeline = null, diagOutBuf = null, diagParamBuf = null;
+let diagBindA = null, diagBindB = null;
+let fmmParamData = new ArrayBuffer(256), fmmParamU = new Uint32Array(fmmParamData);
+let adaptiveParamData = null, adaptiveParamU = null;
+let computePipeline = null, computeLayoutRef = null;
+let fmmBindLayout = null, fmmPipelines = {};
+let adaptiveLayout = null, adaptivePipelines = {};
+let bindA = null, bindB = null;                  // main compute (A->B / B->A)
+let fmmBindA = null, fmmBindB = null;            // fixed-grid FMM
+let adaptiveBindA = null, adaptiveBindB = null;  // adaptive FMM + direct
+let webgpuAdaptiveBuffers = {};
+let readbackStaging = null;
+let pingPong = 0;
+let gpuErrors = [];
+const particleCapacity = (() => { let cap = nextPow2(Math.ceil(N * 1.25)); return Math.max(cap, N); })();
+
+// Per-frame uniform staging (layout = SimParams in wgslComputeSource; 29
+// words = 116 bytes since round 19, buffer rounded to 128).
+const simUniformData = new ArrayBuffer(128);
+const simUniformF = new Float32Array(simUniformData);
+const simUniformU = new Uint32Array(simUniformData);
+
+// Drift probe state (mirrors maybeStartAdaptiveRefresh's staleness probe).
+let adaptiveLastSamplePos = null;
+
+// ========================================================================
+// ADAPTIVE METADATA UPLOAD (verbatim from index.html: farCSRBytes,
+// uploadFarCSR, uploadAdaptiveMetadata grow-only manager, bind groups).
+// ========================================================================
+function farCSRBytes(md) {
+    return (2 * md.totalNodes + (md.farEntries ? md.farEntries.length : 0)
+        + 11 * 49 * 50) * 4;
+}
+function uploadFarCSR(md) {
+    if (!webgpuAdaptiveBuffers.farCSR) return;
+    const n = md.totalNodes;
+    const entries = md.farEntries ? md.farEntries.length : 0;
+    const hdr = new Uint32Array(2 * n);
+    for (let i = 0; i < n; i++) {
+        hdr[2 * i] = md.farStart[i];
+        hdr[2 * i + 1] = md.farCount[i];
+    }
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR, 0, hdr);
+    if (entries > 0) {
+        device.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR, 2 * n * 4, md.farEntries);
+    }
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.farCSR,
+        (2 * n + entries) * 4, md.farOps);
+}
+function uploadAdaptiveMetadata(md) {
+    const roStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const rwStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const ensureSize = (name, byteLength, usage) => {
+        byteLength = Math.max(16, byteLength);
+        const cur = webgpuAdaptiveBuffers[name];
+        if (cur && cur.size >= byteLength) return false;
+        const cap = Math.ceil(Math.max(byteLength, cur ? cur.size : 0) * 1.25 / 65536) * 65536;
+        if (cur) cur.destroy();
+        webgpuAdaptiveBuffers[name] = device.createBuffer({ size: cap, usage });
+        return true;
+    };
+    let resized = false;
+    resized = ensureSize('leafForParticle', md.leafForParticle.byteLength, roStorage) || resized;
+    resized = ensureSize('particleIndices', md.particleIndices.byteLength, roStorage) || resized;
+    resized = ensureSize('nodeCenterSize', md.nodeCenterSize.byteLength, roStorage) || resized;
+    resized = ensureSize('nodeParticleRange', md.nodeParticleRange.byteLength, roStorage) || resized;
+    resized = ensureSize('listOffsets', md.listOffsets.byteLength, roStorage) || resized;
+    resized = ensureSize('listCounts', md.listCounts.byteLength, roStorage) || resized;
+    resized = ensureSize('listData', md.listData.byteLength, roStorage) || resized;
+    resized = ensureSize('nodeMeta', md.nodeMeta.byteLength, roStorage) || resized;
+    resized = ensureSize('nodeChildren', md.nodeChildren.byteLength, roStorage) || resized;
+    resized = ensureSize('farCSR', farCSRBytes(md), roStorage) || resized;
+    resized = ensureSize('multipoles', md.totalNodes * 3 * 16, rwStorage) || resized;
+    resized = ensureSize('locals', md.totalNodes * 3 * 16, rwStorage) || resized;
+    resized = ensureSize('nodeHash', md.nodeHashPacked.byteLength, roStorage) || resized;
+    const paramsBytes = 256 * md.numLevels;
+    if (!adaptiveParamsBuf || adaptiveParamsBuf.size !== paramsBytes) {
+        if (adaptiveParamsBuf) adaptiveParamsBuf.destroy();
+        adaptiveParamsBuf = device.createBuffer({
+            size: paramsBytes, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        adaptiveParamData = new ArrayBuffer(paramsBytes);
+        adaptiveParamU = new Uint32Array(adaptiveParamData);
+        resized = true;
+    }
+    if (resized) recreateAdaptiveBindGroups();
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.nodeCenterSize, 0, md.nodeCenterSize);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.nodeParticleRange, 0, md.nodeParticleRange);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.leafForParticle, 0, md.leafForParticle);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.particleIndices, 0, md.particleIndices);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.listOffsets, 0, md.listOffsets);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.listCounts, 0, md.listCounts);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.listData, 0, md.listData);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.nodeMeta, 0, md.nodeMeta);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.nodeChildren, 0, md.nodeChildren);
+    uploadFarCSR(md);
+    device.queue.writeBuffer(webgpuAdaptiveBuffers.nodeHash, 0, md.nodeHashPacked);
+}
+function recreateAdaptiveBindGroups() {
+    if (!adaptiveLayout || !fmmFieldBuf) return;
+    webgpuAdaptiveBuffers.fields = fmmFieldBuf;
+    const adaptiveEntries = (source) => [
+        { binding: 0, resource: { buffer: source } },
+        { binding: 1, resource: { buffer: webgpuAdaptiveBuffers.nodeCenterSize } },
+        { binding: 2, resource: { buffer: webgpuAdaptiveBuffers.nodeParticleRange } },
+        { binding: 3, resource: { buffer: webgpuAdaptiveBuffers.leafForParticle } },
+        { binding: 4, resource: { buffer: webgpuAdaptiveBuffers.particleIndices } },
+        { binding: 5, resource: { buffer: webgpuAdaptiveBuffers.listOffsets } },
+        { binding: 6, resource: { buffer: webgpuAdaptiveBuffers.listCounts } },
+        { binding: 7, resource: { buffer: webgpuAdaptiveBuffers.listData } },
+        { binding: 8, resource: { buffer: webgpuAdaptiveBuffers.multipoles } },
+        { binding: 9, resource: { buffer: webgpuAdaptiveBuffers.locals } },
+        { binding: 10, resource: { buffer: webgpuAdaptiveBuffers.fields } },
+        { binding: 11, resource: { buffer: adaptiveParamsBuf, size: 256 } },
+        { binding: 12, resource: { buffer: webgpuAdaptiveBuffers.nodeMeta } },
+        { binding: 13, resource: { buffer: webgpuAdaptiveBuffers.nodeChildren } },
+        { binding: 14, resource: { buffer: webgpuAdaptiveBuffers.farCSR } },
+        { binding: 15, resource: { buffer: chargesBuf } },
+        { binding: 16, resource: { buffer: webgpuAdaptiveBuffers.nodeHash } },
+    ];
+    adaptiveBindA = device.createBindGroup({ layout: adaptiveLayout, entries: adaptiveEntries(posVelA) });
+    adaptiveBindB = device.createBindGroup({ layout: adaptiveLayout, entries: adaptiveEntries(posVelB) });
+}
+let lastMetaBuildMs = 0;
+function rebuildAdaptiveMetadata(positions) {
+    const t0 = performance.now();
+    adaptiveDepth = computeBoundedAdaptiveDepth();
+    adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth, positions);
+    uploadAdaptiveMetadata(adaptiveMetadata);
+    lastMetaBuildMs = performance.now() - t0;
+}
+
+// ========================================================================
+// ENGINE INIT (lifted from initEngine/ensureWebGPUCapacity, timestamp-free)
+// ========================================================================
+async function initRig() {
+    if (!navigator.gpu) throw new Error('WebGPU unavailable (navigator.gpu is undefined)');
+    let adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('no WebGPU adapter');
+    if (adapter.info && (adapter.info.description || adapter.info.vendor)) {
+        gpuDescription = adapter.info.description || adapter.info.vendor;
+        if (adapter.info.architecture) gpuDescription += ` (${adapter.info.architecture})`;
+    } else if (typeof adapter.requestAdapterInfo === 'function') {
+        try {
+            const info = await adapter.requestAdapterInfo();
+            gpuDescription = info.description || info.vendor || gpuDescription;
+            if (info.architecture) gpuDescription += ` (${info.architecture})`;
+        } catch (_) { /* older dual-origin path; keep default */ }
+    }
+    const requiredLimits = {};
+    if (adapter.limits) {
+        if (adapter.limits.maxStorageBufferBindingSize) {
+            requiredLimits.maxStorageBufferBindingSize = adapter.limits.maxStorageBufferBindingSize;
+        }
+        if (adapter.limits.maxBufferSize) {
+            requiredLimits.maxBufferSize = adapter.limits.maxBufferSize;
+        }
+        if (adapter.limits.maxStorageBuffersPerShaderStage >= 10) {
+            requiredLimits.maxStorageBuffersPerShaderStage = Math.min(16, adapter.limits.maxStorageBuffersPerShaderStage);
+        }
+    }
+    device = await adapter.requestDevice({ requiredLimits, requiredFeatures: [] });
+    device.addEventListener('uncapturederror', (event) => {
+        const msg = String((event.error && event.error.message) || event.error || 'validation error');
+        gpuErrors.push(msg);
+        console.error('WebGPU validation error:', event.error);
+    });
+    device.lost.then((info) => { console.error('WebGPU device lost:', info.message); });
+
+    // ---- shader modules (compile-checked like the demo) ----
+    const computeModule = device.createShaderModule({ code: wgslComputeSource });
+    const fmmModule = device.createShaderModule({ code: wgslFmmSource });
+    const adaptiveModule = device.createShaderModule({ code: wgslAdaptiveFmmSource });
+    const infos = await Promise.all([computeModule, fmmModule, adaptiveModule].map((m) => m.getCompilationInfo()));
+    const shaderErrors = infos.flatMap((info) => info.messages).filter((m) => m.type === 'error');
+    if (shaderErrors.length > 0) {
+        throw new Error('WGSL compile failed: ' + shaderErrors.map((m) => m.message).join(' | '));
+    }
+
+    // ---- main compute pipeline + layout (verbatim layout from initEngine) ----
+    computeLayoutRef = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    ] });
+    computePipeline = device.createComputePipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayoutRef] }),
+        compute: { module: computeModule, entryPoint: 'main' }
+    });
+
+    // ---- fixed-grid FMM pipelines (layout verbatim from initEngine) ----
+    fmmBindLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 48 } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ] });
+    const fmmPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [fmmBindLayout] });
+    device.pushErrorScope('validation');
+    for (const entryPoint of [
+        'clear_cells', 'count_cells', 'scan_cells', 'scatter_cells', 'gather_sorted',
+        'materialize_ranges', 'build_moments', 'm2m_up', 'm2l', 'l2l_down', 'l2p',
+    ]) {
+        fmmPipelines[entryPoint] = device.createComputePipeline({
+            label: `FMM ${entryPoint}`, layout: fmmPipelineLayout,
+            compute: { module: fmmModule, entryPoint }
+        });
+    }
+    const fmmPipelineError = await device.popErrorScope();
+    if (fmmPipelineError) throw new Error(`FMM pipeline creation failed: ${fmmPipelineError.message}`);
+
+    // ---- adaptive pipelines (layout verbatim from initEngine) ----
+    adaptiveLayout = device.createBindGroupLayout({ entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 80 } },
+        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 16, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    ] });
+    const adaptivePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [adaptiveLayout] });
+    device.pushErrorScope('validation');
+    for (const ep of ['clear', 'p2m', 'm2m', 'l2l', 'm2l', 'p2l', 'far_gather', 'l2p', 'direct']) {
+        adaptivePipelines[ep] = device.createComputePipeline({
+            label: `Adaptive ${ep}`, layout: adaptivePipelineLayout,
+            compute: { module: adaptiveModule, entryPoint: ep }
+        });
+    }
+    const adaptivePipelineError = await device.popErrorScope();
+    if (adaptivePipelineError) throw new Error(`Adaptive pipeline creation failed: ${adaptivePipelineError.message}`);
+
+    // ---- buffers (ensureWebGPUCapacity essentials at the rig's capacity) ----
+    const cap = particleCapacity;
+    const fmmStorage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    posVelA = device.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC });
+    posVelB = device.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC });
+    extrasBuf = device.createBuffer({ size: cap * 16, usage: fmmStorage });
+    fmmFieldBuf = device.createBuffer({ size: cap * 16, usage: fmmStorage | GPUBufferUsage.COPY_SRC });
+    sortedIndexBuf = device.createBuffer({ size: cap * 4, usage: fmmStorage });
+    sortedParticlesBuf = device.createBuffer({ size: cap * 16, usage: fmmStorage });
+    chargesBuf = device.createBuffer({ size: cap * 4, usage: fmmStorage });
+    device.queue.writeBuffer(chargesBuf, 0, new Float32Array(cap).fill(1.0));
+    cellCountBuf = device.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+    cellCursorBuf = device.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+    cellStartBuf = device.createBuffer({ size: leafCells * 4, usage: fmmStorage });
+    const ehCells = 2 * leafCells;
+    ehKeysBuf = device.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+    ehCountBuf = device.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+    ehStartBuf = device.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+    ehCursorBuf = device.createBuffer({ size: ehCells * 4, usage: fmmStorage });
+    momentsBuf = device.createBuffer({ size: fmmTotalMomCells() * 3 * 16, usage: fmmStorage });
+    localsBuf = device.createBuffer({ size: fmmTotalLocalCells() * 3 * 16, usage: fmmStorage });
+    const blocks = K + 1;
+    fmmParamsBuf = device.createBuffer({ size: 256 * blocks, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    fmmParamData = new ArrayBuffer(256 * blocks);
+    fmmParamU = new Uint32Array(fmmParamData);
+    // Funnel-hash geometry for this leaf resolution (binding 13/14 must be
+    // satisfied even though the rig uses the counting-sort backend).
+    const funnelGeometry = computeFunnelGeometry(leafCells, 0.05);
+    funnelGeomBuf = device.createBuffer({ size: funnelGeometry.packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(funnelGeomBuf, 0, funnelGeometry.packed);
+    funnelProbeCountBuf = device.createBuffer({ size: 4, label: 'funnelProbeCount', usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    uniformBuf = device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    readbackStaging = device.createBuffer({ size: Math.ceil((cap * 16) / 256) * 256, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+
+    // ---- self-gravity energy diagnostic (energy_phi; GPU_NOTES §15) ----
+    // Same entry point the demo uses: O(N^2) exact Hamiltonian evaluation.
+    diagLayout = device.createBindGroupLayout({ entries: [
+        { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ] });
+    diagPipeline = device.createComputePipeline({
+        label: 'Rig energy diagnostic',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [diagLayout] }),
+        compute: { module: computeModule, entryPoint: 'energy_phi' },
+    });
+    diagOutBuf = device.createBuffer({ size: Math.ceil((cap * 16) / 256) * 256, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    diagParamBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const diagEntries = (src) => [
+        { binding: 13, resource: { buffer: src } },
+        { binding: 14, resource: { buffer: diagOutBuf } },
+        { binding: 15, resource: { buffer: diagParamBuf } },
+    ];
+    diagBindA = device.createBindGroup({ layout: diagLayout, entries: diagEntries(posVelA) });
+    diagBindB = device.createBindGroup({ layout: diagLayout, entries: diagEntries(posVelB) });
+
+    // ---- bind groups (recreateWebGPUBindGroups verbatim, minus render) ----
+    const computeEntries = (src, dst) => [
+        { binding: 0, resource: { buffer: src } },
+        { binding: 1, resource: { buffer: dst } },
+        { binding: 2, resource: { buffer: extrasBuf } },
+        { binding: 3, resource: { buffer: uniformBuf } },
+        { binding: 4, resource: { buffer: fmmFieldBuf } },
+        { binding: 5, resource: { buffer: sortedIndexBuf } },
+        { binding: 6, resource: { buffer: cellStartBuf } },
+        { binding: 7, resource: { buffer: cellCountBuf } },
+        { binding: 8, resource: { buffer: ehKeysBuf } },
+        { binding: 9, resource: { buffer: ehCountBuf } },
+        { binding: 10, resource: { buffer: ehStartBuf } },
+        { binding: 11, resource: { buffer: funnelGeomBuf } },
+        { binding: 12, resource: { buffer: sortedParticlesBuf } },
+    ];
+    bindA = device.createBindGroup({ layout: computeLayoutRef, entries: computeEntries(posVelA, posVelB) });
+    bindB = device.createBindGroup({ layout: computeLayoutRef, entries: computeEntries(posVelB, posVelA) });
+    const fmmEntries = (source) => [
+        { binding: 0, resource: { buffer: source } },
+        { binding: 1, resource: { buffer: cellCountBuf } },
+        { binding: 2, resource: { buffer: cellCursorBuf } },
+        { binding: 3, resource: { buffer: cellStartBuf } },
+        { binding: 4, resource: { buffer: sortedIndexBuf } },
+        { binding: 5, resource: { buffer: momentsBuf } },
+        { binding: 6, resource: { buffer: localsBuf } },
+        { binding: 7, resource: { buffer: fmmFieldBuf } },
+        { binding: 8, resource: { buffer: fmmParamsBuf, size: 256 } },
+        { binding: 9, resource: { buffer: ehKeysBuf } },
+        { binding: 10, resource: { buffer: ehCountBuf } },
+        { binding: 11, resource: { buffer: ehStartBuf } },
+        { binding: 12, resource: { buffer: ehCursorBuf } },
+        { binding: 13, resource: { buffer: funnelGeomBuf } },
+        { binding: 14, resource: { buffer: funnelProbeCountBuf } },
+        { binding: 15, resource: { buffer: sortedParticlesBuf } },
+    ];
+    fmmBindA = device.createBindGroup({ layout: fmmBindLayout, entries: fmmEntries(posVelA) });
+    fmmBindB = device.createBindGroup({ layout: fmmBindLayout, entries: fmmEntries(posVelB) });
+
+    // ---- adaptive metadata (initial build from the pristine ICs) ----
+    adaptiveDepth = computeBoundedAdaptiveDepth();
+    adaptiveMetadata = buildAdaptiveMetadata(adaptiveDepth, initialPositions);
+    uploadAdaptiveMetadata(adaptiveMetadata);
+    if (!adaptiveBindA || !adaptiveBindB) recreateAdaptiveBindGroups();
+}
+
+// ========================================================================
+// PER-STEP DISPATCH (mirrors runWebGPUFrame per mode, timestamp-free)
+// ========================================================================
+const inBuf = () => (pingPong === 0 ? posVelA : posVelB);
+const wg256 = (n) => Math.ceil(n / 256);
+
+function writeSimUniform(mode) {
+    const f = simUniformF, u = simUniformU;
+    f[0] = DT;
+    f[1] = simTime;
+    u[2] = N;
+    u[3] = scenarioId;
+    f[4] = P2P_RADIUS;
+    f[5] = SIM_SPEED;
+    u[6] = 0;            // 1-euro: boids only in the demo; galaxy => 0
+    u[7] = 0;            // colorMode (unused by physics)
+    f[8] = -1; f[9] = -1; f[10] = 0; f[11] = 0; // mouse inactive
+    f[12] = core1.x; f[13] = core1.y;
+    f[14] = core2.x; f[15] = core2.y;
+    const farOn = mode !== 'off';
+    u[16] = farOn ? 1 : 0;                       // fmmEnabled
+    u[17] = (mode.startsWith('adaptive') || mode.startsWith('direct')) ? 1 : 0; // adaptiveMode (skip own P2P)
+    u[18] = fmmLeafBits;
+    u[19] = N <= 500000 ? 128 : Math.max(16, Math.round((128 * 500000) / N));
+    u[20] = 0;                                    // useElasticHash (counting sort)
+    u[21] = 0;                                    // useQuantized
+    u[22] = 0;                                    // useFunnelHash
+    u[23] = mode === 'fixed' ? 1 : 0;             // cellListsReady
+    u[24] = mode === 'fixed' ? 1 : 0;             // useSortedPayload
+    u[25] = farOn ? 1 : 0;                        // farFieldCode: 1 = gravity
+    u[26] = 0;                                    // nfProbeMode: dense CSR
+    // Round 19 gravity constants (mirror runWebGPUFrame): standard ICs run
+    // the analytic cores at GM=0 and Gp = mu/N (G=1, closed Hamiltonian);
+    // flyby keeps the calibrated split (cores half-strength when any far
+    // field is on, Gp_total = 0.015).
+    f[27] = STANDARD_IC ? 0.0 : (farOn ? 0.000375 : 0.00075);
+    f[28] = STANDARD_IC ? SELF_GRAV_MU / N : 0.015 / N;
+    device.queue.writeBuffer(uniformBuf, 0, simUniformData, 0, 116);
+}
+
+function writeFmmParamBlocks() {
+    let momBase = 0, localBase = 0;
+    for (let l = 0; l <= K; l++) {
+        const res = fmmLevelRes(l);
+        const o = l * 64;
+        fmmParamU[o + 0] = N; fmmParamU[o + 1] = FMM_ORDER; fmmParamU[o + 2] = fmmLeafBits; fmmParamU[o + 3] = K;
+        fmmParamU[o + 4] = l; fmmParamU[o + 5] = res; fmmParamU[o + 6] = momBase; fmmParamU[o + 7] = localBase;
+        fmmParamU[o + 8] = 0; fmmParamU[o + 9] = 0; // counting-sort backend
+        fmmParamU[o + 10] = 1;                      // useSortedPayload
+        if (l >= 1) localBase += res * res;
+        momBase += res * res;
+    }
+    device.queue.writeBuffer(fmmParamsBuf, 0, fmmParamData);
+}
+
+function writeAdaptiveParamBlocks() {
+    const md = adaptiveMetadata;
+    const aU = adaptiveParamU;
+    for (let l = 0; l < md.numLevels; l++) {
+        const base = l * 64;
+        aU[base + 0] = N; aU[base + 1] = md.totalNodes; aU[base + 2] = FMM_ORDER; aU[base + 3] = md.numLevels;
+        aU[base + 4] = md.levelStart[l];
+        aU[base + 5] = 0;                       // zeroNearP2P off (full field)
+        aU[base + 6] = md.levelCount[l];
+        aU[base + 7] = useAdaptiveNodeHash ? 1 : 0;
+        aU[base + 8] = p2pBudgetOverride;
+        aU[base + 9] = md.farEntries ? md.farEntries.length : 0;
+    }
+    device.queue.writeBuffer(adaptiveParamsBuf, 0, adaptiveParamData);
+}
+
+function stepOnce(mode) {
+    writeSimUniform(mode);
+    const commandEncoder = device.createCommandEncoder();
+
+    if (mode === 'fixed') {
+        // Fixed-grid multi-level FMM (counting-sort membership + sorted payload)
+        writeFmmParamBlocks();
+        const fmmGroup = pingPong === 0 ? fmmBindA : fmmBindB;
+        const runFmmInPass = (pass, name, groups, level = 0) => {
+            pass.setPipeline(fmmPipelines[name]);
+            pass.setBindGroup(0, fmmGroup, [level * 256]);
+            pass.dispatchWorkgroups(groups);
+        };
+        const clearThreads = Math.max(leafCells, fmmTotalMomCells() * 3, fmmTotalLocalCells() * 3);
+        const fmmBuildPass = commandEncoder.beginComputePass();
+        runFmmInPass(fmmBuildPass, 'clear_cells', Math.ceil(clearThreads / 256));
+        runFmmInPass(fmmBuildPass, 'count_cells', Math.ceil(N / 256));
+        runFmmInPass(fmmBuildPass, 'scan_cells', 1);
+        runFmmInPass(fmmBuildPass, 'scatter_cells', Math.ceil(N / 256));
+        runFmmInPass(fmmBuildPass, 'gather_sorted', Math.ceil(N / 256));
+        runFmmInPass(fmmBuildPass, 'build_moments', Math.ceil(leafCells / 64));
+        for (let l = 1; l <= K; l++) {
+            runFmmInPass(fmmBuildPass, 'm2m_up', Math.ceil((fmmLevelRes(l) ** 2) / 64), l);
+        }
+        fmmBuildPass.end();
+        const m2lPass = commandEncoder.beginComputePass();
+        for (let l = 1; l <= K; l++) {
+            runFmmInPass(m2lPass, 'm2l', Math.ceil((fmmLevelRes(l) ** 2) / 256), l);
+        }
+        m2lPass.end();
+        const l2lPass = commandEncoder.beginComputePass();
+        for (let l = K; l >= 2; l--) {
+            runFmmInPass(l2lPass, 'l2l_down', Math.ceil(((fmmLevelRes(l) * 2) ** 2) / 256), l);
+        }
+        l2lPass.end();
+        const l2pPass = commandEncoder.beginComputePass();
+        runFmmInPass(l2pPass, 'l2p', Math.ceil(N / 256), 1);
+        l2pPass.end();
+
+    } else if (mode.startsWith('adaptive')) {
+        // Adaptive quadtree FMM, materialized far-field path (demo default)
+        writeAdaptiveParamBlocks();
+        const md = adaptiveMetadata;
+        const nn = md.totalNodes;
+        const depth = md.depth;
+        const aGroup = pingPong === 0 ? adaptiveBindA : adaptiveBindB;
+        const runAdaptive = (pass, name, groups, level) => {
+            pass.setPipeline(adaptivePipelines[name]);
+            pass.setBindGroup(0, aGroup, [level * 256]);
+            pass.dispatchWorkgroups(groups);
+        };
+        const upPass = commandEncoder.beginComputePass();
+        runAdaptive(upPass, 'clear', Math.ceil((nn * 3) / 256), 0);
+        runAdaptive(upPass, 'p2m', Math.ceil(nn / 64), 0);
+        for (let l = depth - 1; l >= 0; l--) {
+            const lc = Math.ceil(md.levelCount[l] / 64);
+            if (lc === 0) continue;
+            runAdaptive(upPass, 'm2m', lc, l);
+        }
+        upPass.end();
+        const farPath = md.farEntries && md.farEntries.length > 0;
+        const downPass = commandEncoder.beginComputePass();
+        if (farPath) {
+            runAdaptive(downPass, 'p2l', Math.ceil(nn / 64), 0);
+            runAdaptive(downPass, 'far_gather', Math.ceil(nn / 64), 0);
+        } else {
+            for (let l = 1; l <= depth; l++) {
+                const lc = Math.ceil(md.levelCount[l] / 64);
+                if (lc === 0) continue;
+                runAdaptive(downPass, 'l2l', lc, l);
+                runAdaptive(downPass, 'm2l', lc, l);
+            }
+        }
+        downPass.end();
+        const l2pPass = commandEncoder.beginComputePass();
+        runAdaptive(l2pPass, 'l2p', Math.ceil(N / 256), 0);
+        l2pPass.end();
+
+    } else if (mode.startsWith('direct')) {
+        // Direct all-pairs O(N^2): one whole-range dispatch, block-0 uniforms.
+        adaptiveParamU[0] = N;
+        device.queue.writeBuffer(adaptiveParamsBuf, 0, adaptiveParamData, 0, 256);
+        const aGroup = pingPong === 0 ? adaptiveBindA : adaptiveBindB;
+        const directPass = commandEncoder.beginComputePass();
+        directPass.setPipeline(adaptivePipelines.direct);
+        directPass.setBindGroup(0, aGroup, [0]);
+        directPass.dispatchWorkgroups(Math.ceil(N / 256));
+        directPass.end();
+    }
+    // mode === 'off': NO far-field passes; main compute only (word16/17 = 0).
+
+    // Main compute (physics integration + per-mode near field policy)
+    const computePass = commandEncoder.beginComputePass();
+    computePass.setPipeline(computePipeline);
+    computePass.setBindGroup(0, pingPong === 0 ? bindA : bindB);
+    computePass.dispatchWorkgroups(Math.ceil(N / 256));
+    computePass.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+}
+
+// GPU->CPU readback of a posVel-sized buffer (copy + map + detach).
+async function readbackPosVel(buf) {
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(buf, 0, readbackStaging, 0, N * 16);
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    await readbackStaging.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(readbackStaging.getMappedRange(0, N * 16).slice(0));
+    readbackStaging.unmap();
+    return out;
+}
+
+// Exact Hamiltonian + Lagrangian radii of the CURRENT input buffer via the
+// demo's energy_phi kernel (standard ICs only; GPU_NOTES §15):
+//   E = sum |v|^2/2 - (Gp/4) sum_i sum_{j!=i} ln(r_ij^2 + eps^2)
+// Radii are measured about the box center (the ICs are COM-framed there).
+async function computeEnergyState() {
+    if (!STANDARD_IC) return null;
+    const dp = new Uint32Array(4);
+    dp[0] = N;
+    const dpf = new Float32Array(dp.buffer);
+    dpf[2] = 0.5; dpf[3] = 0.5;
+    device.queue.writeBuffer(diagParamBuf, 0, dp.buffer);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(diagPipeline);
+    pass.setBindGroup(0, pingPong === 0 ? diagBindA : diagBindB);
+    pass.dispatchWorkgroups(Math.ceil(N / 64));
+    pass.end();
+    enc.copyBufferToBuffer(diagOutBuf, 0, readbackStaging, 0, N * 16);
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    await readbackStaging.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(readbackStaging.getMappedRange(0, N * 16).slice(0));
+    readbackStaging.unmap();
+    const gp = SELF_GRAV_MU / N;
+    let eSum = 0;
+    const radii = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+        // e_i = |v|^2/2 + (Gp/4) phi_i (confining attractive log U = +(Gp/2)ln(r^2+eps^2);
+        // see the energy_phi header in the spliced compute source / GPU_NOTES §15)
+        eSum += 0.5 * out[i * 4 + 1] + 0.25 * gp * out[i * 4];
+        radii[i] = out[i * 4 + 2];
+    }
+    radii.sort();
+    const lag = (f) => radii[Math.min(N - 1, Math.floor(f * N))];
+    return { E: eSum, r20: lag(0.2), r50: lag(0.5), r80: lag(0.8) };
+}
+
+// Staleness probe (mirrors maybeStartAdaptiveRefresh): mean displacement of a
+// 1/64-strided sample since the last rebuild, fed back as the depth cap.
+function updateDriftProbe(live) {
+    const sampleStride = Math.max(1, N >> 6);
+    const sampleCount = Math.ceil(N / sampleStride);
+    if (adaptiveLastSamplePos && adaptiveLastSamplePos.length === sampleCount * 2) {
+        let sumDisp = 0, k = 0;
+        for (let i = 0; i < N; i += sampleStride, k++) {
+            const dx = live[i * 4] - adaptiveLastSamplePos[k * 2];
+            const dy = live[i * 4 + 1] - adaptiveLastSamplePos[k * 2 + 1];
+            sumDisp += Math.sqrt(dx * dx + dy * dy);
+        }
+        adaptiveDriftPerRefresh = sumDisp / Math.max(1, k);
+    }
+    if (!adaptiveLastSamplePos || adaptiveLastSamplePos.length !== sampleCount * 2) {
+        adaptiveLastSamplePos = new Float32Array(sampleCount * 2);
+    }
+    for (let i = 0, k = 0; i < N; i += sampleStride, k++) {
+        adaptiveLastSamplePos[k * 2] = live[i * 4];
+        adaptiveLastSamplePos[k * 2 + 1] = live[i * 4 + 1];
+    }
+}
+
+async function runMode(mode) {
+    // 1. Restore the initial posVel state; reset simTime + cores + drift prior.
+    device.queue.writeBuffer(posVelA, 0, initialPositions.buffer, 0, N * 16);
+    device.queue.writeBuffer(posVelB, 0, initialPositions.buffer, 0, N * 16);
+    device.queue.writeBuffer(extrasBuf, 0, initialExtras.buffer, 0, N * 16);
+    pingPong = 0;
+    simTime = 0;
+    core1 = { ...CORE_INIT.c1 };
+    core2 = { ...CORE_INIT.c2 };
+    adaptiveDriftPerRefresh = 0.03 * 0.024 * 48;
+    adaptiveLastSamplePos = null;
+    const metaBuilds = [];
+    if (mode.startsWith('adaptive')) {
+        // Fresh tree from the pristine positions (mirrors initEngine).
+        rebuildAdaptiveMetadata(initialPositions);
+        metaBuilds.push({ step: 0, ms: lastMetaBuildMs, nodes: adaptiveMetadata.totalNodes, depth: adaptiveDepth });
+    }
+
+    // 0. Baseline energy + Lagrangian radii of the pristine ICs (standard
+    //    scenarios only): the delta-E readout below is per-mode vs its own
+    //    t=0 state, so Direct measures the integrator floor and the FMM
+    //    modes add force-approximation error (GPU_NOTES §15).
+    const energy0 = await computeEnergyState();
+
+    // 2. Step 0 delta-v: run exactly ONE step, read back, dv = v_after - v_before.
+    simTime += DT * SIM_SPEED;
+    updateGalaxyCores(DT);
+    stepOnce(mode);
+    await device.queue.onSubmittedWorkDone();
+    pingPong = 1 - pingPong;
+    const afterOne = await readbackPosVel(inBuf());
+    const dv = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) {
+        dv[2 * i] = afterOne[4 * i + 2] - initialPositions[4 * i + 2];
+        dv[2 * i + 1] = afterOne[4 * i + 3] - initialPositions[4 * i + 3];
+    }
+
+    // 3. Continue to STEPS total (adaptive rebuilds metadata every 24 steps
+    //    from a live GPU readback, mirroring the demo cadence).
+    let stepMsSum = 0, rebuildMsSum = 0;
+    for (let s = 1; s < STEPS; s++) {
+        if (mode.startsWith('adaptive') && s % ADAPTIVE_REFRESH_INTERVAL === 0) {
+            const tRb = performance.now();
+            const live = await readbackPosVel(inBuf());
+            updateDriftProbe(live);
+            rebuildAdaptiveMetadata(live);
+            rebuildMsSum += performance.now() - tRb;
+            metaBuilds.push({ step: s, ms: lastMetaBuildMs, nodes: adaptiveMetadata.totalNodes, depth: adaptiveDepth });
+        }
+        simTime += DT * SIM_SPEED;
+        updateGalaxyCores(DT);
+        const tStep = performance.now();
+        stepOnce(mode);
+        await device.queue.onSubmittedWorkDone();
+        stepMsSum += performance.now() - tStep;
+        pingPong = 1 - pingPong;
+    }
+
+    // 4. Final positions + final energy/radii state.
+    const finalState = await readbackPosVel(inBuf());
+    const pos = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) {
+        pos[2 * i] = finalState[4 * i];
+        pos[2 * i + 1] = finalState[4 * i + 1];
+    }
+    const energyF = await computeEnergyState();
+    return {
+        mode, dv, pos,
+        energy0, energyF,
+        dEoverE: (energy0 && energyF && energy0.E !== 0)
+            ? (energyF.E - energy0.E) / Math.abs(energy0.E) : null,
+        msPerStep: stepMsSum / Math.max(1, STEPS - 1),
+        rebuildMsPerStep: rebuildMsSum / Math.max(1, STEPS - 1),
+        metaBuilds,
+        gpuErrorCount: gpuErrors.length,
+    };
+}
+
+// ========================================================================
+// METRICS (convention of core/validation.py)
+// ========================================================================
+function metrics(a, b) {
+    let dot = 0, na = 0, nb = 0, nd = 0, maxAbs = 0, sumAbs = 0;
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+        const x = a[i], y = b[i], d = x - y;
+        dot += x * y; na += x * x; nb += y * y; nd += d * d;
+        const ad = Math.abs(d);
+        if (ad > maxAbs) maxAbs = ad;
+        sumAbs += ad;
+    }
+    return {
+        relL2: Math.sqrt(nd) / (Math.sqrt(nb) || 1e-30),
+        maxAbs,
+        meanAbs: sumAbs / n,
+        cos: dot / ((Math.sqrt(na) * Math.sqrt(nb)) || 1e-30),
+        rms: Math.sqrt(nd / n),
+    };
+}
+
+// ========================================================================
+// MAIN
+// ========================================================================
+(async function main() {
+    const statusEl = document.getElementById('status');
+    const setStatus = (t) => { statusEl.textContent = t; };
+    try {
+        setStatus(`n=${N} steps=${STEPS} dt=${DT} — initializing WebGPU…`);
+        await initRig();
+        const results = {};
+        for (const mode of MODES) {
+            setStatus(`n=${N} steps=${STEPS} — running mode "${mode}"…`);
+            await new Promise((r) => setTimeout(r, 0)); // keep the status paintable
+            results[mode] = await runMode(mode);
+        }
+        // Attribution control (only at the demo-default budget): re-run the
+        // adaptive mode with an EXHAUSTIVE List-1 near-field budget (the
+        // demo's ?p2pbudget= knob). Only meaningful when the auto tier at
+        // this n is a SAMPLED one (48 mid-N / 32 above 2M, GPU_NOTES §10.4);
+        // at n <= 32k the auto tier is already full traversal (4096), so the
+        // control would duplicate the adaptive row — it is skipped and
+        // noted instead (set ?p2pbudget=48 to measure the sampler's cost).
+        // It does NOT replace the default-budget row above — both reported.
+        let attributionNote = '';
+        if (P2P_BUDGET_URL === 0 && p2pBudgetAutoForN(N) >= 4096) {
+            attributionNote = `attribution control skipped: the auto tier at n=${N} is already full traversal (4096) — adaptive-fullNF would duplicate the adaptive row (set ?p2pbudget=48 to measure sampler cost)`;
+        }
+        if (P2P_BUDGET_URL === 0 && p2pBudgetAutoForN(N) < 4096) {
+            setStatus(`n=${N} steps=${STEPS} — attribution control: adaptive with exhaustive List-1 budget…`);
+            await new Promise((r) => setTimeout(r, 0));
+            p2pBudgetOverride = 4096;
+            try {
+                results['adaptive-fullNF'] = await runMode('adaptive');
+            } finally {
+                p2pBudgetOverride = P2P_BUDGET_URL;
+            }
+        }
+
+        // ---- assemble rows: everything vs direct (run FIRST), plus the
+        //      direct#2 control that establishes the GPU noise floor. ----
+        const ref = results['direct'];
+        const noiseFloorDv = metrics(results['direct#2'].dv, ref.dv);
+        const floorScale = noiseFloorDv.relL2 > 1e-4 ? noiseFloorDv.relL2 / 1e-4 : 1;
+        const rows = [];
+        const failures = [];
+        const addRow = (mode, vs, dvM, posM, extra) => {
+            const row = {
+                mode, vs,
+                dvRelL2: dvM.relL2, dvMaxAbs: dvM.maxAbs, dvMeanAbs: dvM.meanAbs, dvCos: dvM.cos,
+                posRelL2: posM.relL2, posRms: posM.rms, posMaxAbs: posM.maxAbs, posCos: posM.cos,
+                dEoverE: (extra.dEoverE === undefined) ? null : extra.dEoverE,
+                r50Ratio: (extra.energy0 && extra.energyF && extra.energy0.r50 > 0)
+                    ? extra.energyF.r50 / extra.energy0.r50 : null,
+                r80Ratio: (extra.energy0 && extra.energyF && extra.energy0.r80 > 0)
+                    ? extra.energyF.r80 / extra.energy0.r80 : null,
+                msPerStep: extra.msPerStep, rebuildMsPerStep: extra.rebuildMsPerStep,
+                status: extra.status, checks: extra.checks, note: extra.note,
+            };
+            rows.push(row);
+            for (const v of [row.dvRelL2, row.dvMaxAbs, row.dvMeanAbs, row.dvCos, row.posRelL2, row.posRms, row.posMaxAbs, row.posCos, row.msPerStep, row.dEoverE, row.r50Ratio, row.r80Ratio]) {
+                if (v !== null && !Number.isFinite(v)) failures.push(`${mode}: non-finite metric`);
+            }
+        };
+        const check = (mode, label, value, limit) => {
+            const ok = value <= limit;
+            if (!ok) failures.push(`${mode}: ${label} ${value.toExponential(3)} > ${limit.toExponential(3)}`);
+            return { label, value, limit, ok };
+        };
+        // Standard-scenario energy/structure checks (GPU_NOTES §15). Null on
+        // the flyby ICs (energy there is not conserved by design: analytic
+        // moving cores). FMM modes are additionally checked AGAINST the
+        // direct run's own dE/E — the demo integrator's symplectic-Euler
+        // shadow offset (~+3.4% at dt=0.024) is mode-independent, so the
+        // drift RELATIVE to direct isolates the force-approximation error.
+        // tolmult loosens the caps.
+        const stdEnergyChecks = (key, r) => {
+            if (!STANDARD_IC || !r || r.dEoverE === null) return [];
+            const cs = [];
+            const isFmm = (key === 'fixed' || key === 'adaptive' || key === 'adaptive-fullNF');
+            const cap = (key === 'direct' || key === 'direct#2') ? THRESH.directEnergyAbs
+                : (key === 'fixed' ? THRESH.fixedEnergyAbs : THRESH.adaptiveEnergyAbs);
+            cs.push(check(key, '|dE/E|', Math.abs(r.dEoverE), cap * TOLMULT));
+            if (isFmm && ref.dEoverE !== null) {
+                const vsCap = key === 'fixed' ? THRESH.fixedEnergyVsDirect : THRESH.adaptiveEnergyVsDirect;
+                cs.push(check(key, '|dE/E - dE/E_direct|', Math.abs(r.dEoverE - ref.dEoverE), vsCap * TOLMULT));
+            }
+            if (IC_PARAM === 'plummer') {
+                const ratio = r.energyF.r80 / r.energy0.r80;
+                const lo = THRESH.plummerR80RatioLo, hi = THRESH.plummerR80RatioHi * Math.max(1, TOLMULT);
+                const ok = ratio >= lo && ratio <= hi;
+                if (!ok) failures.push(`${key}: r80(t)/r80(0) ${ratio.toFixed(3)} outside [${lo}, ${hi.toFixed(2)}]`);
+                cs.push({ label: 'r80(t)/r80(0)', value: ratio, limit: `[${lo}, ${hi.toFixed(2)}]`, ok });
+            }
+            if (IC_PARAM === 'collapse') {
+                // The r50 collapse signature is only checkable once the run
+                // has gone a meaningful fraction of the way to t_ff.
+                if (STEPS * DT * SIM_SPEED > 0.6 * COLLAPSE_T_FF) {
+                    const ratio = r.energyF.r50 / r.energy0.r50;
+                    cs.push(check(key, 'r50(t)/r50(0)', ratio, THRESH.collapseR50RatioMax * Math.max(1, TOLMULT)));
+                }
+            }
+            return cs;
+        };
+
+        // direct (reference row; standard ICs only) — the leapfrog + softened
+        // close-encounter energy floor every FMM mode is read against.
+        if (STANDARD_IC) {
+            const dvM = metrics(ref.dv, ref.dv), posM = metrics(ref.pos, ref.pos);
+            const checks = stdEnergyChecks('direct', ref);
+            addRow('direct', '—', dvM, posM, { ...ref, status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks,
+                note: 'reference: direct O(N^2), per-mode dE/E floor of the exact softened-log Hamiltonian (GPU_NOTES §15)' });
+        }
+        // direct#2 vs direct — the control (noise floor).
+        {
+            const dvM = noiseFloorDv, posM = metrics(results['direct#2'].pos, ref.pos);
+            const r = results['direct#2'];
+            const checks = [check('direct#2', 'dvRelL2 (self-noise)', dvM.relL2, THRESH.directSelfNoiseDvRelL2 * TOLMULT),
+                ...stdEnergyChecks('direct#2', r)];
+            addRow('direct#2', 'direct', dvM, posM, { ...r, status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks, note: 'GPU determinism control (same mode twice)' });
+        }
+        // fixed vs direct.
+        {
+            const dvM = metrics(results['fixed'].dv, ref.dv);
+            const posM = metrics(results['fixed'].pos, ref.pos);
+            const r = results['fixed'];
+            const checks = [
+                check('fixed', 'dvRelL2', dvM.relL2, THRESH.fixedDvRelL2 * TOLMULT * floorScale),
+                check('fixed', 'finalPosRms', posM.rms, THRESH.finalPosRms * TOLMULT),
+                ...stdEnergyChecks('fixed', r),
+            ];
+            addRow('fixed', 'direct', dvM, posM, { ...r, status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks, note: 'counting-sort fixed-grid multi-level FMM, order 2' });
+        }
+        // adaptive vs direct.
+        {
+            const dvM = metrics(results['adaptive'].dv, ref.dv);
+            const posM = metrics(results['adaptive'].pos, ref.pos);
+            const r = results['adaptive'];
+            const checks = [
+                check('adaptive', 'dvRelL2', dvM.relL2, THRESH.adaptiveDvRelL2 * TOLMULT * floorScale),
+                check('adaptive', 'finalPosRms', posM.rms, THRESH.finalPosRms * TOLMULT),
+                ...stdEnergyChecks('adaptive', r),
+            ];
+            addRow('adaptive', 'direct', dvM, posM, { ...r, status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks, note: `adaptive quadtree FMM order 2, meta rebuild every ${ADAPTIVE_REFRESH_INTERVAL} steps` });
+        }
+        // adaptive vs fixed (pairwise).
+        {
+            const dvM = metrics(results['adaptive'].dv, results['fixed'].dv);
+            const posM = metrics(results['adaptive'].pos, results['fixed'].pos);
+            const checks = [
+                check('adaptive-vs-fixed', 'dvRelL2', dvM.relL2, THRESH.adaptiveVsFixedDvRelL2 * TOLMULT * floorScale),
+                check('adaptive-vs-fixed', 'finalPosRms', posM.rms, THRESH.finalPosRms * TOLMULT),
+            ];
+            addRow('adaptive-vs-fixed', 'fixed', dvM, posM, {
+                msPerStep: results['adaptive'].msPerStep, rebuildMsPerStep: results['adaptive'].rebuildMsPerStep,
+                metaBuilds: results['adaptive'].metaBuilds, gpuErrorCount: results['adaptive'].gpuErrorCount,
+                status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks, note: 'pairwise: do the two FMM formulations agree?',
+            });
+        }
+        // off vs direct — INFO: different physical model by design.
+        {
+            const dvM = metrics(results['off'].dv, ref.dv);
+            const posM = metrics(results['off'].pos, ref.pos);
+            addRow('off', 'direct', dvM, posM, {
+                ...results['off'], status: 'INFO', checks: [],
+                note: STANDARD_IC
+                    ? 'model gap: with the standard ICs "off" has NO gravity at all (cores off by design) — pure free streaming, expected to differ'
+                    : 'model gap (no self-gravity, full-mass cores): analytic cores at GM=0.00075 vs FMM/direct cores at GM=0.000375 + Gp=0.015/N — expected to differ, not a failure',
+            });
+        }
+        // adaptive-fullNF vs direct — attribution control: same adaptive
+        // pipeline with exhaustive List-1 sampling. If the default-budget
+        // adaptive row failed but this row passes, the default tier's
+        // near-field subsampling (48 samples/particle) is the dominant error
+        // source, not the multipole far field.
+        if (results['adaptive-fullNF']) {
+            const dvM = metrics(results['adaptive-fullNF'].dv, ref.dv);
+            const posM = metrics(results['adaptive-fullNF'].pos, ref.pos);
+            const checks = [
+                check('adaptive-fullNF', 'dvRelL2', dvM.relL2, THRESH.adaptiveDvRelL2 * TOLMULT * floorScale),
+                check('adaptive-fullNF', 'finalPosRms', posM.rms, THRESH.finalPosRms * TOLMULT),
+                ...stdEnergyChecks('adaptive-fullNF', results['adaptive-fullNF']),
+            ];
+            addRow('adaptive-fullNF', 'direct', dvM, posM, {
+                ...results['adaptive-fullNF'],
+                status: checks.every((c) => c.ok) ? 'PASS' : 'FAIL', checks,
+                note: 'attribution control: adaptive with p2pbudget=4096 (exhaustive List-1 near field) — isolates the multipole far field from the default 48-samples/particle tier',
+            });
+        }
+
+        if (gpuErrors.length > 0) failures.push(`WebGPU validation errors captured: ${gpuErrors.length} (first: ${gpuErrors[0].slice(0, 160)})`);
+
+        const result = {
+            meta: {
+                n: N, steps: STEPS, dt: DT, leafBits: fmmLeafBits, order: FMM_ORDER,
+                gpu: gpuDescription, tolMult: TOLMULT,
+                ic: STANDARD_IC ? IC_PARAM : 'flyby',
+                mu: STANDARD_IC ? SELF_GRAV_MU : 0.015,
+                collapseTff: STANDARD_IC ? COLLAPSE_T_FF : null,
+                elapsedT: STEPS * DT * SIM_SPEED,
+                adaptiveRefreshInterval: ADAPTIVE_REFRESH_INTERVAL,
+                noiseFloorDvRelL2: noiseFloorDv.relL2,
+                noiseFloorScale: floorScale,
+                thresholds: THRESH,
+                gpuErrors: gpuErrors.slice(0, 5),
+            },
+            rows,
+            pass: { allOk: failures.length === 0, failures },
+        };
+        window.__validatorResult = result;
+        console.log('VALIDATE ' + JSON.stringify(result));
+
+        // ---- render table ----
+        const fmt = (v, d = 5) => Number.isFinite(v) ? v.toFixed(d) : String(v);
+        const fmtE = (r) => {
+            if (r.dEoverE === null || r.dEoverE === undefined) return '—';
+            return `${(r.dEoverE >= 0 ? '+' : '') + (r.dEoverE * 100).toFixed(3)}%`;
+        };
+        const fmtR = (r) => (r.r50Ratio === null || r.r50Ratio === undefined) ? '—' : `×${r.r50Ratio.toFixed(3)}`;
+        let html = '<table><tr>'
+            + '<th>mode</th><th>vs</th><th>dv rel_l2</th><th>dv cos</th><th>dv max_abs</th>'
+            + '<th>pos rel_l2</th><th>pos rms</th><th>pos cos</th>'
+            + `<th>${STANDARD_IC ? 'dE/E' : ''}</th><th>${STANDARD_IC ? 'r50(t)/r50(0)' : ''}</th>`
+            + '<th>ms/step</th><th>meta ms/step</th><th>status</th></tr>';
+        for (const r of rows) {
+            html += `<tr class="${r.status}"><td>${r.mode}</td><td>${r.vs}</td>`
+                + `<td>${fmt(r.dvRelL2)}</td><td>${fmt(r.dvCos)}</td><td>${fmt(r.dvMaxAbs, 6)}</td>`
+                + `<td>${fmt(r.posRelL2)}</td><td>${fmt(r.posRms)}</td><td>${fmt(r.posCos)}</td>`
+                + `<td>${fmtE(r)}</td><td>${fmtR(r)}</td>`
+                + `<td>${fmt(r.msPerStep, 2)}</td><td>${r.rebuildMsPerStep ? fmt(r.rebuildMsPerStep, 2) : '–'}</td>`
+                + `<td>${r.status}</td></tr>`;
+        }
+        html += '</table>';
+        document.getElementById('tableHost').innerHTML =
+            '<div style="margin:0 0 6px 0;color:#78899c;">dv = per-step velocity-update error, pos = final-position error — both vs the Direct All-Pairs reference row.'
+            + (STANDARD_IC
+                ? ` dE/E = drift of the exact softened-log Hamiltonian vs the mode's own t=0 state (Direct = leapfrog floor; FMM modes add force error); r50 = Lagrangian half-mass radius ratio (ic=${IC_PARAM}${IC_PARAM === 'collapse' ? `, t_ff=${COLLAPSE_T_FF.toFixed(2)}, run t=${(STEPS * DT).toFixed(2)}` : ''}). GPU_NOTES §15.`
+                : '')
+            + ' PASS thresholds are rel-L2 caps (notes below); INFO rows document expected model gaps, not failures.</div>'
+            + html;
+        document.getElementById('notes').textContent =
+            `GPU: ${gpuDescription}\n`
+            + `initial conditions: ${IC_PARAM}${STANDARD_IC ? ` (standard self-gravity scenario, mu=${SELF_GRAV_MU}, G=1, cores OFF, mouse OFF)` : ' (dual-core flyby)'}\n`
+            + `direct self-noise (dv rel_l2): ${fmt(noiseFloorDv.relL2)} (threshold ${THRESH.directSelfNoiseDvRelL2 * TOLMULT}); floor scale applied to dv thresholds: ${fmt(floorScale)}\n`
+            + `p2pbudget: ${P2P_BUDGET_URL || `demo auto tier (${p2pBudgetAutoForN(N) >= 4096 ? 'full traversal' : p2pBudgetAutoForN(N)} at n=${N})`}\n`
+            + (attributionNote ? `${attributionNote}\n` : '')
+            + rows.map((r) => `${r.status}  ${r.mode.padEnd(18)} ${r.note}`).join('\n')
+            + (results['adaptive-fullNF'] ? (() => {
+                const def = rows.find((r) => r.mode === 'adaptive');
+                const full = rows.find((r) => r.mode === 'adaptive-fullNF');
+                return `\nATTRIBUTION: adaptive default dvRelL2=${fmt(def.dvRelL2)} vs exhaustive-List-1 dvRelL2=${fmt(full.dvRelL2)}`
+                    + ` — the difference is the default tier's List-1 near-field subsampling, not the multipole far field.`;
+            })() : '')
+            + (failures.length ? `\nFAILURES:\n${failures.join('\n')}` : '\nAll checks passed.');
+        setStatus(result.pass.allOk
+            ? `DONE — all checks passed (n=${N}, steps=${STEPS}).`
+            : `DONE — ${failures.length} failure(s). See table + console VALIDATE line.`);
+    } catch (err) {
+        console.error('VALIDATOR FAILED:', err);
+        window.__validatorResult = {
+            meta: { n: N, steps: STEPS, dt: DT, leafBits: fmmLeafBits, gpu: gpuDescription, ic: STANDARD_IC ? IC_PARAM : 'flyby' },
+            rows: [],
+            pass: { allOk: false, failures: [String((err && err.message) || err)] },
+        };
+        setStatus('FAILED: ' + ((err && err.message) || err));
+    }
+})();
+</script>
+</body>
+</html>

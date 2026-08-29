@@ -56,7 +56,7 @@ python tools/validate_adaptive_js.py
 
 Also inspect the CI workflow and `tools/run_all.py`; compare their file/package coverage with `tests/` and document any omitted gate. Run the relevant package test subset after each cluster review, then run the full suite at the end. The current baseline is 175 collected, with the last full run at 173 passed / 2 skipped; re-establish this rather than assuming it remains true.
 
-Keep new probes and temporary outputs outside production packages (for example `tools/review_round10/` or a clearly marked temporary directory). Do not recreate root-level `test_pass*.py` scratch files. Promote only durable, independent regression tests into `tests/<package>/`.
+Keep new probes and temporary outputs outside production packages (for example a clearly marked temporary directory outside the repo, or a git-ignored scratch folder). Do not recreate root-level `test_pass*.py` scratch files. Promote only durable, independent regression tests into `tests/<package>/`. (The earlier `tools/review_round10/` probe folder was removed once its checks had been transcribed into `tests/`.)
 
 ---
 

@@ -9,6 +9,13 @@ their own:
 2. Why several BENCHMARKS.md rows honestly say "NOT faster than O(N^2) at
    this scale" — and where to look for the real constant factors.
 
+Round index (this file doubles as the review log after Round 10, which
+lives in `docs/review_history/`): round 3 → §1 · round 4 → §1/§4 ·
+round 5 → §3–4 · round 6 → §5 · round 7 → §5.4/§6 · round 9 → §7 ·
+round 11 → §8 · round 12 → §9 · round 13 → §10 · round 14 → §11 ·
+round 15 → §10.4/§12.7 · round 16 → §12 · round 17 → §13 ·
+round 18 → §14 · round 19 → §15.
+
 ---
 
 ## 1. The funnel hash cannot unlearn keys; dynamic sims use ping-pong rebuilds
@@ -88,9 +95,9 @@ not an asymptotic fact about the algorithm:
   total arithmetic.
 
 The [Core FMM scaling](../BENCHMARKS.md#core-fmm-scaling) table shows this
-directly: the same flat FMM that is 0.23x at N=2000 becomes **5.99x faster
-than direct at N=32000** (rel-L2 5.3e-7). The crossover is real; it just
-lives at larger N than the per-app demo scales.
+directly: the same flat FMM that is at parity at N=2000 (1.0x) becomes
+**8.0x faster than direct at N=32000** (rel-L2 3.7e-7). The crossover is
+real; it just lives at larger N than the per-app demo scales.
 
 Where the real constant factors can be measured is the **compiled kernel
 paths**, where the per-cell dispatch is a few cycles instead of a Python
@@ -285,31 +292,32 @@ previously undocumented (finding F-15). Two sampling behaviors exist:
    the shipped occupancy-adaptive kernel is the inline one): the tree is an
    occupancy-adaptive quadtree (leaves hold ≤ leafTarget = 16/32/64
    particles tiered by N, refined to max depth 4–10 chosen from N), and
-   List-1 (adjacent-leaf) neighbors are subsampled at a per-particle
-   budget of 24 / 12 / 6 sampled neighbors per adjacent leaf, tiered by
-   total particle count (<0.5M / 0.5–2M / >2M); `?p2pbudget=N` overrides
-   the tier. Since round 9 each sampled neighbor carries weight
-   `leafOccupancy/sampleCount`, so the estimate is unbiased in expectation
-   (matching the fixed-grid stride weighting); before round 9 the samples
-   carried weight 1, which under-counted dense leaves by
-   occupancy/budget and rendered as leaf-aligned square artifacts that
-   drifted with each tree rebuild (see §7.1). Three further serial loops
-   are now bounded the same way (stride-sampled, rotation-decorrelated,
+   List-1 (adjacent-leaf) neighbors are subsampled at a **total
+   per-particle budget** — full List-1 traversal (4096 cap) at N ≤ 32k,
+   48 samples mid-N, and 32 above 2M (the §12.7 raise + §13.2 fix;
+   the sidebar "Adaptive Near-Field Budget" select and `?p2pbudget=N`
+   override the total), **spread across** the adjacency list — not
+   allocated per adjacent leaf.
+   (The pre-round-15 scheme of 24/12/6 **per adjacent leaf** × up to 32
+   List-1 leaves made adaptive ~11× heavier than the fixed-grid 3×3 walk
+   and, under core collapse, multiplied `leafWeight × sampleWeight` into
+   force outliers — §10.3–10.4 and the live-demo collapse the user sees.)
+   Each sample is reweighted by
+   `min(leafOccupancy/sampleCount, 8) * min(list1Count/nl, 4)` so normal
+   trees stay approximately unbiased while collapsed max-depth cores
+   cannot explode force magnitudes. Three further serial loops are
+   bounded the same way (stride-sampled, rotation-decorrelated,
    reweighted): P2M moment construction (≤512 particles/leaf), the List-4
    P2L translation in M2L (≤128 particles/source leaf), and the List-1
    adjacent-leaf enumeration itself (≤32 leaves/particle) — without those
    caps a collapse of all particles onto the center of mass stalls the
    frame (single thread per leaf/node walking thousands of entries).
-   With the adaptive tree the sampling fraction is
-   bounded below by budget/leafTarget, so it is 100% below 0.5M and
-   degrades only for the densest cluster cores that saturate at max
-   depth; the sidebar "P2P Near Field" row reports the actual fraction
-   of the densest leaf. The flat metadata (tree + interaction lists) is
-   cross-validated against the direct O(N²) sum by
-   `tools/validate_adaptive_js.py` (structural invariants +
-   emulated-kernel potentials/forces), and since round 10 the executed
-   WGSL multipole chain itself is validated on GPU by
-   `tests/core/test_adaptive_wgsl_numeric.py` (full clear→P2M→M2M→M2L→
+   The sidebar "P2P Near Field" row reports the total samples/particle
+   tier. The flat metadata (tree + interaction lists) is cross-validated
+   against the direct O(N²) sum by `tools/validate_adaptive_js.py`
+   (structural invariants + emulated-kernel potentials/forces), and since
+   round 10 the executed WGSL multipole chain itself is validated on GPU
+   by `tests/core/test_adaptive_wgsl_numeric.py` (full clear→P2M→M2M→M2L→
    L2L→L2P chain vs direct O(N²) and the `core/adaptive_fmm.py`
    reference; that test is what caught the per-level over-dispatch bug
    where surplus `ceil(count/64)` threads spilled into the next level's
@@ -785,7 +793,8 @@ buffer as an interleaved 2N-word header.
 List-2 target at level `l`, the M2L delta is the fixed lattice vector
 `(dx, dy)*2^-l`, so the whole (p+1)^2 complex operator collapses into a
 dense row indexed by `(l, dx, dy)` — the same precomputed-matrix move as
-`core/adaptive_fmm_fast.py`'s per-(level, offset) M2L matrices (Gimbutas &
+`core/adaptive_fmm.py`'s per-(level, offset) M2L matrices (formerly
+`adaptive_fmm_fast.py`; Gimbutas &
 Greengard, 2012, FMMLIB2D `itable(-3:3,-3:3)`; Carrier, Greengard, &
 Rokhlin, 1988). 11 levels x 49 offsets x 25 complex = 26,950
 f32 (107,800 bytes), built in f64 by `buildFarOperatorTable()` with the
@@ -906,20 +915,23 @@ of 3). With the glue fixed, the diag errors are empty and the far CSR
 build + upload run off the main thread as designed. Crossbench now reports
 `diagErrRounds: 0`.
 
-### 10.4 Identified next step (measured, not hypothesized)
+### 10.4 Identified next step → **IMPLEMENTED (round 15)**
 
 Close the near-field gap the same way section 8.1 closed the hash gap: the
-adaptive List-1 walk should be budgeted PER PARTICLE (a total sample budget
-spread across the leaf's adjacency list, stride-reweighted), not per
-adjacent leaf — at 500k that is the measured 3.7-6.3x lever, and at budget
-~6 the adaptive pipeline already matches the fixed grid (184 vs 148-163
-same-run). The accuracy trade is the same unbiased-stride-reweighting
-scheme section 5.4 documents for the current per-leaf budget.
+adaptive List-1 walk is now budgeted **PER PARTICLE** (total sample budget
+48/32/16 by N, spread across the leaf's adjacency list, stride-reweighted
+with `sampleWeight` capped at 8 and `leafWeight` at 4 under collapse), not
+per adjacent leaf. Section 10.3 measured the old per-leaf scheme at 500k:
+default 24/leaf → 50 steps/s; 6/leaf → 184; 1/leaf → 316. The new default
+total budgets are calibrated to sit near the fixed-grid 3×3 work budget
+while killing the collapse force-blow-up path. Re-run
+`tools/browser_crossbench.js` after this change to refresh the absolute
+steps/sec tables (the 24/12/6 per-leaf rows above are historical).
 
 ## 11. Round-14: core-side hash benchmark tie-in
 
 The Python-side head-to-head (funnel vs linear probing vs CPython dict vs
-the compiled Zig port, `benchmarks/bench_hash_backends.py`, table in
+the compiled Zig port, `core/bench_hash_backends.py`, table in
 BENCHMARKS.md "Core hash tables") puts numbers on what the demo's
 near-field backend switch CANNOT show: after `materialize_ranges` (§8.1)
 the demo hash only builds the structure, so counting-sort / open-addressing
@@ -933,15 +945,553 @@ guarantees are visible instead:
   worst-case cap is a latency guarantee median steps/sec cannot express.
 - **The far-field node directory** (adaptive+dir vs adaptive+no-dir) is
   the one place the hash backend choice still moves demo numbers:
-  no-dir wins on small trees (120k: 541 vs 366, §10.3), medians put no-dir
-  slightly ahead at 500k (43 vs 52), and the directory wins at 5M
-  (5 vs 7, §8.4 — small sample). **Recommendation (not implemented)**:
-  default remains no-dir; enable the directory by a node-count threshold
-  (~100k nodes, i.e. the >= 2M-particle regime) where the sample says it
-  pays. Re-measure with interleaved medians first — §10.3 (4) shows
-  single-window samples swing 24-213 steps/s with the tree phase.
+  no-dir wins on small trees (120k: 541 vs 366, §10.3), the directory is
+  ahead at 500k (52 vs 43) and at 5M (7 vs 5, §8.4 — small sample).
+  (Historical note: this section originally recommended keeping no-dir as
+  the default; the default was subsequently switched to directory ON,
+  matching the in-page measured ~+18% steps/s — see the `useAdaptiveNodeHash`
+  note and §13.4.) Re-measure with interleaved medians when touching this —
+  §10.3 (4) shows single-window samples swing 24-213 steps/s with the tree
+  phase.
 
 Audit: the elastic-hashing table (`ElasticBatchingHashTable`, paper
 Section 2) is reference/experimental — it is not used by any pipeline
 (Python, Zig, WGSL, or demo) and loses to the funnel table in every
 measured regime (see BENCHMARKS.md section for the numbers).
+
+## 12. Round-16: why the live demo underdelivered, and the fixes
+
+User-visible symptoms at 5M (2026-08-26): "non-FMM" 60+ fps vs fixed FMM 43
+fps vs adaptive 23 fps and collapsing after a short time, frame-gap outliers,
+visibly different particle propagation; near-field hash backends showed no
+fps change. Instrumented repro (tools/probe_collapse.js, tools/probe_resolve.js,
+tools/probe_fields.js, N=500k, RTX-class GPU) found five root causes, all
+fixed in index.html this round.
+
+### 12.1 "non-FMM is faster" was a labeling problem, not a benchmark
+
+`ff=off` computes NO particle-particle gravity — two analytic point masses
+only (the O(N) visual baseline), while the FMM modes do full N-body work.
+The UI called it "Analytic Dual-Core, **direct**", inviting exactly the wrong
+comparison. Fixed:
+- The option is relabeled "None (Analytic Dual-Core only, O(N))" and the
+  axis reads `ff=gravity off (cores only)`.
+- A real **Direct All-Pairs O(N^2)** mode was added (`selectFmmMode`
+  `direct`, WGSL `direct` entry point in the adaptive module, `?fmmdirect=1`).
+  Every softened pair per frame, same charge/softening conventions as the
+  adaptive List-1 P2P; the main compute consumes it like an FMM far field.
+  Measured at 120k: 19 fps / 55 ms GPU per frame vs fixed-grid FMM's 60 fps —
+  the algorithmic improvement the demo promises is now observable in-demo
+  (at 5M, direct costs seconds per frame).
+
+### 12.2 Adaptive collapse #1: refresh thrash (perf)
+
+The drift probe's pull-forward (`interval - max(6, interval>>2)`) with a
+threshold keyed to the FINEST leaf width (0.3/2^depth ~ 1.2e-3) fired on
+every refresh (typical inter-refresh drift is ~2e-2), pinning rebuilds at
+the 6-frame minimum forever — 599 rebuilds in 60 s at 500k, each one
+destroying/recreating ~13 GPU buffers + all bind groups (measured: 599/599
+rebuilds changed buffer sizes) and uploading 20-40 MB. Fixes: grow-only
+buffer capacity (25%/64 KiB rounding — 599→1 reallocation events in 60 s),
+a two-slot snapshot pool for the worker handoff, drift pull-forward floored
+at `max(12, interval>>1)` (half-interval), and the per-rebuild
+`console.debug` CSR spam gated to every 64th build.
+
+### 12.3 Adaptive collapse #2: depth the refresh cadence cannot track (physics)
+
+The decisive measurement (tools/probe_resolve.js, 3-way comparison):
+`resolveLeafNode` was internally CORRECT (matched pure root-descent 513/513,
+always a containing terminal node), but the builder's `leafForParticle`
+disagreed with the tree for **99.4% of particles** on a 0.7 s-old tree —
+particles drift 6-15 finest-leaf widths per refresh interval (dt=0.024 at
+60 fps; disk speeds ~0.03). Deeper refinement than ~1 leaf-width-per-refresh
+cannot be tracked by a CPU rebuild; the A/B proved it: `?adapdepth=4` stable
+(65→89 nodes) vs `?adapdepth=6` dispersing, `?p2pbudget=128/256` changing
+nothing. Dispersal signature pre-fix: tree 22911 nodes at init → <300 after
+60 s, luminance radius swinging 14.3-18.1 while fixed held 18.43.
+
+Fix: `computeBoundedAdaptiveDepth()` caps depth at
+`floor(log2(1 / measuredDriftPerRefresh))` (min 3, max 10), where the drift
+is already measured by the staleness probe each refresh — the tree refines
+deeper automatically in calm phases (observed: transient 132-167-node
+refinement spikes during close encounters, back to ~50 in quiet phases).
+Post-fix at 500k: tree stable 46-87 nodes, luminance signature matches
+fixed mode (rx 17.8-18.1 vs 18.4), centroid oscillation matches fixed
+(0.41↔0.73, same period), zero submit drops, 60 fps locked, Total GPU
+2.3-7.7 ms/frame.
+
+Also fixed along the way: `resolveLeafNode` could return an INTERNAL node
+for drifted particles (empty children of split nodes do not exist — the
+builder materializes only non-empty cells), which starved them of near
+field; it now descends through `nodeChildren` to a terminal node.
+The 500k dispersal was dominated by the depth problem, not this, but both
+were real.
+
+### 12.4 Total-GPU telemetry bug
+
+Adaptive passes wrote no timestamp slots, but the readback differenced all
+10 unconditionally: unwritten slots resolve to 0, so "Total GPU" reported
+the absolute GPU clock (8244→68549 ms over a 60 s run — the "+71538 ms" in
+the long-run bench). Fixed: adaptive up/down/L2P passes now carry
+timestampWrites (slots 0-1/2-3/4-5, L2P split into its own pass), per-slot
+frame flags record which slots were written, and Total GPU is the SUM of
+pass spans (immune to stale/zero slots; also fixes negative spans on
+uncapped frames without a render pass). A circuit breaker now disables the
+far-field family after 3 consecutive validation-dropped submits instead of
+freezing the sim on one buffer forever while the FPS counter keeps ticking.
+
+### 12.5 Hash backends: equal fps is by design — now measurable on request
+
+`materialize_ranges` resolves every backend into the same dense
+cellStart/cellCount once per frame, so the force loop is byte-identical
+across backends (§8.1, §11). The UI tooltip now says so explicitly.
+New `?nfprobe=1` opts into the live-hash path (per-neighbor open-addressing
+or funnel probes in `cellRangeOf`, main-shader uniform `nfProbeMode`), where
+the backends' probe costs differ and show up in FPS/compute time; the axis
+appends `*` to the nf token. Counting-sort has no table to probe and stays
+dense (its dense CSR is the same idea, materialized).
+
+### 12.6 Reproduction tools added
+
+- `tools/probe_collapse.js` — hooks uploadAdaptiveMetadata/queue.submit,
+  counts rebuilds/size-changes/drops, positions checksum + canvas hash per
+  second (this is what measured 599/599, the dispersal curves, and the fix).
+- `tools/probe_resolve.js` — JS emulation of resolveLeafNode (funnel probe +
+  walk-up + descent) vs pure root-descent vs leafForParticle over live
+  positions; the 3-way comparison that isolated the staleness root cause.
+- `tools/probe_fields.js` — fmmField magnitude/potential statistics, dir
+  on/off.
+- `tools/smoke_modes.js` — all-mode console-error/telemetry sweep.
+- `tools/sig_stats.js` — luminance signature of saved screenshots.
+- Note: drawImage() of the WebGPU canvas from an injected sampler can
+  return a stale frame in headless runs — the canvas-freeze signal in the
+  earlier bench data for adaptive+ahash0 was that artifact plus the
+  12.2/12.3 churn under GPU contention, not a real compositor freeze;
+  compositor-level screenshots evolve correctly.
+
+### 12.7 Post-fix verification (all measurements on the same RTX-class GPU)
+
+Full long-run bench (`tools/bench_fps_longrun.js 500000 120`, 10 configs,
+2026-08-26 — replaces the contaminated 2026-08-25 baseline, which had run
+under heavy background GPU load: fixed 1-2 rAF fps with 16 s gaps):
+
+| config | steps/s med | collapse% | gaps>100ms/s | maxGap ms | build/m2l/l2p/main ms | total GPU ms |
+|---|---|---|---|---|---|---|
+| off (cores only)      | 60 | 0   | 0 | 50* | — | — |
+| direct O(N^2)         | 1  | —   | 1.2 | 2467 | 814.9 (the pair pass) | ~817 |
+| fixed+counting        | 60 | 0   | 0 | 17 | 5.51/0.07/0.26/2.23 | 8.15 |
+| fixed+openaddr        | 60 | 0   | 0 | 17 | 5.25/0.07/0.26/2.37 | 8.09 |
+| fixed+funnel          | 60 | 0   | 0 | 17 | 5.42/0.07/0.26/2.37 | 8.27 |
+| fixed+openaddr+nfprobe| 60 | 0   | 0 | 17 | 5.02/0.07/0.26/2.30 | 7.79 |
+| fixed+funnel+nfprobe  | 60 | 0   | 0 | 17 | 5.12/0.07/0.26/2.28 | 7.93 |
+| adaptive (default)    | 60 | 0   | 0 | 17 | 0.62/0.10/1.99/0.04 | 3.05 |
+| adaptive+ahash0       | 60 | 0   | 0 | 50* | 0.95/0.28/1.81/0.07 | ~3.1 |
+| adaptive+far0 (chain) | 60 | -0.3 | 0 | 50* | 0.57/0.12/1.95/0.06 | 3.00 |
+
+(*compositor jitter, not sim gaps.) Highlights: every mode holds vsync with
+zero >100 ms sim gaps; adaptive is now FASTER than fixed at 500k (3.0 vs
+8.1 ms GPU/frame — the drift-bounded tree is small); direct vs FMM is
+1 vs 60 steps/s — the demo's promised algorithmic improvement is now
+measurable in the page itself. nfprobe deltas were within median noise in
+the interleaved bench (±0.1 ms on the main pass) but reproduce as ~+1.1 ms
+(2.3 → 3.4 ms) in a single-session A/B at 500k/leafBits 8; at this
+occupancy most per-neighbor probes hit an empty slot immediately.
+
+5M spot check (45 s, adaptive default): 15-29 steps/s with NO collapse —
+tree steady at 36-137 nodes (refinement spikes during the close encounter
+at t~20 s), far entries 300-3200, 1 buffer reallocation for the whole
+run, zero submit drops, GPU ~50 ms/frame dominated by the 5M-particle L2P.
+
+List-1 near-field budget tiers raised 48/32/16 → 48/48/32 (the old
+>2M floor left the adaptive near field ~9x leaner than the fixed grid's
+3x3 walk at 5M, biasing propagation).
+
+## 13. Round-17: numeric cross-validation rig; FMM-vs-AFMM mismatch root-caused and fixed
+
+Motivation: the user reported (a) Analytic O(N), FMM, and AFMM (the
+adaptive FMM mode) show visibly
+different propagation, (b) AFMM trails FMM by "a couple of frames", (c) the
+hash-backend selector appeared to do nothing, (d) FMM controls are not
+settable in the vortex sim and the settings matrix is hard to interpret.
+This round answers all four with measurements, fixes the one genuine bug,
+and labels the rest honestly. Backup of the pre-round page:
+`index.backup.2026-08-26.html` (local, untracked).
+
+### 13.1 The rig: `validate.html` + `tools/smoke_validator.js`
+
+A minimal self-contained cross-validation page (no UI beyond a table, no
+rendering, paced by `onSubmittedWorkDone`). All WGSL kernels, the galaxy
+ICs, the funnel-hash JS, the adaptive metadata builder, and the per-mode
+dispatch sequences are spliced VERBATIM out of index.html by
+`tools/_build_validate.py` (re-run it after touching index.html kernels).
+Every mode starts from a byte-identical restored state; cores evolve
+through the same CPU `updateGalaxyCores`; adaptive rebuilds its tree every
+24 steps from a GPU readback, exactly like the demo.
+
+Metrics per mode vs the Direct O(N^2) reference: one-step Δv rel-L2
+(cosine, max/mean abs) and K-step final-position divergence; a `direct#2`
+run establishes the GPU noise floor (measured: exactly 0 — the pair pass is
+deterministic). `adaptive-fullNF` re-runs adaptive with `?p2pbudget=4096`
+(exhaustive List-1) as the attribution control. The `off` row is labeled
+INFO, not PASS/FAIL — it is a different physics model by construction
+(cores at full GM=0.00075, zero particle-particle gravity; the FMM family
+runs half-mass cores + Gp=0.015/N self-gravity). That asymmetry is also
+why Analytic-vs-FMM trajectories MUST differ (37.7% Δv rel-L2 at 8k) and
+why mode switches reseed the sim.
+
+Run: `node tools/smoke_validator.js [n] [steps] [extraQuery]` (self-serves
+the repo on :8124). Thresholds in the page header; `?tolmult=` scales them.
+
+### 13.2 Root cause of the visual FMM-vs-AFMM mismatch (found, fixed)
+
+First honest run (n=8000/120 steps, old default tier): fixed 1.08% Δv
+rel-L2 vs direct, adaptive **26.4%**, adaptive-vs-fixed **26.1%**, off
+37.7% (expected). The `adaptive-fullNF` control at 0.84% proved the
+multipoles, tree, and dispatch chain are CORRECT — the entire mismatch
+lives in the adaptive List-1 near-field SAMPLER. The budget sweep at 8k:
+48 samples/particle → 26.4%, 256 → 16.7%, 4096 (exhaustive) → 0.84%.
+The sampler is unbiased but 1/r^2 pair weights are heavy-tailed: the
+closest few neighbors carry most of the true near-field force, and
+subsampling them (48 of a few hundred List-1 neighbors) costs ~26% per-step
+force error. Structural at 16k (27.1%) and 32k (27.2%); fixed stays ~1.1%.
+
+Fix: the WGSL `l2p` auto tier (mirrored by JS `p2pBudgetAutoForN`, now the
+single source in the page) is now **full traversal (4096 cap) at N ≤ 32k,
+48 mid-N, 32 above 2M**, and the knob moved into the UI ("Adaptive
+Near-Field Budget" select: Auto/128/256/512/1024/Full; `?p2pbudget=`
+still overrides). Post-fix validator (8k): adaptive **0.84%**,
+adaptive-vs-fixed **0.74%** — the two FMM formulations now agree within
+their combined truncation error; 32k: adaptive 1.37% vs fixed 1.13%. Cost
+at 500k: l2p 5.09 → 7.95 ms, total GPU 8.35 → 8.41 ms, still vsync-locked
+60 fps. At 120k–2M the tier stays 48 (accuracy-matched workloads should
+select Full — the select's tooltip carries the measured numbers).
+(Reconciliation note: the 500k medians here — l2p 5.09→7.95 ms — differ
+from §12.7's same-day adaptive l2p 1.99 ms because the tree phase swings
+the node count 46–87 within a run and §12.7's window caught a cheap
+phase; §13.2's A/B isolates the tier-raise delta, §12.7's table is the
+round-16 absolute endpoint.)
+
+Why not Full everywhere — the 5M wall: the drift-capped tree at 5M runs at
+depth 3 (~48 nodes, ~100k particles/leaf), so "exhaustive List-1"
+degenerates toward quasi-direct summation: measured 5M adaptive+fullNF =
+4 steps/s with L2P 228.7 ms (vs 19 steps/s, L2P 49.9 ms at the default 32
+tier). At that tree shape the sampleWeight cap (≤ 8) also mutes the near
+field — the honest statement is that the 5M default adaptive near field is
+approximate-to-muted, and the fix is architectural (§13.5), not a budget
+number. This is documented in the select tooltip and here.
+
+### 13.3 The AFMM-vs-FMM frame-time gap, attributed (5M reference scale)
+
+New "AFMM Meta (CPU)" HUD row + TELEM `adaptiveMeta` block report the
+worker rebuild latency, cadence, node count, and depth. 5M, 45 s runs,
+2026-08-26:
+
+| config | steps/s | build/m2l/l2p/main ms | total GPU ms | meta |
+|---|---|---|---|---|
+| fixed+counting | 41 | 13.8/0.2/2.5/6.5 | 24.4 | — |
+| adaptive (tier 32) | 19 | 0.5/0.1/49.9/0.8 | 52.8 | 46.6 ms / 96 f, 48 nodes, d3 |
+| adaptive+fullNF | 4 | 0.5/0.1/228.7/0.8 | 231.4 | 59.8 ms / 96 f |
+
+Attribution: the gap is (1) the L2P pass (leaf resolution + List-1 + M2P
+against a shallow drift-capped tree — 49.9 of 52.8 ms), (2) the 96-frame
+CPU rebuild cadence with ~47 ms worker round-trips (17.6 gaps>34 ms/s from
+the readback+swap), and (3) none of it is the multipole math. At 500k both
+modes are vsync-locked (§12.7). At the parity-validated ≤32k scale the
+fixed-vs-adaptive wall cost is equal within pacing noise (3.06 vs 3.09
+ms/step in the rig). The adaptive mode is NOT algorithmically slower — it
+is implementation-bound to a CPU-side tree refresh, which caps depth
+(anti-staleness) which fattens leaves which inflates L2P. Reference
+implementations keep the whole loop GPU-resident (see §13.5).
+
+### 13.4 Hash backends: what the selector really controls (measured)
+
+Re-confirmed at 500k/45 s (medians): build pass 4.16/3.86/3.93 ms for
+counting-sort/open-addressing/funnel (±0.3 ms, interleaved-noise level);
+force-loop main pass 2.22–2.29 ms identical for all backends BY DESIGN
+(`materialize_ranges` resolves each table into the same dense arrays once
+per frame — that IS the optimization). What differs by construction:
+table memory (funnel ≈ 1.05× leaf cells at its 0.95 design load vs
+open-addressing's 2×) and worst-case probes (deterministic funnel bound vs
+linear probing's 21k+ tail at 0.99 load — see `core/hash_backends_results.json`
+and BENCHMARKS.md "Core hash tables"). The funnel advantage is real but it is a
+robustness/memory property, not a frame-time property at this occupancy.
+New "Live hash probing in P2P loop (A/B)" checkbox (plus `?nfprobe=1|0`)
+routes per-neighbor lookups through the live table — the honest probe-cost
+A/B (~+1 ms on the main pass at 500k in single-session A/B, within
+interleaved median noise). The adaptive occupied-node directory keeps the
+funnel hash as its default index (measured +18% steps/s vs the dense
+array, §useAdaptiveNodeHash note in the page).
+
+### 13.5 Scale policy, Direct warning, settings map
+
+- **5M = reference scale** (preset relabeled): the tier where the O(N)
+  far-field methods are actually loaded. New **10M stress preset**
+  (verified on the RTX-class test GPU: O(N) off-mode boots and holds
+  60 steps/s, 0 gaps; **FMM measured 2026-08-26, 60 s runs —
+  fixed-lattice 15 steps/s median (build/m2l/l2p/main 16.9/0.7/22.7/23.2
+  ms, zero diag errors), adaptive 6 steps/s (7→5.8 over the minute, L2P
+  155 ms, worker rebuild 122 ms every 96 frames, 41 nodes at depth 3)**;
+  see §14. Direct at 10M is guarded by the double warning — extrapolated
+  ~minutes per frame from the 500k measurement).
+- **Direct O(N²) double warning**: interactive selection ≥ 150k particles
+  asks for confirmation; ≥ 1M asks a second time with the trillion-pair
+  arithmetic (5M nearly took out the user's machine). Scripted changes
+  (probes, `?fmmdirect=1`) are exempt (`e.isTrusted` gate) so headless
+  contracts are unchanged; a diag/console warning still fires ≥ 500k.
+- **Settings map** (now also in the tooltips): Far-Field Model is the
+  scenario-level choice (gravity=galaxy FMM family, centroids=boids,
+  none=analytic, biot=reserved). FMM Mode/Order/Near-Field Budget are
+  sub-controls of gravity. The Near-Field Hash Mode is shared by ALL
+  scenarios (galaxy P2P, boids, vortex viscosity, SPH). Vortex/KH uses
+  analytic shear + three moving Biot-Savart cores by design; a
+  particle-particle Biot-Savart multipole far field (`biot`) remains a
+  reserved stub — the natural Python reference for it is the screened
+  Yukawa/Helmholtz Taylor FMM in `core/screened_yukawa2d_fmm.py`.
+
+### 13.6 Roadmap (measured, not speculative)
+
+1. GPU-resident adaptive construction (Morton sort + prefix-sum occupancy
+   in the hashed-structure style of Warren & Salmon, 1993; Bonsai-lineage
+   GPU tree codes — Bedorf, Gaburov, & Zwart, 2012): removes the CPU
+   refresh
+   cadence, unlocks deeper trees at 5M (small leaves → cheap EXACT near
+   field → both the 26%-class sampler error and the 49.9 ms L2P disappear
+   together). This is the single change that fixes adaptive at scale.
+2. Hybrid near field (adaptive far field + per-frame fixed-lattice cell
+   lists for P2P) — blocked on list-criteria overlap (double counting)
+   unless the far-field exclusion is recomputed against the finer cutoff.
+3. `biot` far field for the vortex scenario (screened-Poisson/Helmholtz
+   Green's function multipoles, per the Python reference above).
+
+Verification of this round: `tools/smoke_validator.js 8000 120` → all rows
+PASS (adaptive 0.84% / adaptive-vs-fixed 0.74%); `tools/smoke_modes.js` →
+all 8 mode/flag combinations healthy at 120k (direct 20 fps ≈ 50 ms/pair
+pass, others vsync-locked); `tools/check_wgsl_sync.py` → PASS;
+`node -e "new Function(...)"` on the inline script → syntax OK.
+
+## 14. Round-18: professionalism review pass + first 10M measurements
+
+Three parallel reviews (docs, demo UI copy, repo hygiene/tests) and the
+fixes they drove, 2026-08-26. Full finding-by-finding record in
+`docs/review_history/ROUND18_FINDINGS.md`.
+
+- **UI blocker fixed**: `updateFmmControlsState()` overwrote the rich
+  static tooltips (measured numbers, URL params) with short generic text
+  at startup — the §12/§13 honesty tooltips never displayed. Tooltips are
+  now stashed (`dataset.longTitle`) and the enabled state always shows
+  the full text; only the disabled state swaps in the sub-control note.
+- **Validator honesty**: validate.html claimed the demo default tier was
+  "48/48/32" while the rig (n ≤ 32k) actually runs the auto tier's FULL
+  traversal — and the `adaptive-fullNF` attribution control duplicated
+  the adaptive row at that n. The footer now reports the true auto tier
+  via `p2pBudgetAutoForN(n)`, and the attribution control runs only when
+  the auto tier is a sampled one (skipped with an explanatory note at
+  n ≤ 32k; `?p2pbudget=48` measures the sampler's cost there).
+- **`?p2pbudget` URL clamp raised 256 → 4096** to match the sidebar
+  select (512/1024/4096 silently yielded 256 before).
+- **Copy/terminology**: mode names unified (Uniform-Lattice FMM /
+  Adaptive FMM / Direct All-Pairs / None; "Fixed-Grid" and "Analytic (no
+  FMM)" labels retired; validate.html retitled accordingly), "FCK"
+  initialism spelled out, "5M Extreme Mode" telemetry renamed to match
+  the "5M Reference" preset, O(N²) notation unified, dialog tone fixed,
+  AFMM Meta row given real units, meta descriptions added to both pages.
+- **Docs**: README variant table re-pasted from the current
+  BENCHMARKS.md run (the old slice contradicted it ~18× on the FMM row);
+  README "completely replaces sorting and tree construction" rewritten to
+  the honest claim + a new "What 'tree-free' means" section; the eight
+  citation-format violations in the README reference list fixed (plus
+  Warren & Salmon, 1993, and Dongarra & Sullivan, 2000, added as
+  references); dangling `benchmarks/` paths → `core/` (BENCHMARKS.md,
+  §11); §2/§5.4 stale numbers refreshed; INAPPLICABILITY Class D numbers
+  updated post-FFT-rewrite; conversational asides removed from the README
+  front page; bibtex title aligned with CITATION.cff.
+- **Tests/hygiene at review time**: `pytest tests/core` 108 passed /
+  3 skipped (WGSL numeric tests need node/wgpu), `check_wgsl_sync.py`
+  PASS, all README links resolve.
+
+### 14.1 First 10M stress measurements (60 s runs, same RTX-class GPU)
+
+| config | steps/s med | first5→last5 | gaps>100 ms/s | build/m2l/l2p/main ms | notes |
+|---|---|---|---|---|---|
+| fixed+counting | 15 | 15.2→15.0 | 0.12 | 16.9/0.7/22.7/23.2 | zero diag errors |
+| adaptive (tier 32) | 6 | 7→5.8 | 5.73 | 0.8/0.1/155.3/3.1 | worker rebuild 122 ms / 96 f, 41 nodes, depth 3, zero diag errors |
+
+Extrapolation corrected: §13.5 had projected ~20 steps/s for fixed at
+10M from the 5M row; measured 15. The adaptive 5M→10M behavior matches
+the §13.3 attribution exactly (depth-3 tree, ~244k particles/leaf, L2P
+dominated). Artifacts: `tools/bench_r18_10m_{fixed,adaptive}.jsonl`.
+
+Verification of this round: `tools/_build_validate.py` re-splice →
+byte-clean; `python tools/check_wgsl_sync.py` → PASS; `node --check` on
+both pages' inline scripts → OK; `node tools/smoke_validator.js 8000 120`
+→ all rows PASS (adaptive 0.84%, adaptive-vs-fixed 0.74% — unchanged
+from §13.2, i.e. the copy edits did not touch the physics).
+
+---
+
+## 15. Round-19: standard self-gravity scenarios (virialized log-disk + cold collapse) with exact-Hamiltonian dE/E
+
+Motivation (owner question, 2026-08-27): every gravitational N-body paper
+validates against standard scenarios — an equilibrium system and a cold
+collapse — with energy conservation dE/E and Lagrangian radii as the
+metrics. The demo previously had neither: its ICs prescribe each galaxy's
+potential analytically (the O(N) shortcut), so no closed system existed to
+conserve. This round adds the two standards **in the engine's own force
+law**, selected from the new "Galaxy Initial Conditions" control or
+`?ic=flyby|plummer|collapse`, with an exact-Hamiltonian energy diagnostic
+and Lagrangian radii in the sidebar and in validate.html.
+
+### 15.1 The force law, stated honestly
+
+The demo's particle-particle gravity is **2D logarithmic and attractive**:
+
+    F_ij = -Gp (r_i - r_j) / (r_ij^2 + eps^2),   eps^2 = 4e-5 (P2P_EPS2)
+
+from the confining pair potential U(r) = +(Gp/2) ln(r^2 + eps^2) (force =
+-grad U). This is the kernel the complex-Taylor FMM operators, the fixed-grid
+M2L/L2P chain, the direct all-pairs baseline, and the near-field P2P all
+implement — so the standard scenarios validate exactly what the engine
+computes. Log gravity in 2D obeys a Gauss law, F(R)·2πR = 2πG·M_enc(R),
+so any axisymmetric disk has F(R) = G·M_enc(R)/R in closed form; in
+particular the interior of a uniform disk is exactly harmonic
+(F = G·π·Σ0·R).
+
+The stellar-dynamics classics (a 3D Plummer sphere in Hénon units, e.g.
+Heggie & Hut, 2003) cannot be transplanted literally into a 2D engine; the
+scenarios below are their 2D-log analogues, with every closed form derived
+for this kernel rather than asserted by analogy.
+
+### 15.2 Scenario 1: virialized log-disk (Q ≈ 1)
+
+Positions: Σ(R) = M/(πa²) (1+R²/a²)^-2, a = 0.1, M = μ = 2e-3 (G = 1,
+per-particle mass μ/N so the total G·M is N-independent). By the Gauss law
+M_enc(R) = M·R²/(R²+a²), which inverts to the exact sampler
+R = a·sqrt(u/(1-u)); the circular speed of its own field is
+v_c(R) = sqrt(G·M)·R/sqrt(R²+a²) (flat rotation curve outside ~a, i.e.
+Mestel-like; harmonic core inside).
+
+Velocities: rotation + dispersion, v_φ = v_c·sqrt(1-s²), σ_R = s·v_c with
+s = 0.3 — the standard practice for N-body disk ICs (centrifugal balance
+minus the dispersion's contribution). **Virial by construction** (2K =
+Σᵢ Rᵢ·|Fᵢ| for centrifugal support), **not an exact distribution-function
+solution**.
+
+Honest negative result worth recording: the first attempt used an isotropic
+constant-dispersion equilibrium claimed from the 2D Jeans equation,
+σ² = G·M/(4a). That derivation dropped the geometric (Σσ²)/R term; with
+it, the exact isotropic solution of this profile is
+σ²(R) = (GM/a)(1+u²)²[π/16 − J(u)]/u with J(u) = u/(8(1+u²)) −
+u/(4(1+u²)²) + atan(u)/8 — which **diverges as 1/u at the center**. The
+buggy constant-σ ICs were measured expanding (r50 ×4.2, dE/E −62% with a
+sign-flipped energy formula) before the fix; the warm rotating disk holds
+(r50 ×0.98). Both runs are in the round-19 smoke logs.
+`tests/physics_simulation/test_standard_ics.py` now gates the sampler
+(enclosed-mass quantiles), the virial identity 2K = Σ R·F (direct O(n²)
+forces), and the energy-convention consistency independently in numpy.
+
+### 15.3 Scenario 2: cold collapse (Q = 0)
+
+Uniform disk, R0 = 0.3, zero velocities. The unsoftened interior force is
+exactly harmonic (ω² = GπΣ0 = G·M/R0²), so every interior particle reaches
+the center at the analytic free-fall time
+
+    t_ff = π / (2ω) = π·R0 / (2·sqrt(G·M)) = 10.537 time units
+          (= 439 steps at dt = 0.024)
+
+independent of radius. Softening (ε = 0.0063 ≪ R0) regularizes the bounce;
+the numpy oracle test measures minimum-r50 at 0.7–1.5 × t_ff.
+
+### 15.4 Implementation
+
+- `SimParams` grows two uniform words (buffer 112 → 128 B): `coreGM`
+  (per analytic core; 0 for the standard ICs — cores pinned at the center,
+  `updateGalaxyCores` early-returns) and `gpPerParticle` (flyby: 0.015/N
+  with the calibrated half-core split; standard: μ/N). Both writers (demo
+  `runWebGPUFrame`, rig `writeSimUniform`) compute them identically; the
+  shader's hardcoded select() is gone.
+- New WGSL entry point `energy_phi` (bindings 13–15, used only by it, so
+  the main 13-binding pipeline layout is untouched): per particle
+  φᵢ = Σ_{j≠i} ln(r_ij²+ε²), |vᵢ|², and rᵢ from the center.
+  E = Σ|v|²/2 + (Gp/4)·Σφᵢ is the EXACT softened Hamiltonian of the closed
+  system. O(N²): demo telemetry caps at N ≤ 200,000 and runs every 96
+  frames ("Self-Gravity Energy" + "Lagrangian Radii" rows, r20/r50/r80 with
+  the t0 ratio); the rig runs it at t0 and t_final per mode.
+- The mouse attractor is disabled in the standard scenarios (external
+  momentum would corrupt the conservation readout); the UI copy says so.
+- validate.html: `?ic=` runs the whole existing cross-validation on the new
+  ICs AND adds standard-scenario rows — per-mode dE/E (absolute and,
+  crucially, relative to the direct run's own dE/E), r50/r80 ratios, the
+  r80 window [0.75, 1.40] for the log-disk, and the r50 ≤ 0.75 collapse
+  signature once steps·dt > 0.6·t_ff. The "off" row becomes a free-streaming
+  null control (on the cold ICs: a frozen system, measured dE/E exactly
+  +0.000%).
+
+### 15.5 Measured results (n=8000, dt=0.024, same RTX-class GPU as §13/§14)
+
+ic=plummer, 240 steps (5.76 t.u. ≈ 1.8 crossing times):
+
+| mode | dv rel_l2 vs direct | dE/E | dE/E − direct | r50(t)/r50(0) | r80(t)/r80(0) |
+|---|---|---|---|---|---|
+| direct   | 0        | +3.439% | 0       | ×0.977 | 1.043 |
+| fixed    | 0.010753 | +3.436% | −0.003% | ×0.978 | 1.044 |
+| adaptive | 0.001097 | +3.423% | −0.016% | ×0.973 | 1.043 |
+| off      | (INFO)   | +42.6%  | —       | ×2.000 | free streaming |
+
+ic=collapse, 480 steps (11.52 t.u. > t_ff = 10.54; through maximum
+compression and bounce):
+
+| mode | dv rel_l2 vs direct | dE/E | dE/E − direct | r50(t)/r50(0) |
+|---|---|---|---|---|
+| direct   | 0        | +0.158% | 0      | ×0.643 |
+| fixed    | 0.010872 | +0.155% | −0.003% | ×0.628 |
+| adaptive | 0.008837 | −0.990% | −1.15% | ×0.633 |
+
+Findings the metrics surfaced (all new, none threshold-loosened away):
+
+1. **The integrator floor is symplectic Euler, not leapfrog** (v += a·dt;
+   x += v·dt in `fn main`): its shadow-Hamiltonian offset at dt=0.024 is
+   +3.4% on the log-disk ICs, mode-independent (direct = fixed = adaptive
+   to 0.02%). The rig therefore checks the FMM modes' dE/E **relative to
+   the direct run's** — the force-approximation-induced drift — which
+   measures 0.003% (fixed) / 0.016% (adaptive) on the log-disk.
+2. **Through cold collapse, adaptive drifts −1.15% vs direct** (threshold
+   2%): the adaptive far field softens only the monopole term, and at
+   maximum compression (leaf size ~ ε) the unsoftened higher-order
+   multipoles inject this apparent drift. Forces still agree with direct
+   at dv rel_l2 0.9%, and the fixed grid — whose minimum cell (1/64 at
+   n=8000) stays ~2.5 ε — shows only −0.003%. Recorded as a measured
+   characteristic, not a failure.
+3. **Long-horizon demo drift at 120k (fixed grid)**: ~11.8k steps (283
+   t.u.) on the log-disk gives dE/E = −6.8% while r50 stays ×0.98 —
+   leafBits(120k) = 7 makes the finest cell 1/128 ≈ 1.2 ε, so the same
+   soften-the-monopole-only mismatch acts continuously in the disk core
+   (~−0.02%/t.u.). The collapse IC at 120k (post-bounce halo) measures
+   +0.08% over the same horizon. The validator's short horizons are
+   insensitive to this; the honest fix (softened higher-order M2L
+   operators) is future work.
+4. On the rotating disk the adaptive FMM's per-step force error vs direct
+   is 0.11% — its quadtree concentrates resolution exactly where the disk
+   does, vs 1.1% for the uniform lattice at this n.
+
+Demo spot-checks (probe_stdics.js, 120k, uncapped): log-disk 732 fps with
+the diagnostic kernel running every 96 frames; collapse 528 fps through
+the bounce; zero console errors; `check_wgsl_sync.py` PASS (energy_phi is
+demo-only, INFO row in its report).
+
+### 15.6 How to run
+
+    # flyby regression (numbers must match §13.2/§14 exactly)
+    node tools/smoke_validator.js 8000 120
+    # virIALIZED log-disk: equilibrium maintenance + dE/E
+    node tools/smoke_validator.js 8000 240 "ic=plummer"
+    # cold collapse through t_ff: dE/E + r50 collapse signature
+    node tools/smoke_validator.js 8000 480 "ic=collapse"
+    # IC math oracle (sampler, virial identity, energy convention, t_ff)
+    python -m pytest tests/physics_simulation/test_standard_ics.py -v
+    # interactive demo: index.html?ic=plummer (or ?ic=collapse)
+
+Verification of this round: flyby smoke PASS at the §13.2-identical numbers
+(fixed 0.01075 / adaptive 0.00844 / adaptive-vs-fixed 0.00740); plummer and
+collapse smokes PASS (tables above); `tools/_build_validate.py` re-splice
+byte-clean after every template edit; `check_wgsl_sync.py` PASS; `node
+--check` on both pages' inline scripts OK; IC-math tests 4/4 PASS.

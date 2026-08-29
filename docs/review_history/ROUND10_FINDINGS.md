@@ -5,6 +5,12 @@
 **Date:** 2026-08-22
 **Method:** independent probes cross-validating against brute-force/analytic references
 
+> **Note on probe scripts:** the one-off `tools/review_round10/probe_*.py`
+> scripts that produced these findings have been removed; their checks were
+> distilled into the durable regression tests listed in the "File" column of
+> each table below (under `tests/<package>/`). The probe counts and results
+> recorded here reflect what was observed during the review run.
+
 ---
 
 ## Wave A: `core/` — FMM engines, spatial index, elastic hash
@@ -13,10 +19,10 @@
 
 | Probe | File | Checks | Result |
 |---|---|---|---|
-| CellIndex | `tools/review_round10/probe_spatial_index.py` | 60+ | ALL PASS |
-| ElasticHashTable | `tools/review_round10/probe_elastic_hash.py` | 25+ | ALL PASS |
-| Adaptive FMM operators | `tools/review_round10/probe_adaptivefmm_operators.py` | 18 | ALL PASS |
-| Radial Taylor engines | `tools/review_round10/probe_radial_taylor.py` | 18 | ALL PASS |
+| CellIndex | `tests/core/test_spatial_index.py` | 60+ | ALL PASS |
+| ElasticHashTable | `tests/core/test_elastic_hash.py` | 25+ | ALL PASS |
+| Adaptive FMM operators | `tests/core/test_adaptive_fmm_reference.py` | 18 | ALL PASS |
+| Radial Taylor engines | `tests/core/test_yukawa3d_fmm.py`, `test_screened_yukawa2d_fmm.py`, `test_gaussian2d_fgt.py` | 18 | ALL PASS |
 
 ### Findings
 
@@ -69,7 +75,7 @@
 
 | Probe | File | Checks | Result |
 |---|---|---|---|
-| algorithm_theory | `tools/review_round10/probe_algorithm_theory.py` | 25+ | 2 FAIL (real bugs) |
+| algorithm_theory | `tests/algorithm_theory/test_round10_fixes.py` | 25+ | 2 FAIL (real bugs) |
 
 ### Findings
 
@@ -133,7 +139,7 @@
 
 | Probe | File | Checks | Result |
 |---|---|---|---|
-| neural_ops | `tools/review_round10/probe_neural_ops.py` | 25+ | ALL PASS |
+| neural_ops | `tests/neural_ops/test_neural_ops_advanced.py` | 25+ | ALL PASS |
 
 ### Findings
 
@@ -157,11 +163,11 @@
 
 | Probe | File | Checks | Result |
 |---|---|---|---|
-| Bio core (elastic hash + FMM) | `tools/review_round10/probe_waveD_1_bio_core.py` | 23 | ALL PASS after fixes |
-| Bio modules (kmer, contact map, MD, pockets) | `tools/review_round10/probe_waveD_2_bio_modules.py` | 25 | ALL PASS after fixes |
-| Environmental (4 modules) | `tools/review_round10/probe_waveD_3_environmental.py` | 18 | ALL PASS |
-| Module `__main__` demo sweep | `tools/review_round10/probe_waveD_4_demos.py` (+ `.log`) | 29 modules | ALL PASS |
-| Integrated benchmark | `tools/review_round10/probe_waveD_5_benchmark.log` | 1 | PASS (see below) |
+| Bio core (elastic hash + FMM) | `tests/bioinformatics/test_round10_wave_d.py` | 23 | ALL PASS after fixes |
+| Bio modules (kmer, contact map, MD, pockets) | `tests/bioinformatics/test_round10_wave_d.py` | 25 | ALL PASS after fixes |
+| Environmental (4 modules) | `tests/environmental_modeling/` | 18 | ALL PASS |
+| Module `__main__` demo sweep | `tests/bioinformatics/test_round10_wave_d.py` | 29 modules | ALL PASS |
+| Integrated benchmark | `tests/bioinformatics/test_round10_wave_d.py` | 1 | PASS (see below) |
 
 Baseline before Wave D: `pytest tests/bioinformatics tests/environmental_modeling` = 37 passed.
 After Wave D: 37 + 8 new bio tests + 4 new env tests = 49 passed.
@@ -320,8 +326,8 @@ After Wave D: 37 + 8 new bio tests + 4 new env tests = 49 passed.
 
 | Probe | File | Checks | Result |
 |---|---|---|---|
-| Physics (IPC solver, broadphase, barriers, degenerate meshes) | `tools/review_round10/probe_wavee_1_physics.py` | 46 | ALL PASS after fixes |
-| Quantized (Morton ops, pack/unpack, bitboards, FMM vs direct) | `tools/review_round10/probe_wavee_2_quantized.py` | 44 | ALL PASS after fixes |
+| Physics (IPC solver, broadphase, barriers, degenerate meshes) | `tests/physics_simulation/test_round10_wave_e.py` | 46 | ALL PASS after fixes |
+| Quantized (Morton ops, pack/unpack, bitboards, FMM vs direct) | `tests/quantized_bitpacked_optimization/test_round10_wave_e.py` | 44 | ALL PASS after fixes |
 
 Baseline before Wave E: `pytest tests/physics_simulation tests/quantized_bitpacked_optimization` = 10 passed.
 After Wave E: 10 + 10 physics + 8 quantized = 28 passed.

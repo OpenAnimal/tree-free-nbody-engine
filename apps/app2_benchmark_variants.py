@@ -25,6 +25,27 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.benchmark_kit import VariantBenchmark
 
 
+def _lamb_oseen_sheet(n_vortices: int = 400):
+    """Two sinusoidal sheets, each with fixed total circulation +/-1.5."""
+    x = np.linspace(0.1, 0.9, n_vortices // 2)
+    y1 = 0.6 + 0.03 * np.sin(4 * np.pi * x)
+    y2 = 0.4 - 0.03 * np.sin(4 * np.pi * x)
+    pos = np.vstack([np.stack([x, y1], axis=1), np.stack([x, y2], axis=1)]).astype(np.float64)
+    per_row = max(1, n_vortices // 2)
+    circ = np.concatenate([
+        np.full(per_row, 1.5 / per_row),
+        np.full(per_row, -1.5 / per_row),
+    ])
+    return pos, circ
+
+
+def _lamb_oseen_standard(pos, circ, grid_pts, nu=2.5e-4, time_value=1.0,
+                         core_radius=0.01):
+    """Closed-form finite-core Lamb–Oseen velocity reference."""
+    from apps.app2_hydrodynamics import lamb_oseen_velocity
+    return lamb_oseen_velocity(grid_pts, pos, circ, nu, time_value, core_radius)
+
+
 def _vortex_sheet(n_vortices: int = 400):
     """Same vortex sheet geometry as app2_hydrodynamics.simulate_vortex_sheet."""
     x = np.linspace(0.1, 0.9, n_vortices // 2)
@@ -92,5 +113,39 @@ def run_app2_variants(n_vortices: int = 400, res: int = 80):
     return bench.run()
 
 
+def _fmm_lamb_oseen_point_approx(pos, circ, grid_pts, res, softening=0.01):
+    """FMM point-vortex approximation for the Lamb–Oseen field.
+
+    The log FMM does not yet implement a Gaussian-core Biot–Savart kernel, so
+    this row is intentionally labeled as a model comparison, not an exact
+    Lamb–Oseen accuracy claim. It measures the cost and discrepancy against
+    the closed-form standard while keeping the limitation visible.
+    """
+    return _fmm_streamfunction_velocity(pos, circ, grid_pts, res, depth=5, order=8)
+
+
+def run_lamb_oseen_variants(n_vortices: int = 400, res: int = 80):
+    """Benchmark the Lamb–Oseen scientific standard and current FMM proxy."""
+    pos, circ = _lamb_oseen_sheet(n_vortices)
+    _, _, grid_pts = _probe_grid(res=res)
+    bench = VariantBenchmark(
+        f"App 2 -- Lamb-Oseen vortex sheet (N_vort={n_vortices}, "
+        f"probe grid {res}x{res})"
+    )
+    bench.add(
+        "standard (closed-form Lamb-Oseen)",
+        lambda: _lamb_oseen_standard(pos, circ, grid_pts),
+        note="Gaussian-core analytic reference; circulation conserved, core a²=a0²+4νt",
+    )
+    bench.add(
+        "+fmm (point-vortex log proxy)",
+        lambda: _fmm_lamb_oseen_point_approx(pos, circ, grid_pts, res),
+        accuracy_vs="standard (closed-form Lamb-Oseen)",
+        note="current 2D-log FMM proxy; discrepancy includes kernel-model error because Gaussian-core Biot-Savart FMM is future work",
+    )
+    return bench.run()
+
+
 if __name__ == "__main__":
     run_app2_variants()
+    run_lamb_oseen_variants()

@@ -40,9 +40,13 @@ const EXE_CANDIDATES = [
 const EXE = EXE_CANDIDATES.find((p) => fs.existsSync(p)) || undefined;
 
 const CONFIGS = [
-    { label: 'fixed+counting',  url: '',                toggle: {} },
-    { label: 'fixed+openaddr',  url: '',                toggle: { hashMode: 'openaddr' } },
-    { label: 'fixed+funnel',    url: '',                toggle: { hashMode: 'funnel' } },
+    { label: 'fixed+p0+counting', url: '', toggle: { order: '0' } },
+    { label: 'fixed+p1+counting', url: '', toggle: { order: '1' } },
+    { label: 'fixed+p2+counting', url: '', toggle: { order: '2' } },
+    { label: 'fixed+p4+counting', url: '', toggle: { order: '4' } },
+    { label: 'fixed+openaddr', url: '', toggle: { hashMode: 'openaddr', order: '2' } },
+    { label: 'fixed+funnel', url: '', toggle: { hashMode: 'funnel', order: '2' } },
+    { label: 'fixed+counting', url: '', toggle: { order: '2' } },
     { label: 'adaptive+ahash1', url: '',                toggle: { fmmMode: 'adaptive' } },
     { label: 'adaptive+ahash0', url: '?adaptiveHash=0', toggle: { fmmMode: 'adaptive' } },
     // Round 13 A/B: the materialized far-field CSR gather (default ON since
@@ -69,7 +73,7 @@ const CONFIGS = [
     const measureOne = async (cfg) => {
         // ?uncapped=1: benchmark numbers require the MessageChannel scheduler
         // (the page now DEFAULTS to the vsync-locked loop at 60 fps).
-        const url = `${BASE}?preset=500k&scenario=galaxy&n=${N}&uncapped=1${cfg.url ? '&' + cfg.url.slice(1) : ''}`;
+        const url = `${BASE}?preset=500k&scenario=galaxy&n=${N}&uncapped=1&seed=42${cfg.url ? '&' + cfg.url.slice(1) : ''}`;
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         // Init at 5M (particle generation + upload + first compile) far
         // exceeds the default 20 s badge wait — scale it with N.
@@ -81,8 +85,10 @@ const CONFIGS = [
         if (Object.keys(cfg.toggle).length) {
             await page.evaluate((t) => {
                 if (t.fmmMode) document.getElementById('selectFmmMode').value = t.fmmMode;
+                if (t.order) document.getElementById('selectFmmOrder').value = t.order;
                 if (t.hashMode) document.getElementById('selectHashMode').value = t.hashMode;
                 document.getElementById('selectFmmMode').dispatchEvent(new Event('change'));
+                document.getElementById('selectFmmOrder').dispatchEvent(new Event('change'));
                 document.getElementById('selectHashMode').dispatchEvent(new Event('change'));
             }, cfg.toggle);
         }
@@ -92,8 +98,15 @@ const CONFIGS = [
                 const samples = [];
                 const start = Date.now();
                 const iv = setInterval(() => {
+                    const num = (id) => parseFloat(document.getElementById(id)?.innerText || '') || 0;
                     samples.push({
-                        fps: parseFloat(document.getElementById('valFPS').innerText) || 0,
+                        fps: num('valFPS'),
+                        pipeline: num('valPipelineRate'),
+                        gpuWork: num('valGpuWorkRate'),
+                        gpuComplete: num('valGpuComplete'),
+                        totalGpu: num('valTotalGpu'),
+                        build: num('valFmmBuild'),
+                        main: num('valMainCompute'),
                         axis: document.getElementById('valFmmAxis')?.innerText || '',
                         diag: document.getElementById('diagChannel')?.textContent || '',
                     });
@@ -107,10 +120,13 @@ const CONFIGS = [
     for (let round = 0; round < ROUNDS; round++) {
         for (const cfg of CONFIGS) {
             const tel = await measureOne(cfg);
-            const v = tel.filter(s => s.fps > 0).map(s => s.fps).sort((a, b) => a - b);
-            const median = v.length ? v[Math.floor(v.length / 2)] : 0;
+            const valid = tel.filter(s => s.fps > 0);
+            const med = (key) => {
+                const v = valid.map(s => s[key]).filter(x => x > 0).sort((a, b) => a - b);
+                return v.length ? v[Math.floor(v.length / 2)] : 0;
+            };
             const a = acc.get(cfg.label);
-            a.rounds.push(median);
+            a.rounds.push({ steps: med('fps'), pipeline: med('pipeline'), gpuWork: med('gpuWork'), gpuComplete: med('gpuComplete'), totalGpu: med('totalGpu'), build: med('build'), main: med('main') });
             a.axes.add(tel[tel.length - 1].axis);
             try { if ((JSON.parse(tel[tel.length - 1].diag).errors || []).length) a.diagErrs++; } catch (e) {}
         }
@@ -122,8 +138,14 @@ const CONFIGS = [
     const results = [];
     for (const cfg of CONFIGS) {
         const a = acc.get(cfg.label);
-        const med = a.rounds.slice().sort((x, y) => x - y)[Math.floor(a.rounds.length / 2)];
-        results.push({ config: cfg.label, N, medianStepsPerSec: med, rounds: a.rounds, axis: [...a.axes][0], diagErrRounds: a.diagErrs });
+        const mid = a.rounds.slice().sort((x, y) => x.steps - y.steps)[Math.floor(a.rounds.length / 2)];
+        results.push({ config: cfg.label, N, medianStepsPerSec: mid.steps,
+            medianPipelineStepsPerSec: mid.pipeline,
+            medianGpuWorkPartsPerSec: mid.gpuWork,
+            medianGpuCompleteMs: mid.gpuComplete,
+            medianTotalGpuMs: mid.totalGpu,
+            medianBuildMs: mid.build, medianMainMs: mid.main,
+            rounds: a.rounds.map(x => x.steps), axis: [...a.axes][0], diagErrRounds: a.diagErrs });
     }
     for (const r of results) console.log(JSON.stringify(r));
     if (errors.length) console.log(JSON.stringify({ consoleErrors: errors }));
@@ -135,7 +157,7 @@ const CONFIGS = [
     }
     await browser.close();
 
-    console.log('\n| config | median steps/sec | rounds |');
-    console.log('|---|---|---|');
-    for (const r of results) console.log(`| ${r.config} | ${r.medianStepsPerSec} | ${r.rounds.join(', ')} |`);
+    console.log('\n| config | steps/sec | GPU work M parts/sec | GPU complete ms | total GPU ms | build ms | main ms | rounds |');
+    console.log('|---|---:|---:|---:|---:|---:|---:|---|');
+    for (const r of results) console.log(`| ${r.config} | ${r.medianStepsPerSec} | ${r.medianGpuWorkPartsPerSec} | ${r.medianGpuCompleteMs} | ${r.medianTotalGpuMs} | ${r.medianBuildMs} | ${r.medianMainMs} | ${r.rounds.join(', ')} |`);
 })().catch(err => { console.error('FAILED:', err); process.exit(1); });

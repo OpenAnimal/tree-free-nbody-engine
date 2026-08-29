@@ -21,6 +21,7 @@ O(occupied_cells) dict scans rather than hash probes. Membership and
 per-neighborhood queries -- the hot paths -- remain hash-probe only.
 """
 
+from itertools import product
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -47,16 +48,34 @@ def morton_3d_key(ix: int, iy: int, iz: int) -> int:
     return m
 
 
+def morton_nd_key(coords: Tuple[int, ...], bits: int) -> int:
+    """Interleave arbitrary-dimensional integer coordinates into one key.
+
+    The specialized 1D/2D/3D encodings above remain byte-for-byte compatible.
+    This generic path is used for higher-dimensional neural-operator inputs;
+    callers must keep ``len(coords) * bits <= 63`` so keys remain valid signed
+    64-bit hash keys.
+    """
+    if bits < 1 or len(coords) < 1 or len(coords) * bits > 63:
+        raise ValueError("invalid Morton dimensions/bit budget")
+    mask = (1 << bits) - 1
+    key = 0
+    for b in range(bits):
+        for axis, coord in enumerate(coords):
+            key |= ((int(coord) & mask) >> b & 1) << (b * len(coords) + axis)
+    return key
+
+
 class CellIndex:
     """
     Authoritative spatial cell index over an elastic hash table.
 
     Parameters
     ----------
-    dims : 1, 2 or 3.
+    dims : any positive integer.
     grid_res : "unit" mode (default) — positions live in [0,1)^dims and are
-        quantized with floor(p * grid_res) (grid_res <= 4096 for 1D/2D,
-        <= 1024 for 3D).
+        quantized with floor(p * grid_res). 1D/2D/3D keep their historical
+        compact key formats; higher dimensions use generic Morton keys.
     cell_size : pass explicitly for "world" mode — positions are world units,
         quantized as floor(p / cell_size) + 512 into 1024 cells per axis.
 
@@ -72,10 +91,18 @@ class CellIndex:
     """
 
     def __init__(self, dims: int = 2, grid_res: int = 32, cell_size: Optional[float] = None):
-        if dims not in (1, 2, 3):
-            raise ValueError("dims must be 1, 2, or 3")
-        self.dims = dims
+        if int(dims) < 1:
+            raise ValueError("dims must be positive")
+        self.dims = int(dims)
         self.grid_res = int(grid_res)
+        if self.grid_res < 1:
+            raise ValueError("grid_res must be positive")
+        self._morton_bits = (int(np.ceil(np.log2(self.grid_res)))
+                             if self.grid_res > 1 else 1)
+        if self.dims > 3 and self.dims * self._morton_bits > 63:
+            raise ValueError(
+                f"{self.dims}D grid_res={self.grid_res} exceeds the 63-bit "
+                "generic Morton key budget")
         self.unit_mode = cell_size is None
         if self.unit_mode:
             self.cell_size = 1.0
@@ -118,9 +145,12 @@ class CellIndex:
         if self.dims == 2:
             return morton_2d_key(int(self._quantize_axis(p[:1])[0]),
                                  int(self._quantize_axis(p[1:2])[0]))
-        return morton_3d_key(int(self._quantize_axis(p[:1])[0]),
-                             int(self._quantize_axis(p[1:2])[0]),
-                             int(self._quantize_axis(p[2:3])[0]))
+        if self.dims == 3:
+            return morton_3d_key(int(self._quantize_axis(p[:1])[0]),
+                                 int(self._quantize_axis(p[1:2])[0]),
+                                 int(self._quantize_axis(p[2:3])[0]))
+        coords = tuple(int(v) for v in self._quantize_axis(p[:self.dims]))
+        return morton_nd_key(coords, self._morton_bits)
 
     def key_ints(self, key: int) -> Tuple[int, ...]:
         """Decode a key back to integer cell coordinates."""
@@ -128,12 +158,18 @@ class CellIndex:
             return (int(key) & 0xFFF,)
         if self.dims == 2:
             return (key & 0xFFF, key >> 12)
-        ix = iy = iz = 0
-        for b in range(10):
-            ix |= (key >> (2 * b)) & (1 << b)
-            iy |= (key >> (2 * b + 1)) & (1 << b)
-            iz |= (key >> (2 * b + 2)) & (1 << b)
-        return (ix, iy, iz)
+        if self.dims == 3:
+            ix = iy = iz = 0
+            for b in range(10):
+                ix |= (key >> (2 * b)) & (1 << b)
+                iy |= (key >> (2 * b + 1)) & (1 << b)
+                iz |= (key >> (2 * b + 2)) & (1 << b)
+            return (ix, iy, iz)
+        coords = [0] * self.dims
+        for b in range(self._morton_bits):
+            for axis in range(self.dims):
+                coords[axis] |= ((int(key) >> (b * self.dims + axis)) & 1) << b
+        return tuple(coords)
 
     def _neighbor_key(self, key: int, d):
         """Shifted key, or None if the shifted cell falls outside the grid."""
@@ -147,7 +183,9 @@ class CellIndex:
             return morton_1d_key(ints[0])
         if self.dims == 2:
             return morton_2d_key(ints[0], ints[1])
-        return morton_3d_key(*ints)
+        if self.dims == 3:
+            return morton_3d_key(*ints)
+        return morton_nd_key(tuple(ints), self._morton_bits)
 
     # ------------------------------------------------------------------ #
     # Build
@@ -168,13 +206,19 @@ class CellIndex:
             ix = self._quantize_axis(positions[:, 0])
             iy = self._quantize_axis(positions[:, 1])
             keys = (iy << 12) | ix
-        else:
+        elif self.dims == 3:
             ix = self._quantize_axis(positions[:, 0])
             iy = self._quantize_axis(positions[:, 1])
             iz = self._quantize_axis(positions[:, 2])
             keys = np.zeros(n, dtype=np.int64)
             for b in range(10):
                 keys |= ((ix & (1 << b)) << (2 * b)) | ((iy & (1 << b)) << (2 * b + 1)) | ((iz & (1 << b)) << (2 * b + 2))
+        else:
+            axes = [self._quantize_axis(positions[:, axis]) for axis in range(self.dims)]
+            keys = np.asarray([
+                morton_nd_key(tuple(int(axis[i]) for axis in axes), self._morton_bits)
+                for i in range(n)
+            ], dtype=np.uint64)
 
         unique_keys, inverse = np.unique(keys, return_inverse=True)
         for c_id, k in enumerate(unique_keys):
@@ -229,9 +273,11 @@ class CellIndex:
             deltas = [(dx,) for dx in range(-ring, ring + 1)]
         elif self.dims == 2:
             deltas = [(dx, dy) for dx in range(-ring, ring + 1) for dy in range(-ring, ring + 1)]
-        else:
+        elif self.dims == 3:
             deltas = [(dx, dy, dz) for dx in range(-ring, ring + 1)
                       for dy in range(-ring, ring + 1) for dz in range(-ring, ring + 1)]
+        else:
+            deltas = product(range(-ring, ring + 1), repeat=self.dims)
         for d in deltas:
             nk = self._neighbor_key(key, d)
             if nk is not None and self.hash_table.get(nk) is not None:

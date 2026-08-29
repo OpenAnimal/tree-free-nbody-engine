@@ -7,7 +7,7 @@ Extracts the shared structure from the three copy-pasted engines:
 
 Shared code (this module):
   - multi-index helpers (multi_indices, factorial) parameterized by dims
-  - P_{alpha,n} polynomial-tensor builder (dims=2|3)
+  - P_{alpha,n} polynomial-tensor builder (arbitrary spatial dims)
   - polynomial helpers (deriv_xi, mul_xi, eval_poly)
   - ring-2 flat scheme driver (P2M / M2L / L2P / near-field via CellIndex)
 
@@ -211,7 +211,9 @@ class RadialTaylorFMM:
     p : int
         Truncation order (moments and locals up to |alpha| <= p).
     dims : int
-        Spatial dimensionality (2 or 3).
+        Spatial dimensionality (any positive integer supported by CellIndex;
+        1D-3D retain their historical key formats and higher dimensions use
+        generic Morton keys).
     G_n : callable
         Radial function evaluator G_n(r: ndarray, n: int) -> ndarray.
     near_field_kernel : callable

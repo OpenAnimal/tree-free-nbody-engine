@@ -13,9 +13,10 @@ from .elastic_hash import (
     funnel_probe,
     jax_hash_probe,
 )
-from .spatial_index import CellIndex, morton_2d_key, morton_3d_key
+from .spatial_index import CellIndex, morton_2d_key, morton_3d_key, morton_nd_key
 from .validation import cross_validate, fmt_validation, assert_accuracy
 from .benchmark_kit import VariantBenchmark
+from .radial_taylor import RadialTaylorFMM, multi_indices, factorial
 from .adaptive_gpu_metadata import (
     FlatAdaptiveMetadata,
     build_flat_adaptive_metadata,
@@ -153,10 +154,14 @@ __all__ = [
     "CellIndex",
     "morton_2d_key",
     "morton_3d_key",
+    "morton_nd_key",
     "cross_validate",
     "fmt_validation",
     "assert_accuracy",
     "VariantBenchmark",
+    "RadialTaylorFMM",
+    "multi_indices",
+    "factorial",
     "FlatAdaptiveMetadata",
     "build_flat_adaptive_metadata",
     "MAX_INTERACTIONS_PER_NODE",

@@ -18,7 +18,7 @@ tree-free-nbody-engine/
 │   ├── device_runtime.py                # Unified multi-backend device runtime (CPU/CUDA/ROCm/OpenCL/WebGPU)
 │   ├── bitboard_morton_avx.py           # AVX bitboard Morton spatial encoding
 │   ├── zig_backend.py                   # High-performance compiled Zig C-ABI bindings
-│   ├── test_amd_radeon_compliance.py    # Cross-platform AMD Radeon / ROCm / OpenCL verification testbed
+│   ├── adaptive_fmm.py                  # Canonical vectorized adaptive FMM (CGR88), 2:1-balanced level-batched
 │   ├── cuda_kernels/                    # Native CUDA (.cu) & Triton JIT FMM kernels
 │   │   ├── tree_free_fmm_kernel.cu      # Native CUDA lock-free atomicCAS & shared-memory FMM kernel
 │   │   └── triton_tree_free_fmm.py      # Block-tiled OpenAI Triton PyTorch GPU kernel
@@ -265,7 +265,7 @@ python apps/app10_continuous_gnn_fmm.py
 ### 3. Sub-Package Test Suites & Benchmarks
 ```bash
 # Core & Device Runtime: Compliance across CPU, CUDA, AMD ROCm, OpenCL, WebGPU
-python core/test_amd_radeon_compliance.py
+python -m pytest tests/core/test_amd_radeon_compliance.py -q
 
 # Native Zig C-ABI: Compiled library verification & bare-metal speedup benchmark
 python native/benchmark_zig_backend.py
@@ -316,7 +316,7 @@ python physics_simulation/ppf_contact_solver_fmm/benchmark_contact_scaling.py
   * **AMD ROCm / HIP Kernel (`core/hip_kernels/tree_free_fmm_kernel.hip`):** Native AMD Radeon / ROCm kernel featuring lock-free atomics and warp shuffle reductions.
   * **OpenAI Triton Kernel (`core/cuda_kernels/triton_tree_free_fmm.py`):** Block-tiled GPU kernel for PyTorch providing fused SRAM potential evaluations.
   * **OpenCL Backend (`core/opencl_kernels/tree_free_fmm_opencl.cl`):** Vendor-agnostic acceleration for AMD, Intel, and Apple Silicon GPUs.
-  * **WebGPU Client (`core/webgpu_kernels/tree_free_fmm.wgsl` & `index.html`):** In-browser compute shaders and GPU-instanced point rendering handling up to 5,000,000+ particles.
+  * **WebGPU Client (`core/webgpu_kernels/tree_free_fmm.wgsl` & `index.html`):** In-browser compute shaders and GPU-instanced point rendering handling up to 10,000,000 particles (5M reference / 10M stress presets).
 
 ---
 

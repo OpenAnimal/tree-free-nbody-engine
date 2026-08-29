@@ -37,6 +37,48 @@ def test_key_roundtrip_3d():
         assert (rx, ry, rz) == (ix, iy, iz)
 
 
+def test_4d_cell_index_roundtrip_and_neighbors():
+    rng = np.random.default_rng(41)
+    pos = rng.uniform(0.0, 1.0, (300, 4))
+    idx = CellIndex(dims=4, grid_res=8)
+    unique, inverse = idx.build(pos)
+    assert len(unique) == len(idx)
+    for i in rng.choice(len(pos), 20, replace=False):
+        key = idx.key_of(pos[i])
+        assert idx.cell_id(key) is not None
+        assert idx.key_ints(key) == tuple(np.floor(pos[i] * 8).astype(int))
+        near = set(idx.neighborhood_indices(key, ring=1).tolist())
+        assert int(i) in near
+    assert inverse.shape == (len(pos),)
+
+
+def test_4d_radial_taylor_gaussian_smoke():
+    """The dimension-parameterized radial FMM accepts neural-style 4D coords."""
+    from core.radial_taylor import RadialTaylorFMM
+
+    rng = np.random.default_rng(42)
+    pos = rng.uniform(0.05, 0.95, (120, 4))
+    q = rng.uniform(-1.0, 1.0, len(pos))
+    h2 = 0.35 ** 2
+
+    def g_n(r, n):
+        return (-2.0 / h2) ** n * np.exp(-(r * r) / h2)
+
+    def near(diff):
+        return np.exp(-np.sum(diff * diff, axis=-1) / h2)
+
+    fmm = RadialTaylorFMM(depth=8, p=3, dims=4, G_n=g_n,
+                          near_field_kernel=near, ring_direct=1)
+    got = fmm.evaluate(pos, q)
+    diff = pos[:, None, :] - pos[None, :, :]
+    kernel = np.exp(-np.sum(diff * diff, axis=-1) / h2)
+    np.fill_diagonal(kernel, 0.0)
+    ref = np.sum(q[None, :] * kernel, axis=1)
+    rel = np.linalg.norm(got - ref) / np.linalg.norm(ref)
+    assert np.isfinite(got).all()
+    assert rel < 0.15, f"4D radial FMM smoke rel-L2={rel:.3e}"
+
+
 def test_build_and_membership():
     rng = np.random.default_rng(1)
     pos = rng.uniform(0, 1, (500, 2))
@@ -164,7 +206,9 @@ def test_benchmark_kit_table():
 
 if __name__ == "__main__":
     tests = [
-        test_key_roundtrip_2d, test_key_roundtrip_3d, test_build_and_membership,
+        test_key_roundtrip_2d, test_key_roundtrip_3d,
+        test_4d_cell_index_roundtrip_and_neighbors,
+        test_4d_radial_taylor_gaussian_smoke, test_build_and_membership,
         test_neighbor_superset_property_2d, test_neighbor_superset_property_3d,
         test_far_keys_partition, test_moments, test_rebuild_drops_stale_keys,
         test_cross_validate_convention, test_benchmark_kit_table,

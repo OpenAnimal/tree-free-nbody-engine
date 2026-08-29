@@ -34,9 +34,9 @@ compactness -- NOT raw pure-Python throughput (the C dict wins that; the
 prose in BENCHMARKS.md says so plainly).
 
 Standalone (repo root):
-    python -X utf8 benchmarks/bench_hash_backends.py --quick
-    python -X utf8 benchmarks/bench_hash_backends.py            # few minutes
-    python -X utf8 benchmarks/bench_hash_backends.py --ns 100000
+    python -X utf8 core/bench_hash_backends.py --quick
+    python -X utf8 core/bench_hash_backends.py            # few minutes
+    python -X utf8 core/bench_hash_backends.py --ns 100000
 """
 
 import argparse

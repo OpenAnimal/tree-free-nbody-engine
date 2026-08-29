@@ -25,6 +25,86 @@ def biot_savart_direct(px, py, pos, circulations):
     v = np.sum(circulations * dx / r2) / (2 * np.pi)
     return u, v
 
+def lamb_oseen_sheet(n_vortices: int = 400):
+    """Return two equal-and-opposite rows of finite-core Lamb–Oseen vortices.
+
+    Each row has fixed total circulation (+/-1.5); the individual blobs are
+    normalized by the number of vortices so the result is resolution-stable.
+    """
+    x = np.linspace(0.1, 0.9, n_vortices // 2)
+    y1 = 0.6 + 0.03 * np.sin(4 * np.pi * x)
+    y2 = 0.4 - 0.03 * np.sin(4 * np.pi * x)
+    pos = np.vstack([np.stack([x, y1], axis=1), np.stack([x, y2], axis=1)]).astype(np.float64)
+    per_row = max(1, n_vortices // 2)
+    circulations = np.concatenate([
+        np.full(per_row, 1.5 / per_row),
+        np.full(per_row, -1.5 / per_row),
+    ])
+    return pos, circulations
+
+
+def lamb_oseen_velocity(points, centers, circulations, nu=2.5e-4,
+                        time_value=1.0, core_radius=0.01):
+    """Closed-form velocity of finite-core Lamb–Oseen vortices.
+
+    The Gaussian core grows as ``a^2 = core_radius^2 + 4*nu*t`` while total
+    circulation is conserved.  This is the scientific reference used by the
+    App-2 Lamb–Oseen benchmark; it is not a point-vortex approximation.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    centers = np.asarray(centers, dtype=np.float64)
+    circulations = np.asarray(circulations, dtype=np.float64)
+    if nu < 0 or time_value < 0 or core_radius <= 0:
+        raise ValueError("nu and time must be non-negative; core_radius positive")
+    a2 = core_radius * core_radius + 4.0 * float(nu) * float(time_value)
+    diff = points[:, None, :] - centers[None, :, :]
+    r2 = np.sum(diff * diff, axis=-1)
+    r2_safe = np.maximum(r2, 1e-24)
+    # u = Gamma/(2*pi) * (1-exp(-r^2/a^2)) * (-dy, dx)/r^2
+    core_factor = -np.expm1(-r2 / a2)
+    strength = circulations[None, :] * core_factor / (2.0 * np.pi * r2_safe)
+    return np.stack([
+        np.sum(-diff[:, :, 1] * strength, axis=1),
+        np.sum(diff[:, :, 0] * strength, axis=1),
+    ], axis=1)
+
+
+def simulate_lamb_oseen_sheet(n_vortices: int = 400, nu: float = 2.5e-4,
+                              time_value: float = 1.0):
+    """Render and validate the finite-core Lamb–Oseen sheet alternative."""
+    print(">>> Running Application 2: Lamb–Oseen vortex sheet")
+    pos, circulations = lamb_oseen_sheet(n_vortices)
+    res = 80
+    gx = np.linspace(0.05, 0.95, res)
+    gy = np.linspace(0.05, 0.95, res)
+    X, Y = np.meshgrid(gx, gy)
+    grid_pts = np.stack([X.ravel(), Y.ravel()], axis=1)
+    velocity = lamb_oseen_velocity(grid_pts, pos, circulations, nu, time_value)
+    speed = np.linalg.norm(velocity, axis=1).reshape(res, res)
+
+    fig, ax = plt.subplots(figsize=(9, 7.5), facecolor='#0B0E14')
+    ax.set_facecolor('#0B0E14')
+    ax.streamplot(X, Y, velocity[:, 0].reshape(res, res),
+                  velocity[:, 1].reshape(res, res), color=speed,
+                  cmap='plasma', density=1.4, linewidth=1.2, arrowsize=1.2)
+    ax.scatter(pos[:, 0], pos[:, 1], c=np.where(circulations > 0, '#00F0FF', '#FF3366'),
+               s=20, edgecolors='none')
+    ax.set_title("Application 2: Lamb–Oseen Vortex Sheet\\n"
+                 f"Gaussian-core diffusion, nu={nu:g}, t={time_value:g}",
+                 color='white', fontsize=12, fontweight='bold', pad=12)
+    ax.set_xlim(0.05, 0.95)
+    ax.set_ylim(0.05, 0.95)
+    ax.tick_params(colors='#8B949E')
+    for spine in ax.spines.values():
+        spine.set_color('#30363D')
+    plt.tight_layout()
+    output_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "assets", "app2_lamb_oseen_vortex.png")
+    plt.savefig(output_path, dpi=200, facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close()
+    print(f"[-] Saved Lamb–Oseen visualization to: {output_path}")
+
+
 def simulate_vortex_sheet(n_vortices: int = 400):
     print(">>> Running Application 2: Continuous Hydrodynamic Vortex Field (FMM streamfunction)")
     x = np.linspace(0.1, 0.9, n_vortices // 2)

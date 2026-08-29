@@ -100,7 +100,7 @@ FMM exists in principle — but the flagship `FastVectorizedFMM` /
 `AdaptiveFMM` engines in `core/` are 2D (complex adaptive FMM log kernel).
 A 3D FMM needs real-space derivative tensors, not complex log expansions.
 
-**Affected apps:** app5 (3D Debye-Huckel screened Coulomb / Yukawa
+**Affected apps:** app5 (3D Debye-Hückel screened Coulomb / Yukawa
 potential `G(r) = exp(-kappa r)/r`), volumetric AO (3D inverse-square
 kernel, candidate for a future 3D FMM).
 
@@ -144,15 +144,17 @@ constant factors.
 crossover actually appears), flocking at N=1000, app3 at N=1500, app4 at
 N=400.
 
-**Falsifiable reason:** at N=2000 the direct vectorized sum is ~57 ms while
-the flat FMM is ~711 ms — the FMM's per-cell Python loop over occupied
-cells (K^2 M2L pairs in pure Python) costs more than the 4e6-pair vectorized
-direct. As N grows the direct cost grows as N^2 while the FMM near-field
+**Falsifiable reason:** at N=2000 the direct vectorized sum is ~36 ms while
+the flat FMM is ~57 ms (the FFT-convolution M2L rewrite brought the old
+~711 ms down to this — see the Core FMM scaling table); the flat engine's
+per-cell constants still exceed the single vectorized direct call at demo
+N. As N grows the direct cost grows as N^2 while the FMM near-field
 grows as N * neighbors, so a crossover exists; the scaling table locates it
 (or reports its absence up to N_max with the per-N ratios).
 
 **Closest fast technique:** the FMM itself, run at larger N, OR the compiled
-kernels (`core/cuda_kernels`, `core/triton`, `native/zig`, `webgpu`) where
+kernels (`core/cuda_kernels/`, `core/cuda_kernels/triton_tree_free_fmm.py`,
+`native/zig/`, `core/webgpu_kernels/`) where
 the per-cell constant is a few cycles instead of a Python interpreter
 dispatch.
 

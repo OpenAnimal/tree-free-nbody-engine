@@ -1,7 +1,8 @@
 """Round-10 Wave D regression tests: bioinformatics + environmental_modeling.
 
-Each test pins a defect found by independent-oracle verification in
-tools/review_round10/probe_waveD_*.py. Tests fail if the bug is reintroduced.
+Each test pins a defect found by independent-oracle verification during
+Round-10 Wave D (one-off review probes, since removed). Tests fail if the
+bug is reintroduced.
 """
 import os
 import sys

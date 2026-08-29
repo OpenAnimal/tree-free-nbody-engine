@@ -5,8 +5,8 @@ Regression tests (were RED before the fixes):
     IndexError because struct_edges was a 1-D (0,) array; the solver's
     broadphase also crashed on (0, 3) positions at positions.min().
 
-Durable independent-oracle gates promoted from
-tools/review_round10/probe_wavee_1_physics.py:
+Durable independent-oracle gates promoted from the Round-10 Wave E
+physics probe (one-off review scaffolding, since removed):
   - elastic energy gradient vs central finite differences (folded state)
   - bending stencil annihilates flat configurations under random rigid
     transforms (zero ghost forces)

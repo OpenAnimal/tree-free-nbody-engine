@@ -8,6 +8,10 @@ accuracy it costs. Tables below are pasted verbatim from each
 `benchmark_variants.py` run; the one-line takeaway under each is honest,
 including "not faster at this scale" results.
 
+> Round/task labels (e.g. "Round 15", "task T-C2") refer to the internal
+> review log: rounds up to 10 in `docs/review_history/`, later rounds
+> dated and numbered in `docs/GPU_NOTES.md` §5–§13.
+
 ## Browser demo cross-benchmark (WebGPU, uncapped steps/sec)
 
 Reproduced with `node tools/browser_crossbench.js [N] [rounds]` against a
@@ -22,6 +26,12 @@ per-level m2l+l2l chain).
 share of GPU — absolute numbers are depressed vs an idle GPU; ratios between
 configs measured in the same run remain meaningful. 2M rows ran each config
 in an isolated browser process (`CONFIG=<label>`).
+
+**10M stress preset (2026-08-26, `tools/bench_fps_longrun.js`, 60 s runs,
+idle GPU)**: fixed-lattice 15 steps/s median (zero diag errors), adaptive
+6 steps/s (L2P-dominated, 41-node depth-3 tree) — table and attribution in
+[docs/GPU_NOTES.md](docs/GPU_NOTES.md) §14.1. Direct at 10M is
+double-warning-guarded (extrapolated minutes per frame).
 
 ```
 N=120k (3 rounds)            median steps/sec   rounds
@@ -44,11 +54,16 @@ N=2M (3 rounds, isolated)    median steps/sec
 fixed + counting-sort        34
 adaptive + node-hash dir     11
 
-N=500k far-field/near-field decomposition (3 rounds)
+N=500k far-field/near-field decomposition (3 rounds; HISTORICAL —
+pre-round-15 per-leaf budget scheme 24/12/6 **per adjacent leaf**)
 adaptive default (p2p budget 24/leaf)   50    48, 50, 52
 adaptive p2p budget 6/leaf              184   189, 184, 169
 adaptive p2p budget 1/leaf              316   345, 314, 316
 adaptive multipole order p=0            50    49, 51, 50
+
+Round 15 changed List-1 to TOTAL samples/particle (default 48/32/16 by N,
+spread across List-1, weight-capped under collapse). Re-run
+`tools/browser_crossbench.js` to refresh absolute adaptive steps/sec.
 ```
 
 Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §8 and §10):
@@ -58,20 +73,26 @@ Takeaways (details in [docs/GPU_NOTES.md](docs/GPU_NOTES.md) §8 and §10):
   into the dense `cellStart`/`cellCount` arrays once per frame, so every
   consumer does two direct loads. The hash table remains the structure
   built each frame; its value is the worst-case probe bound and
-  compactness, not throughput.
+  compactness, not throughput. Equal FPS across backends is correct and
+  expected on this path.
 - **Round 13 materialized far field**: the adaptive far field is now a flat
   per-leaf CSR gather of List-2 sources through a precomputed
   per-(level, offset) M2L operator table (validated to 1e-7 against the
   legacy chain on GPU). It is ~5% faster than the legacy chain at 120k and
   performance-neutral at 500k — the remaining adaptive-vs-fixed gap at
-  500k+ is NOT the far field: dropping the near-field P2P budget 24 -> 6
-  gives 3.7x (50 -> 184, matching the fixed grid), while zeroing the
-  multipole order or reverting the far-field rewrite changes nothing.
+  500k+ was NOT the far field under the old scheme: dropping the near-field
+  P2P budget 24 -> 6/leaf gave 3.7x (50 -> 184). Round 15 implements the
+  per-particle total budget identified in §10.4.
 - **Adaptive FMM crosses over** at 120k (few tree nodes make the per-level
   chains cheap while the fixed grid always evaluates the full lattice); at
-  500k+ the adaptive node count grows and the budgeted List-1 near-field
-  walk dominates. Its value at large N is accuracy on clustered
+  500k+ the adaptive node count grows and the List-1 near-field walk
+  dominates. Its value at large N is accuracy on clustered
   distributions, not throughput.
+  > Superseded (2026-08-26): after the docs/GPU_NOTES.md §12 refresh-thrash
+  > and depth fixes (and the §13 near-field fix), adaptive is vsync-locked
+  > equal at 500k and *faster* than fixed in GPU ms/frame (§12.7); at 5M
+  > the row above still holds shape (19 vs 41 steps/s, §13.3). Re-run
+  > `tools/browser_crossbench.js` to refresh this table.
 - **Adaptive throughput is phase-dependent**: the galaxy ICs are unseeded
   (`Math.random`), so the quadtree swings between ~1k and ~55k nodes over a
   run and adaptive steps/sec swings with it (rounds above show single
@@ -192,9 +213,9 @@ at grid-FFT cost.
 
 ## Core hash tables (funnel vs elastic vs baselines)
 
-Reproduce with `python -X utf8 benchmarks/bench_hash_backends.py` (few
+Reproduce with `python -X utf8 core/bench_hash_backends.py` (few
 minutes; `--quick` for the reduced grid; JSON written to
-`benchmarks/hash_backends_results.json`). Backends: the funnel hash table
+`core/hash_backends_results.json`). Backends: the funnel hash table
 of Farach-Colton, Krapivin, & Kuszmaul (2025) (`core.elastic_hash.
 ElasticHashTable` — the default occupied-cell index of every core FMM
 engine), a fair open-addressing linear-probe baseline with the same
@@ -414,7 +435,7 @@ The hash boid step is near-field exact (same 3x3 cell box as brute) but NOT
 faster at N=400 (per-cell Python loop overhead); the 8.4% far-field
 cohesion residual is the intentional extra term, reported honestly.
 
-### App 5 -- 3D protein electrostatics (Debye-Huckel screened Coulomb)
+### App 5 -- 3D protein electrostatics (Debye-Hückel screened Coulomb)
 
 ```
 Variant                 Time (ms)  rel L2 vs ref  Note

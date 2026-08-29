@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from itertools import product
 import numpy as np
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +31,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from core._csr import build_csr
+from core.spatial_index import morton_nd_key
 
 
 # -- Vectorized Morton decode / encode (3D, 10-bit per axis) ---------------
@@ -85,9 +87,18 @@ def _vectorized_neighbor_ids(unique_keys, cell_index, K, ring):
         offsets = [(dx, dy)
                    for dx in range(-ring, ring + 1)
                    for dy in range(-ring, ring + 1)]
-    else:
+    elif dims == 1:
         ucoords = (uk_arr & 0xFFF)[:, None]
         offsets = [(dx,) for dx in range(-ring, ring + 1)]
+    else:
+        # Higher-dimensional CellIndex keys use generic Morton interleaving.
+        # Decode through the authoritative index so this helper stays aligned
+        # with custom bit budgets and world-mode offsets.
+        ucoords = np.asarray(
+            [cell_index.key_ints(int(k)) for k in unique_keys],
+            dtype=np.int64,
+        )
+        offsets = list(product(range(-ring, ring + 1), repeat=dims))
 
     n_off = len(offsets)
     neighbor_ids = np.full((K, n_off), -1, dtype=np.int64)
@@ -100,8 +111,14 @@ def _vectorized_neighbor_ids(unique_keys, cell_index, K, ring):
             nkeys = _encode_morton_3d_vec(ncoords)
         elif dims == 2:
             nkeys = (ncoords[:, 1] << 12) | ncoords[:, 0]
-        else:
+        elif dims == 1:
             nkeys = ncoords[:, 0]
+        else:
+            nkeys = np.asarray([
+                morton_nd_key(tuple(int(v) for v in coord),
+                              cell_index._morton_bits)
+                for coord in ncoords
+            ], dtype=np.int64)
         nkeys = np.where(valid, nkeys, -1)
         found = np.searchsorted(uk_arr, nkeys, side="left")
         found_clipped = np.minimum(found, K - 1)
