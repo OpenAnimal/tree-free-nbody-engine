@@ -525,8 +525,8 @@
             <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
 
             <label style="margin-top:8px; display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                <input type="checkbox" id="chkFlockGhost" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other like ghosts. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
-                Ghost Flocks (no cross-flock interaction)
+                <input type="checkbox" id="chkFlockIndependent" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other without interacting. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
+                Independent Flocks (no cross-flock interaction)
             </label>
 
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
@@ -833,7 +833,7 @@
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
         let flockDirectionBias = 0.0; // forward migratory cruise drive (0 = original behavior)
-        let flockGhostMode = false;   // true = cross-flock pairs get zero force (ghost pass-through)
+        let flockIndependent = false;   // true = cross-flock pairs get zero force (independent flocks)
 
         // Default values for the Reset Flock Defaults button
         const FLOCK_DEFAULTS = {
@@ -843,7 +843,7 @@
             intra: 1.0,
             inter: 0.0,   // 0 = flocks merge (original behavior)
             bias: 0.0,    // 0 = no migratory drive (original behavior)
-            ghost: false  // false = base Reynolds on all pairs (original)
+            independent: false  // false = base Reynolds on all pairs (original)
         };
 
         // Dynamic Galaxy cores
@@ -1243,7 +1243,7 @@
             flockInterStrength: f32, // between-flock avoidance & repulsion multiplier
             flockColorCurve: u32,    // flock color curve index (0-3)
             flockDirectionBias: f32, // forward migratory cruise drive multiplier
-            flockGhostMode: u32,     // 1 = cross-flock pairs get zero force (ghost)
+            flockIndependent: u32,     // 1 = cross-flock pairs get zero force (independent)
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -1758,12 +1758,12 @@
                                     let diffY = py - qpos.y;
                                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                                    // Ghost mode: cross-flock pairs get ZERO force.
+                                    // Independent mode: cross-flock pairs get ZERO force.
                                     // Otherwise: base Reynolds on all pairs + extra
                                     // inter-flock repulsion (zero when inter=0 =>
                                     // original merge behavior).
-                                    if (!isSameFlock && (params.flockGhostMode == 1u)) {
-                                        // Ghost: skip all forces for cross-flock pairs
+                                    if (!isSameFlock && (params.flockIndependent == 1u)) {
+                                        // Independent: skip all forces for cross-flock pairs
                                     } else {
                                         let intraScale = params.flockIntraStrength;
                                         // Separation (short range)
@@ -1819,11 +1819,11 @@
                             let diffY = py - other.pos.y;
                             let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                            // Ghost mode: cross-flock pairs get ZERO force.
+                            // Independent mode: cross-flock pairs get ZERO force.
                             // Otherwise: base Reynolds on all pairs + extra
                             // inter-flock repulsion (zero when inter=0).
-                            if (!isSameFlock && (params.flockGhostMode == 1u)) {
-                                // Ghost: skip all forces for cross-flock pairs
+                            if (!isSameFlock && (params.flockIndependent == 1u)) {
+                                // Independent: skip all forces for cross-flock pairs
                             } else {
                                 let intraScale = params.flockIntraStrength;
                                 if (r2 < sepR2) {
@@ -3939,7 +3939,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockInterStrength: f32,
             flockColorCurve: u32,
             flockDirectionBias: f32,
-            flockGhostMode: u32,
+            flockIndependent: u32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -8199,7 +8199,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             floatView[30] = flockInterStrength;
             uintView[31] = flockColorCurve;
             floatView[32] = flockDirectionBias;
-            uintView[33] = flockGhostMode ? 1u : 0u;
+            uintView[33] = flockIndependent ? 1u : 0u;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
@@ -9634,10 +9634,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             });
         }
 
-        const chkFlockGhost = document.getElementById('chkFlockGhost');
-        if (chkFlockGhost) {
-            chkFlockGhost.addEventListener('change', (e) => {
-                flockGhostMode = e.target.checked;
+        const chkFlockIndependent = document.getElementById('chkFlockIndependent');
+        if (chkFlockIndependent) {
+            chkFlockIndependent.addEventListener('change', (e) => {
+                flockIndependent = e.target.checked;
             });
         }
 
@@ -9650,7 +9650,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 flockIntraStrength = FLOCK_DEFAULTS.intra;
                 flockInterStrength = FLOCK_DEFAULTS.inter;
                 flockDirectionBias = FLOCK_DEFAULTS.bias;
-                flockGhostMode = FLOCK_DEFAULTS.ghost;
+                flockIndependent = FLOCK_DEFAULTS.independent;
 
                 // Sync UI inputs and value labels
                 const selFlocks = document.getElementById('selectBoidsFlocks');
@@ -9687,7 +9687,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     sliderFlockBias.value = String(flockDirectionBias);
                     if (valFlockBias) valFlockBias.innerText = flockDirectionBias.toFixed(1) + 'x';
                 }
-                if (chkFlockGhost) chkFlockGhost.checked = flockGhostMode;
+                if (chkFlockIndependent) chkFlockIndependent.checked = flockIndependent;
 
                 resetSimulation();
             });
