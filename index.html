@@ -1749,24 +1749,33 @@
                                     let diffX = px - qpos.x;
                                     let diffY = py - qpos.y;
                                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
-                                    if (isSameFlock) {
-                                        // Separation (short range) — within flock
-                                        if (r2 < sepR2) {
-                                            let inv_r = inverseSqrt(r2);
-                                            fx += diffX * inv_r * (0.040 * params.flockIntraStrength);
-                                            fy += diffY * inv_r * (0.040 * params.flockIntraStrength);
-                                            nearP2PIntensity += 0.4;
-                                        }
-                                        // Alignment + Cohesion (longer range) — within flock
-                                        if (r2 < alignR2) {
-                                            fx += (qvel.x - vx) * (0.030 * params.flockIntraStrength);
-                                            fy += (qvel.y - vy) * (0.030 * params.flockIntraStrength);
-                                            fx -= diffX * (0.015 * params.flockIntraStrength);
-                                            fy -= diffY * (0.015 * params.flockIntraStrength);
-                                            farMultipoleIntensity += 0.2;
-                                        }
-                                    } else {
-                                        // Inter-flock repulsion / collision avoidance
+
+                                    // Base Reynolds forces applied to ALL neighbors
+                                    // (same-flock scaled by intra, cross-flock at
+                                    // the original coefficient = intra*1.0). This
+                                    // preserves the original merge behavior when
+                                    // flockInterStrength == 0.0.
+                                    let intraScale = params.flockIntraStrength;
+                                    // Separation (short range)
+                                    if (r2 < sepR2) {
+                                        let inv_r = inverseSqrt(r2);
+                                        fx += diffX * inv_r * (0.040 * intraScale);
+                                        fy += diffY * inv_r * (0.040 * intraScale);
+                                        nearP2PIntensity += 0.4;
+                                    }
+                                    // Alignment + Cohesion (longer range)
+                                    if (r2 < alignR2) {
+                                        fx += (qvel.x - vx) * (0.030 * intraScale);
+                                        fy += (qvel.y - vy) * (0.030 * intraScale);
+                                        fx -= diffX * (0.015 * intraScale);
+                                        fy -= diffY * (0.015 * intraScale);
+                                        farMultipoleIntensity += 0.2;
+                                    }
+
+                                    // ADDITIONAL inter-flock repulsion (on top of
+                                    // the base forces above). Zero when
+                                    // flockInterStrength == 0.0 => original behavior.
+                                    if (!isSameFlock) {
                                         let interSepR2 = sepR2 * 1.6;
                                         if (r2 < interSepR2) {
                                             let inv_r = inverseSqrt(r2);
@@ -1798,21 +1807,25 @@
                             let diffX = px - other.pos.x;
                             let diffY = py - other.pos.y;
                             let r2 = diffX * diffX + diffY * diffY + 1e-4;
-                            if (isSameFlock) {
-                                if (r2 < sepR2) {
-                                    let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * (0.040 * params.flockIntraStrength);
-                                    fy += diffY * inv_r * (0.040 * params.flockIntraStrength);
-                                    nearP2PIntensity += 0.4;
-                                }
-                                if (r2 < alignR2) {
-                                    fx += (other.vel.x - vx) * (0.030 * params.flockIntraStrength);
-                                    fy += (other.vel.y - vy) * (0.030 * params.flockIntraStrength);
-                                    fx -= diffX * (0.015 * params.flockIntraStrength);
-                                    fy -= diffY * (0.015 * params.flockIntraStrength);
-                                    farMultipoleIntensity += 0.2;
-                                }
-                            } else {
+
+                            // Base Reynolds forces for ALL neighbors (original
+                            // behavior when flockInterStrength == 0.0).
+                            let intraScale = params.flockIntraStrength;
+                            if (r2 < sepR2) {
+                                let inv_r = inverseSqrt(r2);
+                                fx += diffX * inv_r * (0.040 * intraScale);
+                                fy += diffY * inv_r * (0.040 * intraScale);
+                                nearP2PIntensity += 0.4;
+                            }
+                            if (r2 < alignR2) {
+                                fx += (other.vel.x - vx) * (0.030 * intraScale);
+                                fy += (other.vel.y - vy) * (0.030 * intraScale);
+                                fx -= diffX * (0.015 * intraScale);
+                                fy -= diffY * (0.015 * intraScale);
+                                farMultipoleIntensity += 0.2;
+                            }
+                            // Additional inter-flock repulsion (zero when inter=0).
+                            if (!isSameFlock) {
                                 let interSepR2 = sepR2 * 1.6;
                                 if (r2 < interSepR2) {
                                     let inv_r = inverseSqrt(r2);
