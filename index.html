@@ -523,6 +523,11 @@
 
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
             <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="1.0" title="Repulsion and collision-avoidance strength between different flocks.">
+
+            <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">1.0x</span></div>
+            <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="1.0" title="Forward cruise and migratory stream bias along flock heading.">
+
+            <button id="btnFlockResetDefaults" type="button" style="margin-top:12px; width:100%; padding:6px 10px; font-size:0.75rem; background:rgba(0,240,255,0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); border-radius:4px; cursor:pointer;">Reset Flock Defaults</button>
         </div>
 
         <div class="section-title">Dynamics & Controls</div>
@@ -822,6 +827,17 @@
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 1.0; // between-flock repulsion/avoidance multiplier
+        let flockDirectionBias = 1.0; // forward migratory cruise drive multiplier
+
+        // Default values for the Reset Flock Defaults button
+        const FLOCK_DEFAULTS = {
+            flockCount: 2,
+            colorCurve: 0,
+            radius: 0.035,
+            intra: 1.0,
+            inter: 1.0,
+            bias: 1.0
+        };
 
         // Dynamic Galaxy cores
         let core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
@@ -1219,6 +1235,7 @@
             flockIntraStrength: f32, // within-flock alignment & cohesion multiplier
             flockInterStrength: f32, // between-flock avoidance & repulsion multiplier
             flockColorCurve: u32,    // flock color curve index (0-3)
+            flockDirectionBias: f32, // forward migratory cruise drive multiplier
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -1545,6 +1562,25 @@
                 //   none (0)      — cheap analytic draft + sub-swarm attractors
                 // Gravity FMM (1) is intentionally ignored here: log-potential
                 // multipoles are the wrong kernel for Reynolds flocking.
+
+                // Directional Migratory Drive / Forward Cruise: each flock has
+                // a baseline heading; the bias slider scales the relaxation
+                // toward that heading so flocks stream like migrating birds.
+                var biasVx: f32 = 0.038;
+                var biasVy: f32 = 0.0;
+                if (grp > 0.5 && grp < 1.5) {
+                    biasVx = -0.038; biasVy = 0.0;
+                } else if (grp >= 1.5) {
+                    biasVx = 0.0; biasVy = 0.038;
+                }
+                fx += (biasVx - vx) * (0.018 * params.flockDirectionBias);
+                fy += (biasVy - vy) * (0.018 * params.flockDirectionBias);
+                // Circular murmuration draft (prevents stagnation at walls)
+                let draftX = (0.5 - py) * 0.035;
+                let draftY = (px - 0.5) * 0.035;
+                fx += draftX * params.flockDirectionBias;
+                fy += draftY * params.flockDirectionBias;
+
                 if (params.farFieldModel == 2u && params.cellListsReady == 1u) {
                     // fmmField[pid] = (bary_x, bary_y, mean_vx, mean_vy) written
                     // by boid_centroid_eval over non-adjacent leaf cells.
@@ -1559,11 +1595,8 @@
                     fy += (far.w - vy) * 0.012;
                     farMultipoleIntensity = clamp(length(toB) * 2.0, 0.0, 1.0);
                 } else {
-                    // Analytic draft + fixed sub-swarm centers (legacy path).
-                    let draftX = (0.5 - py) * 0.04;
-                    let draftY = (px - 0.5) * 0.04;
-                    fx += draftX;
-                    fy += draftY;
+                    // Fixed sub-swarm attractors (legacy path; draft is now
+                    // applied above as part of the direction-bias block).
                     var subCx = 0.32; var subCy = 0.50;
                     if (grp > 1.5) { subCx = 0.50; subCy = 0.28; }
                     else if (grp > 0.5) { subCx = 0.68; subCy = 0.50; }
@@ -3877,6 +3910,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockIntraStrength: f32,
             flockInterStrength: f32,
             flockColorCurve: u32,
+            flockDirectionBias: f32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -4053,6 +4087,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         uniform vec2 u_g1;
         uniform vec2 u_g2;
         uniform int u_flockColorCurve;
+        uniform float u_flockDirectionBias;
 
         void main() {
             vec2 pos = a_pos;
@@ -4080,8 +4115,14 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 farM2L = 0.6;
                 nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
             } else if (u_scenario == 1) {
-                // Boids flocking
-                fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
+                // Boids flocking: direction bias + sub-swarm attractors
+                float biasVx = (a_group > 0.5 && a_group < 1.5) ? -0.038
+                    : ((a_group >= 1.5) ? 0.0 : 0.038);
+                float biasVy = (a_group >= 1.5) ? 0.038 : 0.0;
+                fx += vec2(biasVx - vel.x, biasVy - vel.y)
+                    * (0.018 * u_flockDirectionBias);
+                fx += vec2(0.5 - pos.y, pos.x - 0.5)
+                    * (0.035 * u_flockDirectionBias);
                 vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.28) : ((a_group > 0.5) ? vec2(0.68, 0.50) : vec2(0.32, 0.50));
                 fx += (subC - pos) * 0.035;
                 farM2L = 0.8;
@@ -4568,7 +4609,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         // Preallocated per-frame uniform staging (zero allocations per frame).
         // 128 bytes = 29 SimParams words (116) rounded up to the buffer
         // granularity; 108-byte writes before round 19 were the 27-word struct.
-        const simUniformData = new ArrayBuffer(128);
+        const simUniformData = new ArrayBuffer(144);
         const simUniformF = new Float32Array(simUniformData);
         const simUniformU = new Uint32Array(simUniformData);
         // FMM per-level uniform staging: 256-byte blocks (dynamic-offset
@@ -6758,7 +6799,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuFunnelGeomU = funnelGeometry.packed;
             }
 
-            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 128-byte SimParams (32 fields, round 19 + flock params)
+            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 144-byte SimParams (33 fields, round 19 + flock params)
             // T4 4-byte uniform holding the particle count for pack/unpack.
             if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T6.4 funnel probe-counter (1 atomic u32) + its MAP_READ staging
@@ -8124,17 +8165,18 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const stdIC = scenarioId === 0 && galaxyIC !== 'flyby';
             floatView[27] = stdIC ? 0.0 : (gravityFarOn ? 0.000375 : 0.00075);
             floatView[28] = stdIC ? SELF_GRAV_MU / N : 0.015 / N;
-            // Boids flock parameters (indices 29-31)
+            // Boids flock parameters (indices 29-32)
             floatView[29] = flockIntraStrength;
             floatView[30] = flockInterStrength;
             uintView[31] = flockColorCurve;
+            floatView[32] = flockDirectionBias;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
             // outside the measured Hamiltonian).
             if (stdIC) floatView[10] = 0.0;
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 128);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 144);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -8767,6 +8809,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g1'), core1.x, core1.y);
             gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g2'), core2.x, core2.y);
             gl.uniform1i(gl.getUniformLocation(glProgram, 'u_flockColorCurve'), flockColorCurve);
+            gl.uniform1f(gl.getUniformLocation(glProgram, 'u_flockDirectionBias'), flockDirectionBias);
 
             const srcBuf = glPingPong === 0 ? glBufPosVelA : glBufPosVelB;
             const dstBuf = glPingPong === 0 ? glBufPosVelB : glBufPosVelA;
@@ -9549,6 +9592,65 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             sliderFlockInter.addEventListener('input', (e) => {
                 flockInterStrength = parseFloat(e.target.value);
                 if (valFlockInter) valFlockInter.innerText = flockInterStrength.toFixed(1) + 'x';
+            });
+        }
+
+        const sliderFlockBias = document.getElementById('sliderFlockBias');
+        const valFlockBias = document.getElementById('valFlockBias');
+        if (sliderFlockBias) {
+            sliderFlockBias.addEventListener('input', (e) => {
+                flockDirectionBias = parseFloat(e.target.value);
+                if (valFlockBias) valFlockBias.innerText = flockDirectionBias.toFixed(1) + 'x';
+            });
+        }
+
+        const btnFlockResetDefaults = document.getElementById('btnFlockResetDefaults');
+        if (btnFlockResetDefaults) {
+            btnFlockResetDefaults.addEventListener('click', () => {
+                boidsFlockCount = FLOCK_DEFAULTS.flockCount;
+                flockColorCurve = FLOCK_DEFAULTS.colorCurve;
+                p2pRadius = FLOCK_DEFAULTS.radius;
+                flockIntraStrength = FLOCK_DEFAULTS.intra;
+                flockInterStrength = FLOCK_DEFAULTS.inter;
+                flockDirectionBias = FLOCK_DEFAULTS.bias;
+
+                // Sync UI inputs and value labels
+                const selFlocks = document.getElementById('selectBoidsFlocks');
+                if (selFlocks) {
+                    selFlocks.value = String(boidsFlockCount);
+                    const lbl = document.getElementById('valBoidsFlocks');
+                    if (lbl) lbl.innerText = selFlocks.options[selFlocks.selectedIndex].text;
+                }
+                const selCurve = document.getElementById('selectFlockColorCurve');
+                if (selCurve) {
+                    selCurve.value = String(flockColorCurve);
+                    const lbl = document.getElementById('valFlockColorCurve');
+                    if (lbl) lbl.innerText = selCurve.options[selCurve.selectedIndex].text;
+                }
+                const sRadius = document.getElementById('sliderRadius');
+                if (sRadius) {
+                    sRadius.value = String(p2pRadius);
+                    const lbl = document.getElementById('valRadius');
+                    if (lbl) lbl.innerText = p2pRadius.toFixed(3);
+                }
+                const sIntra = document.getElementById('sliderFlockIntra');
+                if (sIntra) {
+                    sIntra.value = String(flockIntraStrength);
+                    const lbl = document.getElementById('valFlockIntra');
+                    if (lbl) lbl.innerText = flockIntraStrength.toFixed(1) + 'x';
+                }
+                const sInter = document.getElementById('sliderFlockInter');
+                if (sInter) {
+                    sInter.value = String(flockInterStrength);
+                    const lbl = document.getElementById('valFlockInter');
+                    if (lbl) lbl.innerText = flockInterStrength.toFixed(1) + 'x';
+                }
+                if (sliderFlockBias) {
+                    sliderFlockBias.value = String(flockDirectionBias);
+                    if (valFlockBias) valFlockBias.innerText = flockDirectionBias.toFixed(1) + 'x';
+                }
+
+                resetSimulation();
             });
         }
 
