@@ -521,11 +521,11 @@
             <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
             <input type="range" id="sliderFlockIntra" min="0.0" max="3.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
 
-            <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
-            <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="1.0" title="Repulsion and collision-avoidance strength between different flocks.">
+            <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">0.0x</span></div>
+            <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
 
-            <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">1.0x</span></div>
-            <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="1.0" title="Forward cruise and migratory stream bias along flock heading.">
+            <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
+            <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Forward cruise and migratory stream bias along flock heading.">
 
             <button id="btnFlockResetDefaults" type="button" style="margin-top:12px; width:100%; padding:6px 10px; font-size:0.75rem; background:rgba(0,240,255,0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); border-radius:4px; cursor:pointer;">Reset Flock Defaults</button>
         </div>
@@ -826,8 +826,8 @@
         let boidsFlockCount = 2;     // 2 or 3 flocks
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
-        let flockInterStrength = 1.0; // between-flock repulsion/avoidance multiplier
-        let flockDirectionBias = 1.0; // forward migratory cruise drive multiplier
+        let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
+        let flockDirectionBias = 0.0; // forward migratory cruise drive (0 = original behavior)
 
         // Default values for the Reset Flock Defaults button
         const FLOCK_DEFAULTS = {
@@ -835,8 +835,8 @@
             colorCurve: 0,
             radius: 0.035,
             intra: 1.0,
-            inter: 1.0,
-            bias: 1.0
+            inter: 0.0,   // 0 = flocks merge (original behavior)
+            bias: 0.0     // 0 = no migratory drive (original behavior)
         };
 
         // Dynamic Galaxy cores
