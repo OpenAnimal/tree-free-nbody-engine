@@ -3,10 +3,27 @@ Open addressing WITHOUT reordering — Farach-Colton, Krapivin, & Kuszmaul (2025
 "Optimal Bounds for Open Addressing Without Reordering",
 arXiv:2501.02305 / FOCS 2024.
 
+Which one do I want?
+  * Section 2 ELASTIC hashing = geometrically HALVING sub-arrays, cascade
+    insert into the first sub-array still below (1 - delta/2) fill,
+    amortized expected O(1) probes per insert. -> `ElasticBatchingHashTable`.
+  * Section 3 FUNNEL hashing   = shrinking slabs (factor ~3/4) of beta-slot
+    sub-arrays + two-part overflow (B uniform-probing, C two-choice),
+    greedy non-adaptive insert, worst-case expected O(log^2 1/delta) search
+    with a DETERMINISTIC probe bound. -> `FunnelHashTable` (a.k.a. the
+    historical name `ElasticHashTable`, kept as a deprecated alias).
+  * THIS FILE'S DEFAULT CLASS IS THE SECTION-3 FUNNEL SCHEME DESPITE ITS
+    HISTORICAL NAME. The class named `ElasticHashTable` implements funnel
+    hashing (Section 3), NOT elastic hashing (Section 2); the actual
+    elastic-hashing class is `ElasticBatchingHashTable` (and is a
+    simplified greedy variant, see its docstring).
+
 Two schemes from the paper live in this module:
 
-1. `ElasticHashTable` (DEFAULT — funnel hashing, paper Section 3)
+1. `FunnelHashTable` (DEFAULT — funnel hashing, paper Section 3)
    ---------------------------------------------------------------
+   Exposed historically as `ElasticHashTable` (now a deprecated alias;
+   see the bottom of this module). The backing array of n slots is split
    * The backing array of n slots is split into a funnel region A' and a
      small overflow region A_{alpha+1} of size within
      [ceil(delta*n/2), floor(3*delta*n/4)] (clamped to >= 16 slots for very
@@ -40,7 +57,8 @@ Two schemes from the paper live in this module:
 
 2. `ElasticBatchingHashTable` (paper Section 2, simplified greedy variant)
    ---------------------------------------------------------------
-   The paper's elastic hashing: sub-arrays with sizes halving, batch-style
+   The actual elastic-hashing class. The paper's elastic hashing: sub-arrays
+   with sizes halving, batch-style
    insertion cascading down the first sub-array still below (1 - delta/2)
    fill, a bounded probe budget f(eps) = c*min(log^2(1/eps), log(1/delta))
    in the primary sub-array and unlimited probes in the secondary one. The
@@ -107,10 +125,9 @@ def _mix64_arr(z: np.ndarray) -> np.ndarray:
     return z
 
 
-class ElasticHashTable:
+class FunnelHashTable:
     """
-    Funnel hash table (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3),
-    exposed under its historical class name for API compatibility.
+    Funnel hash table (Farach-Colton, Krapivin, & Kuszmaul, 2025, Section 3).
 
     Geometry (see module docstring for the paper's parameterization):
         alpha = ceil(4*log2(1/delta) + 10)   slabs, sizes shrinking by ~3/4,
@@ -502,11 +519,11 @@ class ElasticHashTable:
 # (Round-7 task T-A3: used by `bioinformatics/kmer_elastic_hash.py`).
 # =============================================================================
 
-class ElasticIntTable(ElasticHashTable):
+class ElasticIntTable(FunnelHashTable):
     """
     Funnel-hash table with `int64` values and an `insert_or_increment` method.
 
-    Same probe sequence as `ElasticHashTable._search`; the increment is safe
+    Same probe sequence as `FunnelHashTable._search`; the increment is safe
     because the table is append-only + single-threaded here (no concurrent
     inserts racing the read-modify-write on the same key).
 
@@ -527,7 +544,7 @@ class ElasticIntTable(ElasticHashTable):
         """
         Insert `key` with value `inc` if absent, otherwise add `inc` to the
         existing value. Returns (ok, probe_count). The probe sequence is
-        identical to `ElasticHashTable._search`.
+        identical to `FunnelHashTable._search`.
         """
         pos, probes = self._search(int(key))
         if pos >= 0:
@@ -571,10 +588,10 @@ class ElasticIntTable(ElasticHashTable):
 # Vectorized batch probe
 # =============================================================================
 
-def funnel_probe(table: ElasticHashTable, query_keys: np.ndarray,
+def funnel_probe(table: FunnelHashTable, query_keys: np.ndarray,
                  chunk: int = 4096) -> np.ndarray:
     """
-    Vectorized (NumPy) mirror of `ElasticHashTable._search`: for each query
+    Vectorized (NumPy) mirror of `FunnelHashTable._search`: for each query
     key, evaluates the identical deterministic funnel probe sequence (slabs
     A_1..A_alpha with exhaustive beta-slot sub-array scans, then overflow B,
     then the two-choice C buckets) and returns the slot index holding the
@@ -697,6 +714,13 @@ class ElasticBatchingHashTable:
     """
 
     def __init__(self, capacity: int, delta: float = 0.05):
+        import warnings as _warnings
+        _warnings.warn(
+            "ElasticBatchingHashTable is the pre-funnel legacy variant: it "
+            "deviates from Farach-Colton, Krapivin, & Kuszmaul (2025) "
+            "(greedy insertion; see the class docstring) and is exercised "
+            "only by its own test. Prefer core.elastic_hash.FunnelHashTable.",
+            DeprecationWarning, stacklevel=2)
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
         if not (0 < delta < 1):
@@ -912,3 +936,16 @@ class ElasticBatchingHashTable:
         for pos in range(self.capacity):
             if self.keys[pos] >= 0:
                 yield self.keys[pos], self.values[pos]
+
+
+# =============================================================================
+# Deprecated alias: the historical class name `ElasticHashTable` implemented
+# the funnel scheme (paper Section 3) but was named after the paper's OTHER
+# construction (elastic hashing, Section 2), which lives here as
+# `ElasticBatchingHashTable`. The canonical name is now `FunnelHashTable`;
+# `ElasticHashTable` is kept as a deprecated alias so existing imports
+# (`from core.elastic_hash import ElasticHashTable`, `core/__init__.py`,
+# `core/spatial_index.py`, the test suite, downstream apps) keep working.
+# New code should import `FunnelHashTable`.
+# =============================================================================
+ElasticHashTable = FunnelHashTable

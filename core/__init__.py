@@ -7,7 +7,8 @@ Non-Reordering Open Addressing Hash (Farach-Colton, Krapivin, & Kuszmaul, 2025)
 """
 
 from .elastic_hash import (
-    ElasticHashTable,
+    FunnelHashTable,
+    ElasticHashTable,  # deprecated alias for FunnelHashTable (kept for API compat)
     ElasticIntTable,
     ElasticBatchingHashTable,
     funnel_probe,
@@ -186,6 +187,7 @@ __all__ = [
     "adaptivefmm_m2p",
     "p2p_potential_and_force",
     "ElasticHashTable",
+    "FunnelHashTable",
     "ElasticIntTable",
     "ElasticBatchingHashTable",
     "funnel_probe",

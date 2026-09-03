@@ -1,13 +1,27 @@
 """
-Elastic Multipole KV-Cache (`elastic_kv_cache.py`)
+Streaming KV-Cache with LSH bucketing and far-field compression
+(`elastic_kv_cache.py`)
 ==================================================
-Lock-Free, Contiguous O(1) Streaming Key-Value Memory for Long-Context LLMs.
-Combines Farach-Colton, Krapivin, & Kuszmaul (2025) Non-Reordering Open Addressing with Multipole Historical Compression.
 
-Solves the Long-Context LLM Memory Bottleneck:
-- Zero element displacement / reordering (100% lock-free & CAS-compatible).
-- Retains full exact tokens for recent/active contexts.
-- Compresses distant context into Taylor/multipole summary moments, preventing OOM in 1M+ token contexts.
+What this IS (honest description): a 3-tier NumPy streaming KV-cache —
+(1) a recent-token ring evaluated exactly, (2) an exact bucket of keys
+that share the query's SimHash LSH bucket, (3) a far pass over per-bucket
+key/value SUMS (monopole-style compression) for everything evicted. Only
+``query_attention``'s dense math moves to the torch/jax backend via
+``_accel``; the cache state stays NumPy on CPU.
+
+What this is NOT: the funnel/elastic open-addressing construction of
+Farach-Colton, Krapivin, & Kuszmaul (2025). The bucket index here is a
+plain Python dict keyed by the LSH signature — there is no funnel slab
+layout, no ordered overflow region, and no worst-case probe-bound
+guarantee. A faithful funnel implementation lives in
+``core/elastic_hash.py`` (tested against a linear-probe baseline, a CPython
+dict and a Zig port); this module does not import it.
+
+Retrieval quality: tier 3 evaluates each far bucket at its key centroid
+with count weighting, so distant context is approximated; the recent ring
+and the target bucket are exact. Latency is O(recent + bucket + clusters),
+not O(1) in any worst-case sense.
 """
 
 import numpy as np
@@ -117,10 +131,9 @@ def _kvq_kernels():
 
 class ElasticMultipoleKVCache:
     """
-    Continuous, Non-Reordering Streaming KV-Cache for Autoregressive Transformers.
-    Recent tokens get exact P2P attention; evicted tokens are compressed into
-    per-bucket multipole moments (key/value sums), giving O(recent + buckets)
-    retrieval over an unbounded stream.
+    Streaming KV-Cache: recent ring (exact) + LSH bucket (exact) + far
+    per-bucket centroid summaries (approximate). See the module docstring
+    for what this is and is NOT (not the FKK 2025 funnel construction).
 
     Shapes / dtypes
     ---------------
@@ -159,13 +172,13 @@ class ElasticMultipoleKVCache:
         self.backend = _resolve_backend(backend) if _resolve_backend is not None else "numpy"
         self.jit = bool(jit)
 
-        # 1. Random Hyperplanes for Cosine Locality-Sensitive Hashing (LSH)
-        rng = np.random.RandomState(1337)
-        self.hyperplanes = rng.normal(0, 1.0, size=(d_k, n_hyperplanes)).astype(np.float32)
-        self.hyperplanes /= np.linalg.norm(self.hyperplanes, axis=0, keepdims=True)
-        self.powers_of_two = (1 << np.arange(n_hyperplanes, dtype=np.int64))
+        # 1. Shared random-hyperplane SimHash keying (neural_ops/_kv_tiers).
+        # The key is computed on the L2-normalized key vector, as before.
+        from ._kv_tiers import HyperplaneLSH
+        self._lsh = HyperplaneLSH(n_hyperplanes, d_k, seed=1337,
+                                  normalize=True)
 
-        # 2. Non-Reordering Level-Arranged Backing Storage
+        # 2. LSH-bucket backing storage (plain dict; see module docstring)
         self.bucket_keys: Dict[int, List[np.ndarray]] = {}
         self.bucket_vals: Dict[int, List[np.ndarray]] = {}
         self.bucket_token_ids: Dict[int, List[int]] = {}
@@ -185,9 +198,8 @@ class ElasticMultipoleKVCache:
         self.total_tokens_inserted = 0
 
     def _compute_lsh_key(self, k_vec: np.ndarray) -> int:
-        """Computes integer semantic bucket index via random hyperplane projection."""
-        proj = np.matmul(k_vec, self.hyperplanes) > 0 # (n_hyperplanes,)
-        return int(np.sum(proj * self.powers_of_two))
+        """Integer semantic bucket index via the shared SimHash keying."""
+        return self._lsh.key(k_vec)
 
     def append_token(self, k_vec: np.ndarray, v_vec: np.ndarray, token_id: Optional[int] = None) -> int:
         """
@@ -207,7 +219,7 @@ class ElasticMultipoleKVCache:
         self.recent_idx += 1
         self.total_tokens_inserted += 1
 
-        # Insert into non-reordering semantic hash bucket
+        # Insert into the semantic LSH bucket
         if bucket_idx not in self.bucket_keys:
             self.bucket_keys[bucket_idx] = []
             self.bucket_vals[bucket_idx] = []

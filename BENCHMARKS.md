@@ -211,6 +211,34 @@ Zorin (2004) the properly-constructed one-level interaction list is bounded
 well-separated K^2 pairs, which the FFT-convolution M2L now computes exactly
 at grid-FFT cost.
 
+## Funnel-hash lookup vs a dense 2^k count array (count-based RL exploration)
+
+Reproduce with `python tools/bench_funnel_vs_dense.py [--quick]`. The
+decision table for count-based exploration (Tang et al., 2017, as used by
+the sibling Walkers `jax_rl` repo's `aif/simhash_counts.py`): with k
+SimHash hyperplanes the key space is 2^k, and for k <= 22 it materializes
+as a dense int32/int64 array whose update is one scatter-add and whose
+read is one gather. Measured on this machine (Python 3.11, NumPy CPU;
+"ins" = count-update over nq keys, "qry" = batched value read; funnel =
+`ElasticIntTable.insert_or_increment` per key + vectorized `funnel_probe`):
+
+| k | nq | dense ins+qry ms | funnel ins+qry ms | funnel/dense |
+| ---: | ---: | ---: | ---: | ---: |
+| 14 | 1e4 | 0.05 | 283 | ~5,800x |
+| 16 | 1e5 | 0.25 | 2,776 | ~11,000x |
+| 18 | 1e5 | 1.11 | 3,513 | ~3,200x |
+| 20 | 1e5 | 3.09 | 4,438 | ~1,400x |
+| 22 | 1e5 | 8.59 | 4,334 | ~500x |
+
+Takeaway (a useful negative result): in the k <= 22 batched-counting
+regime the dense array wins by 2-4 orders of magnitude, and `funnel_probe`
+finds 100% of inserted keys (the vectorized path is correct — it just
+inspects ~277 slots per absent key with no early exit by design). The
+funnel table's guarantees — worst-case probes WITHOUT reordering, exact
+int64 keys, no materializable key space — are orthogonal to this workload.
+Reach for `core/elastic_hash.py` only when k > ~22, load approaches
+1-delta, and per-key work dwarfs ~29 probes.
+
 ## Core hash tables (funnel vs elastic vs baselines)
 
 Reproduce with `python -X utf8 core/bench_hash_backends.py` (few
@@ -285,6 +313,50 @@ not used by any pipeline. Measured head-to-head at its rated load
 greedy cascade plus its O(capacity) duplicate pre-scan loses to the
 funnel table in every measurable regime in Python. It is kept solely as
 an executable exploration of the Section 2 construction.
+
+### Dense-array baseline — the boundary where the funnel hash starts to pay
+
+Reproduce with `python -X utf8 core/bench_hash_backends.py` (the `dense`
+backend; `--dense-ks 16 18 20 22` is the default). A flat `int32[2**k]`
+array indexed by `key mod 2**k` — one probe, no collision resolution, no
+hash function. This is the honest boundary of where the funnel hash
+becomes the right tool: at `k = 20` the dense array has `2**20 = 1,048,576`
+slots — the SAME slot count as a funnel table sized for ~1M keys at load
+0.95 (`core/elastic_hash.py`, ~1,052,640 slots) — with 1 probe vs the
+funnel table's measured 29 probes/hit and 277/miss, and 4 B/slot vs ~9.
+
+Throughput and probes, n = 100,000 (scalar Python paths, same
+interpreter conditions as the table above):
+
+| backend | k | slots | build M keys/s | lookup M keys/s | probes (hit/abs) | bytes/key |
+| --- | --- | ---: | --- | --- | --- | --- |
+| dense | 16 | 65,536 | 240–280 | 160–230 | 1 / 1 | 26 |
+| dense | 18 | 262,144 | 35–40 | 200–225 | 1 / 1 | 105 |
+| dense | 20 | 1,048,576 | 8–12 | 70–225 | 1 / 1 | 419 |
+| dense | 22 | 4,194,304 | 2–3 | 60–150 | 1 / 1 | 1,678 |
+| funnel | — | ~1,052,640 | 0.12–0.40 | 0.12–0.39 | 29 / 277 | 9–18 |
+| linear (scalar) | — | 100,000–200,000 | 0.4–1.1 | 0.4–1.0 | 1.5–10 / 2.6–166 | 8–16 |
+| CPython dict | — | — | 6.8–7.7 | 3.2–3.6 | — | 52 |
+
+The dense array beats the funnel table by **50–700× on build throughput**
+and **100–600× on lookup throughput** in pure Python, at equal slot count
+(k = 20 vs funnel at ~1M slots), with 1 probe vs 29/277. It also beats the
+compiled Zig funnel port on lookup (60–225 M/s vs 13–32 M/s) — the Zig
+port wins on build (15–34 M/s vs 8–12 M/s at k = 20) because `np.add.at`
+is not vectorized, but the dense array's lookup is pure fancy indexing
+(one cache-friendly gather) while the Zig funnel's absent lookup pays the
+full 277-probe bound.
+
+**When the dense array stops winning** (and the funnel hash takes over):
+when the key space cannot be materialized — `k > 24` bits of state
+resolution, e.g. hashing full float observations or per-`(s,a)` keys, so
+`2**k` slots exceed VRAM. At `k ≤ 22` the dense array is strictly better
+for count-based workloads: lower probe count, lower or equal memory, higher
+throughput, and jittable in XLA (`counts.at[keys].add(1)` is one
+scatter-add, no host round-trip). The `core/simhash_counts.py` module
+enforces this boundary with a hard `ValueError` above `k = 22` whose
+message points at `core/elastic_hash.py` as the structure to reach for
+when all three of the funnel-hash conditions hold (see its docstring).
 
 ## Physics — Tetrahedral contact broadphase
 

@@ -63,6 +63,13 @@ class ElasticQuotientFilter:
         delta : float
             Target overflow factor for level sizing.
         """
+        import warnings as _warnings
+        _warnings.warn(
+            "ElasticQuotientFilter is the pre-funnel legacy class and "
+            "self-documents its deviations from Farach-Colton, Krapivin, & "
+            "Kuszmaul (2025). Prefer FunnelQuotientFilter (same module) or "
+            "core.elastic_hash.FunnelHashTable.",
+            DeprecationWarning, stacklevel=2)
         self.capacity = max(64, int(capacity))
         self.fingerprint_bits = max(4, min(32, int(fingerprint_bits)))
         self.max_fingerprint = (1 << self.fingerprint_bits) - 1

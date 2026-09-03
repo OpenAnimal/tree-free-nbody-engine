@@ -491,7 +491,7 @@
         <div class="section-title">Simulation Scenario</div>
         <select id="scenarioSelect">
             <option value="galaxy">Dynamic N-Body Galaxy Collision (Dual Core Flyby)</option>
-            <option value="boids">Multilevel FMM Boid Swarms (Tri-Flock Murmuration)</option>
+            <option value="boids">Multilevel FMM Boid Swarms (Configurable Flock Encounter)</option>
             <option value="vortex">Hydrodynamic Vortex Sheet (Kelvin-Helmholtz)</option>
             <option value="sph">SPH Fluid Dam Break Simulation</option>
         </select>
@@ -501,6 +501,28 @@
                 <option value="sheet" selected>Kelvin-Helmholtz Shear Sheet</option>
                 <option value="lamb_oseen">Scientific Test: Lamb–Oseen Pair</option>
             </select>
+        </div>
+
+        <div class="control-group" id="groupBoidsConfig" style="display:none">
+            <div class="control-label">Flock Setup: <span id="valBoidsFlocks">2 Flocks (Binary Counter-Swarm)</span></div>
+            <select id="selectBoidsFlocks" title="Switch between a 2-flock binary encounter and a 3-flock murmuration.">
+                <option value="2" selected>2 Flocks (Binary Counter-Swarm)</option>
+                <option value="3">3 Flocks (Tri-Swarm Murmuration)</option>
+            </select>
+
+            <div class="control-label" style="margin-top:8px;">Flock Color Curve: <span id="valFlockColorCurve">High-Contrast Neon</span></div>
+            <select id="selectFlockColorCurve" title="Select color curves/palettes for flock differentiation.">
+                <option value="0" selected>High-Contrast Neon (Cyan vs Coral-Red vs Amber)</option>
+                <option value="1">Thermal / Polar (Ice Blue vs Solar Crimson vs Violet)</option>
+                <option value="2">Cyberpunk (Hot Magenta vs Neon Lime vs Electric Gold)</option>
+                <option value="3">Dynamic Velocity Ramps (Per-Flock Speed Curves)</option>
+            </select>
+
+            <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
+            <input type="range" id="sliderFlockIntra" min="0.0" max="3.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
+
+            <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
+            <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="1.0" title="Repulsion and collision-avoidance strength between different flocks.">
         </div>
 
         <div class="section-title">Dynamics & Controls</div>
@@ -795,6 +817,12 @@
         let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
         let mouseX = -1, mouseY = -1, isMouseDown = false;
 
+        // Boids flock configuration
+        let boidsFlockCount = 2;     // 2 or 3 flocks
+        let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps
+        let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
+        let flockInterStrength = 1.0; // between-flock repulsion/avoidance multiplier
+
         // Dynamic Galaxy cores
         let core1 = { x: 0.25, y: 0.45, vx: 0.024, vy: 0.011, mass: 1.0 };
         let core2 = { x: 0.75, y: 0.55, vx: -0.024, vy: -0.011, mass: 1.0 };
@@ -1000,19 +1028,30 @@
                     }
                 } else if (scenario === 'boids') {
                     scenarioId = 1;
-                    // 3 Distinct Sub-Flocks (Tri-Swarm Murmuration)
-                    const swarmIdx = i % 3;
-                    grp = swarmIdx; // 0.0: Alpha (Cyan), 1.0: Beta (Emerald), 2.0: Gamma (Purple)
+                    const numFlocks = boidsFlockCount;
+                    const swarmIdx = i % numFlocks;
+                    grp = swarmIdx;
 
-                    let scx = 0.32, scy = 0.45, sRadius = 0.14, sAngle = Math.random() * Math.PI * 2;
-                    let baseVx = 0.035, baseVy = -0.020;
+                    let scx = 0.32, scy = 0.50, sRadius = 0.16, sAngle = Math.random() * Math.PI * 2;
+                    let baseVx = 0.038, baseVy = -0.012;
 
-                    if (swarmIdx === 1) {
-                        scx = 0.68; scy = 0.55; sRadius = 0.14;
-                        baseVx = -0.035; baseVy = 0.020;
-                    } else if (swarmIdx === 2) {
-                        scx = 0.50; scy = 0.28; sRadius = 0.12;
-                        baseVx = 0.025; baseVy = 0.030;
+                    if (numFlocks === 2) {
+                        // 2-Flock Scenario: Binary head-on counter-swarms
+                        if (swarmIdx === 1) {
+                            scx = 0.68; scy = 0.50; sRadius = 0.16;
+                            baseVx = -0.038; baseVy = 0.012;
+                        }
+                    } else {
+                        // 3-Flock Scenario: Tri-swarm murmuration
+                        scx = 0.32; scy = 0.45; sRadius = 0.14;
+                        baseVx = 0.035; baseVy = -0.020;
+                        if (swarmIdx === 1) {
+                            scx = 0.68; scy = 0.55; sRadius = 0.14;
+                            baseVx = -0.035; baseVy = 0.020;
+                        } else if (swarmIdx === 2) {
+                            scx = 0.50; scy = 0.28; sRadius = 0.12;
+                            baseVx = 0.025; baseVy = 0.030;
+                        }
                     }
 
                     const r = Math.sqrt(Math.random()) * sRadius;
@@ -1020,7 +1059,7 @@
                     py = scy + r * Math.sin(sAngle);
 
                     // Swirling orbital velocity + flock direction
-                    const sOrb = 0.020;
+                    const sOrb = 0.022;
                     vx = baseVx - sOrb * Math.sin(sAngle) + (Math.random() - 0.5) * 0.008;
                     vy = baseVy + sOrb * Math.cos(sAngle) + (Math.random() - 0.5) * 0.008;
                     state = 0.0;
@@ -1177,6 +1216,9 @@
             gpPerParticle: f32,  // particle-particle gravity constant: flyby
                                  // 0.015/N (calibrated visual split); standard
                                  // ICs mu/N with G=1 (pure self-gravity)
+            flockIntraStrength: f32, // within-flock alignment & cohesion multiplier
+            flockInterStrength: f32, // between-flock avoidance & repulsion multiplier
+            flockColorCurve: u32,    // flock color curve index (0-3)
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -1522,9 +1564,9 @@
                     let draftY = (px - 0.5) * 0.04;
                     fx += draftX;
                     fy += draftY;
-                    var subCx = 0.35; var subCy = 0.45;
-                    if (grp > 1.5) { subCx = 0.50; subCy = 0.30; }
-                    else if (grp > 0.5) { subCx = 0.65; subCy = 0.55; }
+                    var subCx = 0.32; var subCy = 0.50;
+                    if (grp > 1.5) { subCx = 0.50; subCy = 0.28; }
+                    else if (grp > 0.5) { subCx = 0.68; subCy = 0.50; }
                     fx += (subCx - px) * 0.035;
                     fy += (subCy - py) * 0.035;
                     farMultipoleIntensity += 0.5;
@@ -1668,23 +1710,37 @@
                                         qpos = posVelIn[candidate].pos;
                                         qvel = posVelIn[candidate].vel;
                                     }
+                                    let otherGrp = extras[candidate].group;
+                                    let isSameFlock: bool = (abs(grp - otherGrp) < 0.5);
+
                                     let diffX = px - qpos.x;
                                     let diffY = py - qpos.y;
                                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
-                                    // Separation (short range)
-                                    if (r2 < sepR2) {
-                                        let inv_r = inverseSqrt(r2);
-                                        fx += diffX * inv_r * 0.040;
-                                        fy += diffY * inv_r * 0.040;
-                                        nearP2PIntensity += 0.4;
-                                    }
-                                    // Alignment + Cohesion (longer range)
-                                    if (r2 < alignR2) {
-                                        fx += (qvel.x - vx) * 0.030;
-                                        fy += (qvel.y - vy) * 0.030;
-                                        fx -= diffX * 0.015;
-                                        fy -= diffY * 0.015;
-                                        farMultipoleIntensity += 0.2;
+                                    if (isSameFlock) {
+                                        // Separation (short range) — within flock
+                                        if (r2 < sepR2) {
+                                            let inv_r = inverseSqrt(r2);
+                                            fx += diffX * inv_r * (0.040 * params.flockIntraStrength);
+                                            fy += diffY * inv_r * (0.040 * params.flockIntraStrength);
+                                            nearP2PIntensity += 0.4;
+                                        }
+                                        // Alignment + Cohesion (longer range) — within flock
+                                        if (r2 < alignR2) {
+                                            fx += (qvel.x - vx) * (0.030 * params.flockIntraStrength);
+                                            fy += (qvel.y - vy) * (0.030 * params.flockIntraStrength);
+                                            fx -= diffX * (0.015 * params.flockIntraStrength);
+                                            fy -= diffY * (0.015 * params.flockIntraStrength);
+                                            farMultipoleIntensity += 0.2;
+                                        }
+                                    } else {
+                                        // Inter-flock repulsion / collision avoidance
+                                        let interSepR2 = sepR2 * 1.6;
+                                        if (r2 < interSepR2) {
+                                            let inv_r = inverseSqrt(r2);
+                                            fx += diffX * inv_r * (0.055 * params.flockInterStrength);
+                                            fy += diffY * inv_r * (0.055 * params.flockInterStrength);
+                                            nearP2PIntensity += 0.5;
+                                        }
                                     }
                                 }
                                 s = s + stride;
@@ -1704,21 +1760,33 @@
                         let other_idx = (sample_start + s) % n;
                         if (other_idx != origId) {
                             let other = posVelIn[other_idx];
+                            let otherGrp = extras[other_idx].group;
+                            let isSameFlock: bool = (abs(grp - otherGrp) < 0.5);
                             let diffX = px - other.pos.x;
                             let diffY = py - other.pos.y;
                             let r2 = diffX * diffX + diffY * diffY + 1e-4;
-                            if (r2 < sepR2) {
-                                let inv_r = inverseSqrt(r2);
-                                fx += diffX * inv_r * 0.040;
-                                fy += diffY * inv_r * 0.040;
-                                nearP2PIntensity += 0.4;
-                            }
-                            if (r2 < alignR2) {
-                                fx += (other.vel.x - vx) * 0.030;
-                                fy += (other.vel.y - vy) * 0.030;
-                                fx -= diffX * 0.015;
-                                fy -= diffY * 0.015;
-                                farMultipoleIntensity += 0.2;
+                            if (isSameFlock) {
+                                if (r2 < sepR2) {
+                                    let inv_r = inverseSqrt(r2);
+                                    fx += diffX * inv_r * (0.040 * params.flockIntraStrength);
+                                    fy += diffY * inv_r * (0.040 * params.flockIntraStrength);
+                                    nearP2PIntensity += 0.4;
+                                }
+                                if (r2 < alignR2) {
+                                    fx += (other.vel.x - vx) * (0.030 * params.flockIntraStrength);
+                                    fy += (other.vel.y - vy) * (0.030 * params.flockIntraStrength);
+                                    fx -= diffX * (0.015 * params.flockIntraStrength);
+                                    fy -= diffY * (0.015 * params.flockIntraStrength);
+                                    farMultipoleIntensity += 0.2;
+                                }
+                            } else {
+                                let interSepR2 = sepR2 * 1.6;
+                                if (r2 < interSepR2) {
+                                    let inv_r = inverseSqrt(r2);
+                                    fx += diffX * inv_r * (0.055 * params.flockInterStrength);
+                                    fy += diffY * inv_r * (0.055 * params.flockInterStrength);
+                                    nearP2PIntensity += 0.5;
+                                }
                             }
                         }
                     }
@@ -3797,6 +3865,18 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             adaptiveMode: u32,
             leafBits: u32,
             p2pListCap: u32,
+            useElasticHash: u32,
+            useQuantized: u32,
+            useFunnelHash: u32,
+            cellListsReady: u32,
+            useSortedPayload: u32,
+            farFieldModel: u32,
+            nfProbeMode: u32,
+            coreGM: f32,
+            gpPerParticle: f32,
+            flockIntraStrength: f32,
+            flockInterStrength: f32,
+            flockColorCurve: u32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -3874,10 +3954,44 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             } else if (params.colorMode == 2u) {
                 // 3. Scenario Clusters
                 if (params.scenario == 1u) {
-                    // Boids: 3 Swarms (Alpha=Cyan, Beta=Emerald, Gamma=Purple)
-                    if (group < 0.5) { col = cCyan; }
-                    else if (group < 1.5) { col = cGreen; }
-                    else { col = cPurple; }
+                    // Boids: flock colors selected by flockColorCurve
+                    let curve = params.flockColorCurve;
+                    let gIdx = u32(round(group));
+
+                    if (curve == 0u) {
+                        // Curve 0: High-Contrast Neon (opposites)
+                        let c0 = vec3<f32>(0.0, 0.95, 1.0);    // Electric Cyan
+                        let c1 = vec3<f32>(1.0, 0.25, 0.15);   // Radiant Coral-Red
+                        let c2 = vec3<f32>(1.0, 0.85, 0.05);   // Brilliant Amber
+                        if (gIdx == 0u) { col = c0; }
+                        else if (gIdx == 1u) { col = c1; }
+                        else { col = c2; }
+                    } else if (curve == 1u) {
+                        // Curve 1: Thermal / Polar
+                        let c0 = vec3<f32>(0.2, 0.75, 1.0);    // Ice Blue
+                        let c1 = vec3<f32>(1.0, 0.1, 0.35);    // Solar Crimson
+                        let c2 = vec3<f32>(0.7, 0.2, 1.0);     // Royal Violet
+                        if (gIdx == 0u) { col = c0; }
+                        else if (gIdx == 1u) { col = c1; }
+                        else { col = c2; }
+                    } else if (curve == 2u) {
+                        // Curve 2: Cyberpunk Synthwave
+                        let c0 = vec3<f32>(1.0, 0.08, 0.6);    // Hot Magenta
+                        let c1 = vec3<f32>(0.1, 1.0, 0.4);     // Neon Lime
+                        let c2 = vec3<f32>(0.0, 0.8, 0.9);     // Electric Gold-cyan
+                        if (gIdx == 0u) { col = c0; }
+                        else if (gIdx == 1u) { col = c1; }
+                        else { col = c2; }
+                    } else {
+                        // Curve 3: Dynamic Velocity Ramps (per-flock speed gradients)
+                        if (gIdx == 0u) {
+                            col = mix(vec3<f32>(0.0, 0.4, 0.7), vec3<f32>(0.4, 1.0, 1.0), t);
+                        } else if (gIdx == 1u) {
+                            col = mix(vec3<f32>(0.6, 0.05, 0.15), vec3<f32>(1.0, 0.65, 0.1), t);
+                        } else {
+                            col = mix(vec3<f32>(0.05, 0.4, 0.2), vec3<f32>(0.85, 1.0, 0.2), t);
+                        }
+                    }
                 } else if (params.scenario == 0u) {
                     // Galaxy: A (Cyan) vs B (Pink)
                     col = select(cCyan, cPink, group > 0.5);
@@ -3938,6 +4052,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         uniform float u_isMouseDown;
         uniform vec2 u_g1;
         uniform vec2 u_g2;
+        uniform int u_flockColorCurve;
 
         void main() {
             vec2 pos = a_pos;
@@ -3967,7 +4082,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             } else if (u_scenario == 1) {
                 // Boids flocking
                 fx += vec2(0.5 - pos.y, pos.x - 0.5) * 0.04;
-                vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.30) : ((a_group > 0.5) ? vec2(0.65, 0.55) : vec2(0.35, 0.45));
+                vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.28) : ((a_group > 0.5) ? vec2(0.68, 0.50) : vec2(0.32, 0.50));
                 fx += (subC - pos) * 0.035;
                 farM2L = 0.8;
             } else if (u_scenario == 2) {
@@ -4104,7 +4219,36 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             } else if (u_colorMode == 2) {
                 // Scenario Clusters
                 if (u_scenario == 1) {
-                    col = (a_group < 0.5) ? cCyan : ((a_group < 1.5) ? cGreen : cPurple);
+                    // Boids: flock colors selected by u_flockColorCurve
+                    int gIdx = int(a_group + 0.5);
+                    if (u_flockColorCurve == 0) {
+                        // High-Contrast Neon
+                        vec3 c0 = vec3(0.0, 0.95, 1.0);
+                        vec3 c1 = vec3(1.0, 0.25, 0.15);
+                        vec3 c2 = vec3(1.0, 0.85, 0.05);
+                        col = (gIdx == 0) ? c0 : ((gIdx == 1) ? c1 : c2);
+                    } else if (u_flockColorCurve == 1) {
+                        // Thermal / Polar
+                        vec3 c0 = vec3(0.2, 0.75, 1.0);
+                        vec3 c1 = vec3(1.0, 0.1, 0.35);
+                        vec3 c2 = vec3(0.7, 0.2, 1.0);
+                        col = (gIdx == 0) ? c0 : ((gIdx == 1) ? c1 : c2);
+                    } else if (u_flockColorCurve == 2) {
+                        // Cyberpunk
+                        vec3 c0 = vec3(1.0, 0.08, 0.6);
+                        vec3 c1 = vec3(0.1, 1.0, 0.4);
+                        vec3 c2 = vec3(0.0, 0.8, 0.9);
+                        col = (gIdx == 0) ? c0 : ((gIdx == 1) ? c1 : c2);
+                    } else {
+                        // Dynamic Velocity Ramps
+                        if (gIdx == 0) {
+                            col = mix(vec3(0.0, 0.4, 0.7), vec3(0.4, 1.0, 1.0), t);
+                        } else if (gIdx == 1) {
+                            col = mix(vec3(0.6, 0.05, 0.15), vec3(1.0, 0.65, 0.1), t);
+                        } else {
+                            col = mix(vec3(0.05, 0.4, 0.2), vec3(0.85, 1.0, 0.2), t);
+                        }
+                    }
                 } else if (u_scenario == 0 || u_scenario == 2) {
                     col = (a_group > 0.5) ? cPink : cCyan;
                 } else {
@@ -6614,7 +6758,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuFunnelGeomU = funnelGeometry.packed;
             }
 
-            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 128 >= 116-byte SimParams (round 19)
+            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 128-byte SimParams (32 fields, round 19 + flock params)
             // T4 4-byte uniform holding the particle count for pack/unpack.
             if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T6.4 funnel probe-counter (1 atomic u32) + its MAP_READ staging
@@ -7980,13 +8124,17 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const stdIC = scenarioId === 0 && galaxyIC !== 'flyby';
             floatView[27] = stdIC ? 0.0 : (gravityFarOn ? 0.000375 : 0.00075);
             floatView[28] = stdIC ? SELF_GRAV_MU / N : 0.015 / N;
+            // Boids flock parameters (indices 29-31)
+            floatView[29] = flockIntraStrength;
+            floatView[30] = flockInterStrength;
+            uintView[31] = flockColorCurve;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
             // outside the measured Hamiltonian).
             if (stdIC) floatView[10] = 0.0;
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 116);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 128);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -8618,6 +8766,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             gl.uniform1f(gl.getUniformLocation(glProgram, 'u_isMouseDown'), isMouseDown ? 1.0 : 0.0);
             gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g1'), core1.x, core1.y);
             gl.uniform2f(gl.getUniformLocation(glProgram, 'u_g2'), core2.x, core2.y);
+            gl.uniform1i(gl.getUniformLocation(glProgram, 'u_flockColorCurve'), flockColorCurve);
 
             const srcBuf = glPingPong === 0 ? glBufPosVelA : glBufPosVelB;
             const dstBuf = glPingPong === 0 ? glBufPosVelB : glBufPosVelA;
@@ -8761,6 +8910,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const icGroup = document.getElementById('groupGalaxyIC');
             const icEl = document.getElementById('selectGalaxyIC');
             if (icGroup) icGroup.style.display = (scenario === 'galaxy') ? '' : 'none';
+
+            // Boids flock configuration panel: visible only in the boids scenario.
+            const boidsGroup = document.getElementById('groupBoidsConfig');
+            if (boidsGroup) boidsGroup.style.display = (scenario === 'boids') ? '' : 'none';
             if (icEl) {
                 const stdSupported = activeBackend !== 'WEBGL2_TF';
                 for (const opt of icEl.options) {
@@ -9364,6 +9517,41 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
 
         document.getElementById('btnReset').addEventListener('click', () => resetSimulation());
 
+        // Boids flock configuration controls
+        const selBoidsFlocks = document.getElementById('selectBoidsFlocks');
+        const valBoidsFlocks = document.getElementById('valBoidsFlocks');
+        if (selBoidsFlocks) {
+            selBoidsFlocks.addEventListener('change', (e) => {
+                boidsFlockCount = parseInt(e.target.value, 10);
+                if (valBoidsFlocks) valBoidsFlocks.innerText = e.target.options[e.target.selectedIndex].text;
+                resetSimulation();
+            });
+        }
+        const selFlockColorCurve = document.getElementById('selectFlockColorCurve');
+        const valFlockColorCurve = document.getElementById('valFlockColorCurve');
+        if (selFlockColorCurve) {
+            selFlockColorCurve.addEventListener('change', (e) => {
+                flockColorCurve = parseInt(e.target.value, 10);
+                if (valFlockColorCurve) valFlockColorCurve.innerText = e.target.options[e.target.selectedIndex].text;
+            });
+        }
+        const sliderFlockIntra = document.getElementById('sliderFlockIntra');
+        const valFlockIntra = document.getElementById('valFlockIntra');
+        if (sliderFlockIntra) {
+            sliderFlockIntra.addEventListener('input', (e) => {
+                flockIntraStrength = parseFloat(e.target.value);
+                if (valFlockIntra) valFlockIntra.innerText = flockIntraStrength.toFixed(1) + 'x';
+            });
+        }
+        const sliderFlockInter = document.getElementById('sliderFlockInter');
+        const valFlockInter = document.getElementById('valFlockInter');
+        if (sliderFlockInter) {
+            sliderFlockInter.addEventListener('input', (e) => {
+                flockInterStrength = parseFloat(e.target.value);
+                if (valFlockInter) valFlockInter.innerText = flockInterStrength.toFixed(1) + 'x';
+            });
+        }
+
         // Copy implementation-details telemetry to clipboard.
         (function () {
             const btn = document.getElementById('btnCopyImpl');
@@ -9764,6 +9952,24 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const icParam = (qs.get('ic') || '').toLowerCase();
             if (['flyby', 'plummer', 'collapse'].includes(icParam)) {
                 galaxyIC = icParam;
+            }
+            // ?flocks=2|3: boids flock count (2 = binary counter-swarm,
+            // 3 = tri-swarm murmuration).
+            const flocksParam = qs.get('flocks');
+            if (flocksParam === '2' || flocksParam === '3') {
+                boidsFlockCount = parseInt(flocksParam, 10);
+                const flocksSel = document.getElementById('selectBoidsFlocks');
+                if (flocksSel) flocksSel.value = flocksParam;
+            }
+            // ?flockColor=0|1|2|3: flock color curve index.
+            const flockColorParam = qs.get('flockColor');
+            if (flockColorParam !== null) {
+                const cv = parseInt(flockColorParam, 10);
+                if (Number.isFinite(cv) && cv >= 0 && cv <= 3) {
+                    flockColorCurve = cv;
+                    const cvSel = document.getElementById('selectFlockColorCurve');
+                    if (cvSel) cvSel.value = String(cv);
+                }
             }
             // ?nfprobe=1: route near-field P2P neighbor-cell lookups through
             // the LIVE hash table (open-addressing / funnel probe per visit)

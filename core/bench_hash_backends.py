@@ -3,11 +3,11 @@ Head-to-head hash-backend benchmark: funnel hashing vs baselines.
 
 Backends
 --------
-  funnel   core.elastic_hash.ElasticHashTable -- the funnel hash table of
+  funnel   core.elastic_hash.FunnelHashTable -- the funnel hash table of
            Farach-Colton, Krapivin, & Kuszmaul (2025), "Optimal Bounds for
            Open Addressing Without Reordering" (arXiv:2501.02305, FOCS 2024),
            Section 3. The default occupied-cell index of every core FMM
-           engine in this repo.
+           engine in this repo. (Historical name: ElasticHashTable.)
   linear   A fair open-addressing LINEAR-PROBE baseline implemented here
            (none existed in the repo): same splitmix64 finalizer, same
            slot budget, in-band -1/-2 sentinels, classic tombstone
@@ -18,6 +18,12 @@ Backends
            the row's "impl" column says which.
   dict     CPython dict (the practical pure-Python baseline; C
            implementation, included for honesty).
+  dense    A flat int32[2**k] array indexed by key mod 2**k — one probe,
+           no collision resolution. The honest boundary of where the
+           funnel hash starts to pay: at k=20 the dense array has the same
+           slot count as a funnel table sized for ~1M keys, with 1 probe
+           vs ~29 and 4 B/slot vs ~9. Run for k in {16,18,20,22} by
+           default (--dense-ks to change; --no-dense to skip).
   zig      The compiled funnel port (zig/funnel_hash.zig), run via
            `zig build run --release=fast` (skipped with a note if the Zig
            toolchain is missing). Loads >= 0.9 only: the Zig harness
@@ -51,7 +57,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.elastic_hash import (ElasticHashTable, funnel_probe,  # noqa: E402
+from core.elastic_hash import (FunnelHashTable, funnel_probe,  # noqa: E402
                                _mix64, _mix64_arr)
 
 _U63 = np.int64((1 << 63) - 1)
@@ -299,7 +305,7 @@ def bench_funnel(n, alpha, keys, absent, rng):
     slots_target = math.ceil(n / alpha)
     delta = delta_for_alpha(alpha)
     capacity = max(n, int(round(slots_target * (1.0 - delta))))
-    ht = ElasticHashTable(capacity=capacity, delta=delta, seed=42)
+    ht = FunnelHashTable(capacity=capacity, delta=delta, seed=42)
 
     t0 = time.perf_counter()
     ins_probes = np.empty(n, dtype=np.int64)
@@ -496,6 +502,71 @@ def bench_dict(n, alpha, keys, absent, rng):
         "probe_bound": None,
         "bytes_per_key": _sys.getsizeof(d) / n,
         "_table": d, "_keys": keys,
+    }
+
+
+# =============================================================================
+# Dense-array backend (the "when you DON'T need a hash table" baseline).
+# A flat int32[2**k] array indexed directly by the key mod 2**k — one probe,
+# no collision resolution. This is the honest boundary of where the funnel
+# hash starts to pay: at k <= 22 the dense array has the same slot count as
+# a funnel table sized for that capacity, with 1 probe vs ~29, and 4 bytes/
+# slot vs ~9. The funnel hash wins only when the key space cannot be
+# materialized (k > 24) and load approaches 0.95.
+# =============================================================================
+
+def bench_dense(n, alpha, keys, absent, rng, k=20):
+    """Dense int32[2**k] array, indexed by key mod 2**k. One probe, no hash.
+
+    ``k`` is the bit width; the table has 2**k slots. At k=20 this is the
+    same slot count as a funnel table sized for ~1M keys at load 0.95.
+    """
+    from core.simhash_counts import _check_k
+    k = _check_k(k)
+    m = 1 << k
+    counts = np.zeros(m, dtype=np.int32)
+
+    t0 = time.perf_counter()
+    idx = (keys % m).astype(np.int64)
+    np.add.at(counts, idx, np.int32(1))
+    t_build = time.perf_counter() - t0
+
+    order = rng.permutation(n)
+    t0 = time.perf_counter()
+    hit_idx = (keys[order] % m).astype(np.int64)
+    hit_counts = counts[hit_idx]
+    t_hit = time.perf_counter() - t0
+    # Every key "hits" (count >= 1) since we just inserted it; there are no
+    # misses in a dense array — collisions inflate counts but never lose a
+    # key. misses = 0 by construction.
+    misses = 0
+
+    t0 = time.perf_counter()
+    abs_idx = (absent % m).astype(np.int64)
+    abs_counts = counts[abs_idx]
+    t_abs = time.perf_counter() - t0
+    # "false hits" = absent keys that land in a non-zero bucket (collision).
+    false_hits = int((abs_counts > 0).sum())
+
+    # Probes are 1 by construction for both hits and absent lookups.
+    ins_probes = np.ones(n, dtype=np.int64)
+    hit_probes = np.ones(n, dtype=np.int64)
+    abs_probes = np.ones(len(absent), dtype=np.int64)
+
+    return {
+        "backend": "dense", "impl": f"k={k}", "alpha": alpha,
+        "load": n / m, "slots": m,
+        "build_mps": n / t_build / 1e6, "build_probes_mean": 1.0,
+        "build_probes_max": 1,
+        "hit_mps": n / t_hit / 1e6, "hit_probes_mean": 1.0,
+        "hit_probes_max": 1,
+        "abs_mps": len(absent) / t_abs / 1e6, "abs_probes_mean": 1.0,
+        "abs_probes_max": 1,
+        "vec_mps": None, "vec_found": None,
+        "drops": 0, "misses": misses, "false_hits": false_hits,
+        "probe_bound": 1,
+        "bytes_per_key": 4.0 * m / n,
+        "_table": counts, "_keys": keys,
     }
 
 
@@ -718,6 +789,11 @@ def main():
     ap.add_argument("--zig-only", action="store_true", help="run only the Zig backend")
     ap.add_argument("--no-xcheck", action="store_true",
                     help="skip the scalar-vs-vec cross-check")
+    ap.add_argument("--dense-ks", type=int, nargs="+", default=None,
+                    help="bit widths for the dense-array backend "
+                         "(default 16 18 20 22; use --no-dense to skip)")
+    ap.add_argument("--no-dense", action="store_true",
+                    help="skip the dense-array backend")
     ap.add_argument("--json", type=str, default=None, help="dump results to JSON")
     args = ap.parse_args()
 
@@ -726,6 +802,7 @@ def main():
     n_absent = args.absent or (500 if args.quick else 2000)
     churn_n = args.churn_n or (10_000 if args.quick else 100_000)
     seed = 42
+    dense_ks = [] if args.no_dense else (args.dense_ks or [16, 18, 20, 22])
 
     all_results = {"meta": {"ns": ns, "alphas": alphas, "n_absent": n_absent,
                             "churn_frac": args.churn_frac, "seed": seed,
@@ -765,6 +842,11 @@ def main():
             rows.append(bench_funnel(n, a, keys, absent, rng))
             rows.append(bench_dict(n, a, keys, absent, rng))
 
+            # Dense-array baseline: one probe, no hash. Run for each k in
+            # dense_ks so the crossover with the funnel table is visible.
+            for dk in dense_ks:
+                rows.append(bench_dense(n, a, keys, absent, rng, k=dk))
+
             # Linear baseline: scalar unless the probe budget explodes.
             est_probes = n * knuth_unsuccessful(a)
             if est_probes <= 3e7:
@@ -789,7 +871,7 @@ def main():
         all_results["churn"].extend(churn_rows)
 
     print("\nNotes:")
-    print("  funnel: ElasticHashTable (Farach-Colton, Krapivin, & Kuszmaul, 2025, S.3);")
+    print("  funnel: FunnelHashTable (Farach-Colton, Krapivin, & Kuszmaul, 2025, S.3);")
     print("    probe_bound = alpha*beta + b_attempts + 2*c_bucket_slots is a")
     print("    DETERMINISTIC cap on every search; absent lookups always pay it.")
     print("  funnel vecLk: funnel_probe vectorized batch lookup (NumPy) -- the")
@@ -801,6 +883,11 @@ def main():
     print("  dict rows: CPython dict, C implementation -- wins raw throughput;")
     print("    B/key is sys.getsizeof(dict)/n (excludes key/value objects).")
     print("  funnel/linear B/key: slot-array bytes only (values excluded for both).")
+    print("  dense rows: flat int32[2**k] array, key mod 2**k — 1 probe, no hash.")
+    print("    The honest boundary of where the funnel hash starts to pay: at")
+    print("    k=20 the dense array has the same slot count as a funnel table")
+    print("    sized for ~1M keys, with 1 probe vs ~29 and 4 B/slot vs ~9.")
+    print("    false_hits = absent keys landing in a non-zero bucket (collisions).")
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:

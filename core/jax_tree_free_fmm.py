@@ -5,12 +5,18 @@ Verified JAX implementations of the Carrier, Greengard, & Rokhlin (1988) multipo
 operator primitives (P2M, M2M, M2L, L2L, L2P, P2P) plus an exact O(N^2) dense
 reference and its reverse-mode autodiff gradient.
 
-Honest scope (Round-7 audit, finding F-06):
-- This module ships verified adaptive FMM operator primitives and a differentiable
-  dense reference. It does NOT contain an assembled JAX FMM pipeline (no
-  upward/downward pass driver wiring the operators together over a tree).
-  The earlier "end-to-end-differentiable JAX Tree-Free FMM Engine" wording
-  overstated this; the assembled pipeline is task T-D4 of the Round-7 plan.
+Honest scope (updated after the Round-9/10 assembly work):
+- This module ships verified adaptive FMM operator primitives AND an assembled
+  single-level flat FMM pipeline (`jax_flat_fmm_evaluate`): uniform-grid
+  binning -> P2M -> M2L -> L2P plus an exact CSR near-field sweep with a
+  custom VJP, validated against the dense f64 reference at rel-L2 <= 1e-6
+  (tests/core/test_jax_pipeline.py, N=2000/8000, plus charge/position
+  finite-difference gradient checks).
+- It is a SINGLE-LEVEL scheme at a fixed grid depth: the far field is
+  O(N * K) with K = depth^2 static, and the M2L stage enumerates cell pairs
+  in K^2. Scaling the grid with N restores near-linear behavior at these
+  sizes but this is NOT a hierarchical adaptive O(N) Greengard-Rokhlin FMM,
+  and worst-case O(N) at arbitrary N is not claimed.
 - The legacy `jax_multi_level_probe_lookup` (2-slot-per-level probe, the
   pre-funnel scheme that `core/elastic_hash.py` disavows) has been removed.
   JAX with x64-disabled cannot express the 64-bit funnel mixer; the funnel
@@ -27,9 +33,23 @@ try:
     # The adaptive FMM M2L/M2M operators and the assembled flat FMM pipeline rely on
     # complex128 expansions (jnp.log of complex deltas, high-order binomial
     # sums). The acceptance tolerance is rel-L2 <= 1e-6 vs an f64 direct
-    # reference, which is unreachable in float32/complex64 roundoff. Enable
-    # x64 before any jax op is built.
-    jax.config.update("jax_enable_x64", True)  # process-wide x64 (required: FMM coefficients underflow in f32)
+    # reference, which is unreachable in float32/complex64 roundoff.
+    #
+    # x64 ISOLATION: importing this module must not silently flip a global
+    # that changes every other array in the host process to float64 (the
+    # historical import-time update caused exactly that — doubled memory and
+    # autotune OOMs in downstream training processes). x64 is now enabled at
+    # import only UNLESS TREE_FREE_FMM_NO_X64=1 is set; under that opt-out
+    # the pipeline raises a clear error at call time instead of silently
+    # truncating to f32. Importers that must stay f32 (see the snapshot/
+    # restore pattern in jax_rl/experiments/aif_ablation_transformer.py)
+    # can also snapshot and restore jax_enable_x64 around the call.
+    import os as _os
+    if _os.environ.get("TREE_FREE_FMM_NO_X64", "") == "1":
+        _X64_ENABLED = False
+    else:
+        jax.config.update("jax_enable_x64", True)
+        _X64_ENABLED = True
     import jax.numpy as jnp
     from jax import jit, vmap, grad, lax
     # segment_sum's public path has moved across JAX releases
@@ -339,6 +359,10 @@ if HAS_JAX:
                               softening: float = 0.0) -> jnp.ndarray:
         """Assembled flat 2D log-kernel FMM (adaptive FMM complex form).
 
+        Raises a clear RuntimeError under TREE_FREE_FMM_NO_X64=1 (the f64
+        coefficients would silently truncate to f32 and fail the 1e-6
+        acceptance tolerance) instead of returning wrong numbers.
+
         Single-level flat scheme on a `depth` x `depth` uniform grid. The
         near field is an exact direct sum over the ring-2 (5x5) cell
         neighborhood, evaluated with a CSR cell-list (spatial-hash) sweep
@@ -387,6 +411,12 @@ if HAS_JAX:
         -------
         pot : (N,) float64 -- per-particle potential (near + far)
         """
+
+        if not _X64_ENABLED:
+            raise RuntimeError(
+                "jax_flat_fmm_evaluate requires jax_enable_x64 (complex128 "
+                "expansions); unset TREE_FREE_FMM_NO_X64 to use it")
+
         N = pos.shape[0]
         grid_res = depth
         h = 1.0 / depth

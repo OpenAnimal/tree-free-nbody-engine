@@ -268,6 +268,12 @@ adaptive FMM path is active (or the fixed-grid FMM is off), the cached
 `fmmM2lMs` l2l_down addend are reported as 0, so the TELEM JSON never
 inflates the far-field cost with a stale CPU-timed value.
 
+**Measured GPU verdict (see §12.7 for the full table):** at 500k
+particles on an RTX-class GPU, `fixed+funnel` is 8.27 ms/frame vs
+`fixed+openaddr` 8.09 ms vs `fixed+counting` 8.15 ms — the funnel path
+is a tie-to-slightly-slower on throughput. Its value on GPU is the
+bounded probe count and reorder-free parallel-CAS insert, not speed.
+
 ### 5.3 Radial Taylor unification (task 6.5)
 
 The three copy-pasted radial Taylor FMM engines
