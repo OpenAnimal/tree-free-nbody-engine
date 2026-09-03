@@ -524,6 +524,11 @@
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">0.0x</span></div>
             <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
 
+            <label style="margin-top:8px; display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
+                <input type="checkbox" id="chkFlockGhost" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other like ghosts. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
+                Ghost Flocks (no cross-flock interaction)
+            </label>
+
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
             <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Forward cruise and migratory stream bias along flock heading.">
 
@@ -828,6 +833,7 @@
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
         let flockDirectionBias = 0.0; // forward migratory cruise drive (0 = original behavior)
+        let flockGhostMode = false;   // true = cross-flock pairs get zero force (ghost pass-through)
 
         // Default values for the Reset Flock Defaults button
         const FLOCK_DEFAULTS = {
@@ -836,7 +842,8 @@
             radius: 0.035,
             intra: 1.0,
             inter: 0.0,   // 0 = flocks merge (original behavior)
-            bias: 0.0     // 0 = no migratory drive (original behavior)
+            bias: 0.0,    // 0 = no migratory drive (original behavior)
+            ghost: false  // false = base Reynolds on all pairs (original)
         };
 
         // Dynamic Galaxy cores
@@ -1236,6 +1243,7 @@
             flockInterStrength: f32, // between-flock avoidance & repulsion multiplier
             flockColorCurve: u32,    // flock color curve index (0-3)
             flockDirectionBias: f32, // forward migratory cruise drive multiplier
+            flockGhostMode: u32,     // 1 = cross-flock pairs get zero force (ghost)
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -1750,38 +1758,41 @@
                                     let diffY = py - qpos.y;
                                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                                    // Base Reynolds forces applied to ALL neighbors
-                                    // (same-flock scaled by intra, cross-flock at
-                                    // the original coefficient = intra*1.0). This
-                                    // preserves the original merge behavior when
-                                    // flockInterStrength == 0.0.
-                                    let intraScale = params.flockIntraStrength;
-                                    // Separation (short range)
-                                    if (r2 < sepR2) {
-                                        let inv_r = inverseSqrt(r2);
-                                        fx += diffX * inv_r * (0.040 * intraScale);
-                                        fy += diffY * inv_r * (0.040 * intraScale);
-                                        nearP2PIntensity += 0.4;
-                                    }
-                                    // Alignment + Cohesion (longer range)
-                                    if (r2 < alignR2) {
-                                        fx += (qvel.x - vx) * (0.030 * intraScale);
-                                        fy += (qvel.y - vy) * (0.030 * intraScale);
-                                        fx -= diffX * (0.015 * intraScale);
-                                        fy -= diffY * (0.015 * intraScale);
-                                        farMultipoleIntensity += 0.2;
-                                    }
-
-                                    // ADDITIONAL inter-flock repulsion (on top of
-                                    // the base forces above). Zero when
-                                    // flockInterStrength == 0.0 => original behavior.
-                                    if (!isSameFlock) {
-                                        let interSepR2 = sepR2 * 1.6;
-                                        if (r2 < interSepR2) {
+                                    // Ghost mode: cross-flock pairs get ZERO force.
+                                    // Otherwise: base Reynolds on all pairs + extra
+                                    // inter-flock repulsion (zero when inter=0 =>
+                                    // original merge behavior).
+                                    if (!isSameFlock && (params.flockGhostMode == 1u)) {
+                                        // Ghost: skip all forces for cross-flock pairs
+                                    } else {
+                                        let intraScale = params.flockIntraStrength;
+                                        // Separation (short range)
+                                        if (r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
-                                            fx += diffX * inv_r * (0.055 * params.flockInterStrength);
-                                            fy += diffY * inv_r * (0.055 * params.flockInterStrength);
-                                            nearP2PIntensity += 0.5;
+                                            fx += diffX * inv_r * (0.040 * intraScale);
+                                            fy += diffY * inv_r * (0.040 * intraScale);
+                                            nearP2PIntensity += 0.4;
+                                        }
+                                        // Alignment + Cohesion (longer range)
+                                        if (r2 < alignR2) {
+                                            fx += (qvel.x - vx) * (0.030 * intraScale);
+                                            fy += (qvel.y - vy) * (0.030 * intraScale);
+                                            fx -= diffX * (0.015 * intraScale);
+                                            fy -= diffY * (0.015 * intraScale);
+                                            farMultipoleIntensity += 0.2;
+                                        }
+
+                                        // ADDITIONAL inter-flock repulsion (on top of
+                                        // the base forces above). Zero when
+                                        // flockInterStrength == 0.0 => original behavior.
+                                        if (!isSameFlock) {
+                                            let interSepR2 = sepR2 * 1.6;
+                                            if (r2 < interSepR2) {
+                                                let inv_r = inverseSqrt(r2);
+                                                fx += diffX * inv_r * (0.055 * params.flockInterStrength);
+                                                fy += diffY * inv_r * (0.055 * params.flockInterStrength);
+                                                nearP2PIntensity += 0.5;
+                                            }
                                         }
                                     }
                                 }
@@ -1808,30 +1819,34 @@
                             let diffY = py - other.pos.y;
                             let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                            // Base Reynolds forces for ALL neighbors (original
-                            // behavior when flockInterStrength == 0.0).
-                            let intraScale = params.flockIntraStrength;
-                            if (r2 < sepR2) {
-                                let inv_r = inverseSqrt(r2);
-                                fx += diffX * inv_r * (0.040 * intraScale);
-                                fy += diffY * inv_r * (0.040 * intraScale);
-                                nearP2PIntensity += 0.4;
-                            }
-                            if (r2 < alignR2) {
-                                fx += (other.vel.x - vx) * (0.030 * intraScale);
-                                fy += (other.vel.y - vy) * (0.030 * intraScale);
-                                fx -= diffX * (0.015 * intraScale);
-                                fy -= diffY * (0.015 * intraScale);
-                                farMultipoleIntensity += 0.2;
-                            }
-                            // Additional inter-flock repulsion (zero when inter=0).
-                            if (!isSameFlock) {
-                                let interSepR2 = sepR2 * 1.6;
-                                if (r2 < interSepR2) {
+                            // Ghost mode: cross-flock pairs get ZERO force.
+                            // Otherwise: base Reynolds on all pairs + extra
+                            // inter-flock repulsion (zero when inter=0).
+                            if (!isSameFlock && (params.flockGhostMode == 1u)) {
+                                // Ghost: skip all forces for cross-flock pairs
+                            } else {
+                                let intraScale = params.flockIntraStrength;
+                                if (r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * (0.055 * params.flockInterStrength);
-                                    fy += diffY * inv_r * (0.055 * params.flockInterStrength);
-                                    nearP2PIntensity += 0.5;
+                                    fx += diffX * inv_r * (0.040 * intraScale);
+                                    fy += diffY * inv_r * (0.040 * intraScale);
+                                    nearP2PIntensity += 0.4;
+                                }
+                                if (r2 < alignR2) {
+                                    fx += (other.vel.x - vx) * (0.030 * intraScale);
+                                    fy += (other.vel.y - vy) * (0.030 * intraScale);
+                                    fx -= diffX * (0.015 * intraScale);
+                                    fy -= diffY * (0.015 * intraScale);
+                                    farMultipoleIntensity += 0.2;
+                                }
+                                if (!isSameFlock) {
+                                    let interSepR2 = sepR2 * 1.6;
+                                    if (r2 < interSepR2) {
+                                        let inv_r = inverseSqrt(r2);
+                                        fx += diffX * inv_r * (0.055 * params.flockInterStrength);
+                                        fy += diffY * inv_r * (0.055 * params.flockInterStrength);
+                                        nearP2PIntensity += 0.5;
+                                    }
                                 }
                             }
                         }
@@ -3924,6 +3939,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockInterStrength: f32,
             flockColorCurve: u32,
             flockDirectionBias: f32,
+            flockGhostMode: u32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -4622,7 +4638,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         // Preallocated per-frame uniform staging (zero allocations per frame).
         // 128 bytes = 29 SimParams words (116) rounded up to the buffer
         // granularity; 108-byte writes before round 19 were the 27-word struct.
-        const simUniformData = new ArrayBuffer(144);
+        const simUniformData = new ArrayBuffer(160);
         const simUniformF = new Float32Array(simUniformData);
         const simUniformU = new Uint32Array(simUniformData);
         // FMM per-level uniform staging: 256-byte blocks (dynamic-offset
@@ -6812,7 +6828,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 webgpuFunnelGeomU = funnelGeometry.packed;
             }
 
-            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 144-byte SimParams (33 fields, round 19 + flock params)
+            if (!webgpuUniformBuffer) webgpuUniformBuffer = webgpuDevice.createBuffer({ size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }); // 160-byte SimParams (34 fields, round 19 + flock params)
             // T4 4-byte uniform holding the particle count for pack/unpack.
             if (!webgpuQuantCountBuf) webgpuQuantCountBuf = webgpuDevice.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             // T6.4 funnel probe-counter (1 atomic u32) + its MAP_READ staging
@@ -8178,18 +8194,19 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const stdIC = scenarioId === 0 && galaxyIC !== 'flyby';
             floatView[27] = stdIC ? 0.0 : (gravityFarOn ? 0.000375 : 0.00075);
             floatView[28] = stdIC ? SELF_GRAV_MU / N : 0.015 / N;
-            // Boids flock parameters (indices 29-32)
+            // Boids flock parameters (indices 29-33)
             floatView[29] = flockIntraStrength;
             floatView[30] = flockInterStrength;
             uintView[31] = flockColorCurve;
             floatView[32] = flockDirectionBias;
+            uintView[33] = flockGhostMode ? 1u : 0u;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
             // outside the measured Hamiltonian).
             if (stdIC) floatView[10] = 0.0;
 
-            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 144);
+            webgpuDevice.queue.writeBuffer(webgpuUniformBuffer, 0, simUniformData, 0, 160);
             // T4 particle count for pack/unpack dispatch.
             if (webgpuQuantCountBuf) {
                 const qcnt = new Uint32Array([N]);
@@ -9617,6 +9634,13 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             });
         }
 
+        const chkFlockGhost = document.getElementById('chkFlockGhost');
+        if (chkFlockGhost) {
+            chkFlockGhost.addEventListener('change', (e) => {
+                flockGhostMode = e.target.checked;
+            });
+        }
+
         const btnFlockResetDefaults = document.getElementById('btnFlockResetDefaults');
         if (btnFlockResetDefaults) {
             btnFlockResetDefaults.addEventListener('click', () => {
@@ -9626,6 +9650,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 flockIntraStrength = FLOCK_DEFAULTS.intra;
                 flockInterStrength = FLOCK_DEFAULTS.inter;
                 flockDirectionBias = FLOCK_DEFAULTS.bias;
+                flockGhostMode = FLOCK_DEFAULTS.ghost;
 
                 // Sync UI inputs and value labels
                 const selFlocks = document.getElementById('selectBoidsFlocks');
@@ -9662,6 +9687,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     sliderFlockBias.value = String(flockDirectionBias);
                     if (valFlockBias) valFlockBias.innerText = flockDirectionBias.toFixed(1) + 'x';
                 }
+                if (chkFlockGhost) chkFlockGhost.checked = flockGhostMode;
 
                 resetSimulation();
             });
