@@ -8199,7 +8199,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             floatView[30] = flockInterStrength;
             uintView[31] = flockColorCurve;
             floatView[32] = flockDirectionBias;
-            uintView[33] = flockIndependent ? 1u : 0u;
+            uintView[33] = flockIndependent ? 1 : 0;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
