@@ -660,6 +660,7 @@
             <button id="btn1Euro">1€ Filter: OFF</button>
             <button id="btnColorMode">Color: Velocity Heatmap</button>
             <button id="btnRandomizeColors" type="button" title="Randomize color palette (hue + brightness rotation for all color modes).">Randomize Colors</button>
+            <button id="btnToggleLegend" class="active">Legend: ON</button>
             <button id="btnMouseMode">Mouse: Attract</button>
             <button id="btnReset">Reset Particles</button>
             <button id="btnFrameCap">Frame Cap: VSync</button>
@@ -835,6 +836,7 @@
         let flockColorSeed = 12345;  // seed for curve 4 (randomized colors)
         let colorHueShift = 0.0;     // global hue rotation [0..1) for randomize button
         let colorBrightnessShift = 0.0; // global brightness/saturation shift [-1..1]
+        let legendVisible = true;    // overlay legend visibility toggle
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 1.0; // cross-flock interaction (0=none, 1=base Reynolds, >1=extra repulsion)
         let flockDirectionBias = 0.0; // neighbor alignment amplification (0 = base Reynolds alignment only)
@@ -9731,6 +9733,14 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         // throughput; vsync mode restores the classic 60 Hz-locked loop.
         document.getElementById('btnFrameCap').addEventListener('click', () => {
             applyFrameCapMode(!uncappedSteps);
+        });
+
+        document.getElementById('btnToggleLegend').addEventListener('click', (e) => {
+            legendVisible = !legendVisible;
+            e.target.classList.toggle('active', legendVisible);
+            e.target.innerText = `Legend: ${legendVisible ? 'ON' : 'OFF'}`;
+            const overlay = document.getElementById('overlay-info');
+            if (overlay) overlay.style.display = legendVisible ? '' : 'none';
         });
 
         const colorModeNames = [
