@@ -1757,14 +1757,16 @@
                                     if (!isSameFlock && (params.flockIndependent == 1u)) {
                                         // Independent checkbox: skip all forces for cross-flock pairs
                                     } else {
-                                        let intraScale = params.flockIntraStrength;
-                                        let interScale = select(min(params.flockInterStrength, 1.0), 1.0, isSameFlock);
+                                        // Within-flock: scaled by intraScale only.
+                                        // Cross-flock: scaled by interScale only (0=none, 1=base Reynolds).
+                                        // extraRepulse adds repulsion when inter > 1.0.
+                                        let pairScale = select(params.flockInterStrength, params.flockIntraStrength, isSameFlock);
                                         let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
                                         // Separation (short range)
                                         if (r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
-                                            fx += diffX * inv_r * (0.040 * intraScale * interScale);
-                                            fy += diffY * inv_r * (0.040 * intraScale * interScale);
+                                            fx += diffX * inv_r * (0.040 * pairScale);
+                                            fy += diffY * inv_r * (0.040 * pairScale);
                                             nearP2PIntensity += 0.4;
                                         }
                                         // Alignment + Cohesion (longer range)
@@ -1773,11 +1775,11 @@
                                         // so individuals steer toward their
                                         // neighbors' heading more strongly.
                                         if (r2 < alignR2) {
-                                            let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias) * interScale;
+                                            let alignW = 0.030 * pairScale * (1.0 + params.flockDirectionBias);
                                             fx += (qvel.x - vx) * alignW;
                                             fy += (qvel.y - vy) * alignW;
-                                            fx -= diffX * (0.015 * intraScale * interScale);
-                                            fy -= diffY * (0.015 * intraScale * interScale);
+                                            fx -= diffX * (0.015 * pairScale);
+                                            fy -= diffY * (0.015 * pairScale);
                                             farMultipoleIntensity += 0.2;
                                         }
 
@@ -1823,21 +1825,20 @@
                             if (!isSameFlock && (params.flockIndependent == 1u)) {
                                 // Independent checkbox: skip all forces
                             } else {
-                                let intraScale = params.flockIntraStrength;
-                                let interScale = select(min(params.flockInterStrength, 1.0), 1.0, isSameFlock);
+                                let pairScale = select(params.flockInterStrength, params.flockIntraStrength, isSameFlock);
                                 let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
                                 if (r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * (0.040 * intraScale * interScale);
-                                    fy += diffY * inv_r * (0.040 * intraScale * interScale);
+                                    fx += diffX * inv_r * (0.040 * pairScale);
+                                    fy += diffY * inv_r * (0.040 * pairScale);
                                     nearP2PIntensity += 0.4;
                                 }
                                 if (r2 < alignR2) {
-                                    let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias) * interScale;
+                                    let alignW = 0.030 * pairScale * (1.0 + params.flockDirectionBias);
                                     fx += (other.vel.x - vx) * alignW;
                                     fy += (other.vel.y - vy) * alignW;
-                                    fx -= diffX * (0.015 * intraScale * interScale);
-                                    fy -= diffY * (0.015 * intraScale * interScale);
+                                    fx -= diffX * (0.015 * pairScale);
+                                    fy -= diffY * (0.015 * pairScale);
                                     farMultipoleIntensity += 0.2;
                                 }
                                 if (!isSameFlock && extraRepulse > 0.0) {
