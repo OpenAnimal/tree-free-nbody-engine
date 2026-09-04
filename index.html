@@ -520,10 +520,10 @@
             </select>
 
             <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
-            <input type="range" id="sliderFlockIntra" min="0.0" max="6.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
+            <input type="range" id="sliderFlockIntra" min="0.0" max="2.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
 
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
-            <input type="range" id="sliderFlockInter" min="0.0" max="6.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction (independent), 1=full base Reynolds (flocks merge), >1=extra repulsion pushing flocks apart.">
+            <input type="range" id="sliderFlockInter" min="0.0" max="2.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction (independent), 1=full base Reynolds (flocks merge), >1=extra repulsion pushing flocks apart.">
 
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
             <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Amplifies neighbor alignment (velocity matching) so individuals steer toward their neighbors' heading more strongly.">
