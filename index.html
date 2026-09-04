@@ -1762,8 +1762,8 @@
                                         // Independent checkbox: skip all forces for cross-flock pairs
                                     } else {
                                         let intraScale = params.flockIntraStrength;
-                                        let interScale = isSameFlock ? 1.0 : min(params.flockInterStrength, 1.0);
-                                        let extraRepulse = isSameFlock ? 0.0 : max(params.flockInterStrength - 1.0, 0.0);
+                                        let interScale = select(min(params.flockInterStrength, 1.0), 1.0, isSameFlock);
+                                        let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
                                         // Separation (short range)
                                         if (r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
@@ -1828,8 +1828,8 @@
                                 // Independent checkbox: skip all forces
                             } else {
                                 let intraScale = params.flockIntraStrength;
-                                let interScale = isSameFlock ? 1.0 : min(params.flockInterStrength, 1.0);
-                                let extraRepulse = isSameFlock ? 0.0 : max(params.flockInterStrength - 1.0, 0.0);
+                                let interScale = select(min(params.flockInterStrength, 1.0), 1.0, isSameFlock);
+                                let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
                                 if (r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
                                     fx += diffX * inv_r * (0.040 * intraScale * interScale);
