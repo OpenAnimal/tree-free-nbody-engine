@@ -525,11 +525,6 @@
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
             <input type="range" id="sliderFlockInter" min="0.0" max="6.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction (independent), 1=full base Reynolds (flocks merge), >1=extra repulsion pushing flocks apart.">
 
-            <label style="margin-top:8px; display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                <input type="checkbox" id="chkFlockIndependent" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other without interacting. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
-                Independent Flocks (no cross-flock interaction)
-            </label>
-
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
             <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Amplifies neighbor alignment (velocity matching) so individuals steer toward their neighbors' heading more strongly.">
 
@@ -850,7 +845,6 @@
             intra: 1.0,
             inter: 1.0,   // 1 = full base Reynolds on cross-flock pairs (original merge behavior)
             bias: 0.0,    // 0 = base Reynolds alignment only (no extra amplification)
-            independent: false  // false = base Reynolds on all pairs (original)
         };
 
         // Dynamic Galaxy cores
@@ -4007,7 +4001,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             // wider display scale for vortex so spatial/temporal variation is
             // visible instead of rendering almost everything gold.
             var colorMaxSpeed = select(0.14, 0.35, params.scenario == 3u);
-            if (params.scenario == 1u) { colorMaxSpeed = 0.08; }  // boids: forces are gentle, rarely reach 0.14 clamp
+            if (params.scenario == 1u) { colorMaxSpeed = 0.10; }  // boids: realistic max ~0.10
             if (params.scenario == 2u) { colorMaxSpeed = 0.28; }
             let t = clamp(length(vel) / colorMaxSpeed, 0.0, 1.0);
             var ptScale: f32 = 1.0;
@@ -4034,8 +4028,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     col = mix(cCyan, cPurple, t / 0.33);
                 } else if (t < 0.66) {
                     col = mix(cPurple, cPink, (t - 0.33) / 0.33);
+                } else if (t < 0.95) {
+                    col = mix(cPink, cGold, (t - 0.66) / 0.29);
                 } else {
-                    col = mix(cPink, cGold, (t - 0.66) / 0.34);
+                    col = cGold;
                 }
             } else if (params.colorMode == 1u) {
                 // 2. FMM & 1€ Dynamics (Cyan=Near, Purple=Far, Green=1€ Filter, Pink=Evasion)
@@ -4313,7 +4309,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             // Match WebGPU's wider vortex display scale; the physical clamp
             // remains 0.14, but a 0.28 heatmap ceiling avoids yellow saturation.
             float colorMaxSpeed = (u_scenario == 3) ? 0.35 : 0.14;
-            if (u_scenario == 1) { colorMaxSpeed = 0.08; }  // boids: rarely reach 0.14 clamp
+            if (u_scenario == 1) { colorMaxSpeed = 0.10; }  // boids: realistic max ~0.10
             if (u_scenario == 2) { colorMaxSpeed = 0.28; }
             float t = clamp(length(filteredVel) / colorMaxSpeed, 0.0, 1.0);
 
@@ -4329,7 +4325,8 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 // Velocity Heatmap (normalized t over per-scenario maxSpeed)
                 if (t < 0.33) col = mix(cCyan, cPurple, t / 0.33);
                 else if (t < 0.66) col = mix(cPurple, cPink, (t - 0.33) / 0.33);
-                else col = mix(cPink, cGold, (t - 0.66) / 0.34);
+                else if (t < 0.95) col = mix(cPink, cGold, (t - 0.66) / 0.29);
+                else col = cGold;
             } else if (u_colorMode == 1) {
                 // FMM & 1€ Dynamics
                 col = cPurple;
@@ -7921,8 +7918,8 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 items = [
                     { color: shiftColor('var(--accent-cyan)'), label: 'Low Speed (t < 0.33)' },
                     { color: shiftColor('var(--accent-purple)'), label: 'Cruising Speed (t 0.33 – 0.66)' },
-                    { color: shiftColor('var(--accent-pink)'), label: 'High Speed (t 0.66 – 0.85)' },
-                    { color: shiftColor('var(--accent-orange)'), label: 'Near Max Speed (t > 0.85)' }
+                    { color: shiftColor('var(--accent-pink)'), label: 'High Speed (t 0.66 – 0.95)' },
+                    { color: shiftColor('var(--accent-orange)'), label: 'Near Max Speed (t > 0.95)' }
                 ];
             } else if (colorMode === 1) {
                 title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
@@ -9837,13 +9834,6 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             });
         }
 
-        const chkFlockIndependent = document.getElementById('chkFlockIndependent');
-        if (chkFlockIndependent) {
-            chkFlockIndependent.addEventListener('change', (e) => {
-                flockIndependent = e.target.checked;
-            });
-        }
-
         const btnFlockResetDefaults = document.getElementById('btnFlockResetDefaults');
         if (btnFlockResetDefaults) {
             btnFlockResetDefaults.addEventListener('click', () => {
@@ -9853,7 +9843,6 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 flockIntraStrength = FLOCK_DEFAULTS.intra;
                 flockInterStrength = FLOCK_DEFAULTS.inter;
                 flockDirectionBias = FLOCK_DEFAULTS.bias;
-                flockIndependent = FLOCK_DEFAULTS.independent;
 
                 // Sync UI inputs and value labels
                 const selFlocks = document.getElementById('selectBoidsFlocks');
@@ -9892,7 +9881,6 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     sliderFlockBias.value = String(flockDirectionBias);
                     if (valFlockBias) valFlockBias.innerText = flockDirectionBias.toFixed(1) + 'x';
                 }
-                if (chkFlockIndependent) chkFlockIndependent.checked = flockIndependent;
 
                 resetSimulation();
             });
