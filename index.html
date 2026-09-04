@@ -519,10 +519,10 @@
             </select>
 
             <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
-            <input type="range" id="sliderFlockIntra" min="0.0" max="3.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
+            <input type="range" id="sliderFlockIntra" min="0.0" max="6.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
 
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">0.0x</span></div>
-            <input type="range" id="sliderFlockInter" min="0.0" max="3.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
+            <input type="range" id="sliderFlockInter" min="0.0" max="6.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
 
             <label style="margin-top:8px; display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
                 <input type="checkbox" id="chkFlockIndependent" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other without interacting. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
@@ -544,7 +544,7 @@
 
         <div class="control-group">
             <div class="control-label">Neighbor Interaction Radius: <span id="valRadius">0.035</span></div>
-            <input type="range" id="sliderRadius" min="0.01" max="0.08" step="0.005" value="0.035">
+            <input type="range" id="sliderRadius" min="0.01" max="0.16" step="0.005" value="0.035">
         </div>
 
         <!--
