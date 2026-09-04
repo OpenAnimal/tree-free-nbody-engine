@@ -543,8 +543,8 @@
         </div>
 
         <div class="control-group">
-            <div class="control-label">Neighbor Interaction Radius: <span id="valRadius">0.0350</span></div>
-            <input type="range" id="sliderRadius" min="0" max="1000" step="1" value="684" title="Neighbor interaction radius (nonlinear scale: 0.01 at center, 0.16 at right)">
+            <div class="control-label">Neighbor Interaction Radius: <span id="valRadius">0.0100</span></div>
+            <input type="range" id="sliderRadius" min="0" max="1000" step="1" value="506" title="Neighbor interaction radius (nonlinear scale: 0.01 at center, 0.3 at right)">
         </div>
 
         <!--
@@ -822,7 +822,7 @@
         let colorMode = 0; // 0: Velocity, 1: FMM Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
         let use1Euro = true;
         let simSpeed = 1.0;
-        let p2pRadius = 0.035;
+        let p2pRadius = 0.01;
         let fmmOrder = 2; // 0: Monopole, 1: Dipole, 2: Quadrupole adaptive FMM, 4: Hexadecapole
         let mouseMode = 1.0; // 1.0 attract, -1.0 repel, 0.0 inactive
         let mouseX = -1, mouseY = -1, isMouseDown = false;
@@ -839,7 +839,7 @@
         const FLOCK_DEFAULTS = {
             flockCount: 2,
             colorCurve: 0,
-            radius: 0.035,
+            radius: 0.01,
             intra: 1.0,
             inter: 0.0,   // 0 = flocks merge (original behavior)
             bias: 0.0,    // 0 = base Reynolds alignment only (no extra amplification)
@@ -9289,10 +9289,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         });
 
         document.getElementById('sliderRadius').addEventListener('input', (e) => {
-            // Nonlinear mapping: slider 0..1000 → radius 0..0.16
-            // radius = 0.16 * t^4, so t=0.5 (middle) → 0.01, t=1 → 0.16
+            // Nonlinear mapping: slider 0..1000 → radius 0..0.3
+            // radius = 0.3 * t^5, so t≈0.5 (middle) → 0.01, t=1 → 0.3
             const t = parseFloat(e.target.value) / 1000.0;
-            p2pRadius = 0.16 * Math.pow(t, 4);
+            p2pRadius = 0.3 * Math.pow(t, 5);
             document.getElementById('valRadius').innerText = p2pRadius.toFixed(4);
         });
 
@@ -9697,8 +9697,8 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
                 const sRadius = document.getElementById('sliderRadius');
                 if (sRadius) {
-                    // Inverse of radius = 0.16 * t^4 → t = (radius/0.16)^0.25
-                    const t = Math.pow(p2pRadius / 0.16, 0.25);
+                    // Inverse of radius = 0.3 * t^5 → t = (radius/0.3)^(1/5)
+                    const t = Math.pow(p2pRadius / 0.3, 0.2);
                     sRadius.value = String(Math.round(t * 1000));
                     const lbl = document.getElementById('valRadius');
                     if (lbl) lbl.innerText = p2pRadius.toFixed(4);
