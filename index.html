@@ -9133,7 +9133,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         // far-field that matches the force model (see defaultFarFieldForScenario).
         function defaultFarFieldForScenario(scen) {
             if (scen === 'galaxy') return 'gravity';
-            if (scen === 'boids') return 'none';  // sub-swarm attractors (per-flock); centroids mode mixes flocks
+            if (scen === 'boids') return 'centroids';
             // vortex: analytic Biot-Savart cores today; particle-particle Biot
             // multipoles are reserved (farFieldModel biot). SPH: compact
             // support => no long-range multipole far field.
