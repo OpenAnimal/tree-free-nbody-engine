@@ -828,6 +828,7 @@
         // Boids flock configuration
         let boidsFlockCount = 2;     // 2 or 3 flocks
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps, 4: Randomized
+        let velocityRampBaseCurve = 0; // last curve 0-2 selected; curve 3 uses its colors with speed interpolation
         let flockColorSeed = 12345;  // seed for curve 4 (randomized colors)
         let colorHueShift = 0.0;     // global hue rotation [0..1) for randomize button
         let colorBrightnessShift = 0.0; // global brightness/saturation shift [-1..1]
@@ -1248,9 +1249,9 @@
             flockColorSeed: u32,    // random seed for curve 4 (randomized colors)
             colorHueShift: f32,     // global hue rotation [0..1) for randomize button
             colorBrightnessShift: f32, // global brightness/saturation shift [-1..1]
+            velocityRampBaseCurve: u32, // curve 0-2 whose colors curve 3 interpolates with speed
             pad2: u32,              // padding
-            pad3: u32,              // padding
-            pad4: f32,              // padding
+            pad3: f32,              // padding
         };
 
         @group(0) @binding(0) var<storage, read> posVelIn: array<Particle>;
@@ -3974,9 +3975,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockColorSeed: u32,
             colorHueShift: f32,
             colorBrightnessShift: f32,
+            velocityRampBaseCurve: u32,
             pad2: u32,
-            pad3: u32,
-            pad4: f32,
+            pad3: f32,
         };
 
         @group(0) @binding(0) var<uniform> params: SimParams;
@@ -4086,19 +4087,35 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                         else if (gIdx == 1u) { col = c1; }
                         else { col = c2; }
                     } else if (curve == 3u) {
-                        // Curve 3: Dynamic Velocity Ramps — uses the SAME
-                        // base colors as curve 0 (Neon), but interpolates
+                        // Curve 3: Dynamic Velocity Ramps — uses the base
+                        // colors from whichever curve (0-2) was selected
+                        // before switching to velocity mode, interpolating
                         // each flock from a dark variant to the full color
                         // based on speed t.
-                        let dark0 = vec3<f32>(0.0, 0.1, 0.15);
-                        let dark1 = vec3<f32>(0.15, 0.03, 0.02);
-                        let dark2 = vec3<f32>(0.15, 0.12, 0.01);
+                        let bc = params.velocityRampBaseCurve;
+                        // Base colors per curve
+                        var baseC0 = vec3<f32>(0.0, 0.95, 1.0);
+                        var baseC1 = vec3<f32>(1.0, 0.25, 0.15);
+                        var baseC2 = vec3<f32>(1.0, 0.85, 0.05);
+                        if (bc == 1u) {
+                            baseC0 = vec3<f32>(0.2, 0.75, 1.0);
+                            baseC1 = vec3<f32>(1.0, 0.1, 0.35);
+                            baseC2 = vec3<f32>(0.7, 0.2, 1.0);
+                        } else if (bc == 2u) {
+                            baseC0 = vec3<f32>(1.0, 0.08, 0.6);
+                            baseC1 = vec3<f32>(0.1, 1.0, 0.4);
+                            baseC2 = vec3<f32>(0.0, 0.8, 0.9);
+                        }
+                        // Dark variant = 15% of base color
+                        let dark0 = baseC0 * 0.15;
+                        let dark1 = baseC1 * 0.15;
+                        let dark2 = baseC2 * 0.15;
                         if (gIdx == 0u) {
-                            col = mix(dark0, vec3<f32>(0.0, 0.95, 1.0), t);
+                            col = mix(dark0, baseC0, t);
                         } else if (gIdx == 1u) {
-                            col = mix(dark1, vec3<f32>(1.0, 0.25, 0.15), t);
+                            col = mix(dark1, baseC1, t);
                         } else {
-                            col = mix(dark2, vec3<f32>(1.0, 0.85, 0.05), t);
+                            col = mix(dark2, baseC2, t);
                         }
                     } else {
                         // Curve 4: Randomized — hash(seed, gIdx) → HSV → RGB
@@ -7966,12 +7983,21 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                                 { color: 'rgb(0,204,230)', label: 'Gamma Swarm (Electric Cyan)' }
                             ]
                         },
-                        { // Curve 3: Dynamic Velocity Ramps (uses Neon base colors)
-                            items: [
-                                { color: 'rgb(0,242,255)', label: 'Alpha Swarm (Cyan, dark→bright by speed)' },
-                                { color: 'rgb(255,64,38)', label: 'Beta Swarm (Coral-Red, dark→bright by speed)' },
-                                { color: 'rgb(255,217,13)', label: 'Gamma Swarm (Amber, dark→bright by speed)' }
-                            ]
+                        { // Curve 3: Dynamic Velocity Ramps — uses base curve's colors
+                            items: (() => {
+                                const baseColors = {
+                                    0: [['rgb(0,242,255)', 'Cyan'], ['rgb(255,64,38)', 'Coral-Red'], ['rgb(255,217,13)', 'Amber']],
+                                    1: [['rgb(51,191,255)', 'Ice Blue'], ['rgb(255,26,89)', 'Solar Crimson'], ['rgb(179,51,255)', 'Royal Violet']],
+                                    2: [['rgb(255,20,153)', 'Hot Magenta'], ['rgb(26,255,102)', 'Neon Lime'], ['rgb(0,204,230)', 'Electric Cyan']]
+                                };
+                                const bc = velocityRampBaseCurve;
+                                const cols = baseColors[bc] || baseColors[0];
+                                return [
+                                    { color: cols[0][0], label: `Alpha Swarm (${cols[0][1]}, dark→bright by speed)` },
+                                    { color: cols[1][0], label: `Beta Swarm (${cols[1][1]}, dark→bright by speed)` },
+                                    { color: cols[2][0], label: `Gamma Swarm (${cols[2][1]}, dark→bright by speed)` }
+                                ];
+                            })()
                         },
                         { // Curve 4: Randomized — compute JS-side for legend
                             items: (() => {
@@ -8374,6 +8400,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             uintView[34] = flockColorSeed;
             floatView[35] = colorHueShift;
             floatView[36] = colorBrightnessShift;
+            uintView[37] = velocityRampBaseCurve;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
@@ -9797,6 +9824,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (flockColorCurve < 4) {
                     colorHueShift = 0.0;
                     colorBrightnessShift = 0.0;
+                }
+                // Track the last base palette (0-2) so curve 3 can use it.
+                if (flockColorCurve <= 2) {
+                    velocityRampBaseCurve = flockColorCurve;
                 }
                 if (valFlockColorCurve) valFlockColorCurve.innerText = e.target.options[e.target.selectedIndex].text;
                 // Flock colors only render in colorMode 2 (Scenario Clusters).
