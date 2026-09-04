@@ -9460,9 +9460,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     probeEl.checked = v !== 'none';
                 }
                 // Membership backend change applies every scenario that builds
-                // cell lists; re-seed so the next frame picks up clean state.
+                // cell lists; the new mode is read from uniforms next frame
+                // without re-seeding particles.
                 updateNfProbeState();
-                resetSimulation();
                 updateMemoryTelemetry();
                 updateFmmAxisTelemetry();
             });
