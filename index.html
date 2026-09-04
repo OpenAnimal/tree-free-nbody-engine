@@ -511,16 +511,13 @@
             </select>
 
             <div class="control-label" style="margin-top:8px;">Flock Color Curve: <span id="valFlockColorCurve">High-Contrast Neon</span></div>
-            <div style="display:flex; gap:6px; align-items:center;">
-                <select id="selectFlockColorCurve" title="Select color curves/palettes for flock differentiation." style="flex:1;">
-                    <option value="0" selected>High-Contrast Neon (Cyan vs Coral-Red vs Amber)</option>
-                    <option value="1">Thermal / Polar (Ice Blue vs Solar Crimson vs Violet)</option>
-                    <option value="2">Cyberpunk (Hot Magenta vs Neon Lime vs Electric Gold)</option>
-                    <option value="3">Dynamic Velocity Ramps (Per-Flock Speed Curves)</option>
-                    <option value="4">Randomized (hash-seeded)</option>
-                </select>
-                <button id="btnRandomizeColors" type="button" style="padding:4px 8px; font-size:0.72rem; background:rgba(0,240,255,0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); border-radius:4px; cursor:pointer; white-space:nowrap;" title="Generate new random flock colors (uses curve 4).">🎲</button>
-            </div>
+            <select id="selectFlockColorCurve" title="Select color curves/palettes for flock differentiation." style="width:100%;">
+                <option value="0" selected>High-Contrast Neon (Cyan vs Coral-Red vs Amber)</option>
+                <option value="1">Thermal / Polar (Ice Blue vs Solar Crimson vs Violet)</option>
+                <option value="2">Cyberpunk (Hot Magenta vs Neon Lime vs Electric Gold)</option>
+                <option value="3">Dynamic Velocity Ramps (Per-Flock Speed Curves)</option>
+                <option value="4">Randomized (hash-seeded)</option>
+            </select>
 
             <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
             <input type="range" id="sliderFlockIntra" min="0.0" max="6.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
@@ -660,8 +657,9 @@
 
         <div class="section-title">Controls & Filtering</div>
         <div class="btn-grid">
-            <button id="btn1Euro" class="active">1€ Filter: ON</button>
+            <button id="btn1Euro">1€ Filter: OFF</button>
             <button id="btnColorMode">Color: Velocity Heatmap</button>
+            <button id="btnRandomizeColors" type="button" title="Randomize color palette (hue rotation for all color modes).">🎲 Randomize Colors</button>
             <button id="btnMouseMode">Mouse: Attract</button>
             <button id="btnReset">Reset Particles</button>
             <button id="btnFrameCap">Frame Cap: VSync</button>
@@ -824,7 +822,7 @@
         let scenario = 'galaxy';
         let scenarioId = 0;
         let colorMode = 0; // 0: Velocity, 1: FMM Dynamics, 2: Scenario Clusters, 3: 1€ Filter Damping
-        let use1Euro = true;
+        let use1Euro = false;
         let simSpeed = 1.0;
         let p2pRadius = 0.01;
         let fmmOrder = 2; // 0: Monopole, 1: Dipole, 2: Quadrupole adaptive FMM, 4: Hexadecapole
@@ -835,6 +833,7 @@
         let boidsFlockCount = 2;     // 2 or 3 flocks
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps, 4: Randomized
         let flockColorSeed = 12345;  // seed for curve 4 (randomized colors)
+        let colorHueShift = 0.0;     // global hue rotation [0..1) for randomize button
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
         let flockDirectionBias = 0.0; // neighbor alignment amplification (0 = base Reynolds alignment only)
@@ -1250,7 +1249,7 @@
             flockDirectionBias: f32, // neighbor alignment amplification multiplier
             flockIndependent: u32,     // 1 = cross-flock pairs get zero force (independent)
             flockColorSeed: u32,    // random seed for curve 4 (randomized colors)
-            pad0: f32,              // padding to 160-byte struct (uniform 16-byte align)
+            colorHueShift: f32,     // global hue rotation [0..1) for randomize button
             pad1: u32,              // padding
             pad2: u32,              // padding
             pad3: u32,              // padding
@@ -2013,10 +2012,10 @@
             var filterDamping: f32 = 0.0;
 
             if (params.use1Euro == 1u) {
-                let alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
+                let alpha = clamp(0.12 + speed * 8.0, 0.05, 0.85);
                 filteredVx = alpha * vx + (1.0 - alpha) * ext.prevVel.x;
                 filteredVy = alpha * vy + (1.0 - alpha) * ext.prevVel.y;
-                filterDamping = (1.0 - alpha) * length(vec2<f32>(vx - ext.prevVel.x, vy - ext.prevVel.y)) * 40.0;
+                filterDamping = (1.0 - alpha) * length(vec2<f32>(vx - ext.prevVel.x, vy - ext.prevVel.y)) * 60.0;
             }
 
             px = clamp(px + filteredVx * dt, 0.01, 0.99);
@@ -3921,6 +3920,16 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
         }
 
+        // RGB to HSV conversion for global hue rotation.
+        fn rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+            let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            let p = mix(vec4<f32>(c.zy, K.wz), vec4<f32>(c.yz, K.xy), step(c.z, c.y));
+            let q = mix(vec4<f32>(p.xyw, c.x), vec4<f32>(c.x, p.yzx), step(p.x, c.x));
+            let d = q.x - min(q.w, q.y);
+            let e = 1.0e-10;
+            return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+        }
+
         struct SimParams {
             dt: f32,
             simTime: f32,
@@ -3957,7 +3966,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockDirectionBias: f32,
             flockIndependent: u32,
             flockColorSeed: u32,
-            pad0: f32,
+            colorHueShift: f32,
             pad1: u32,
             pad2: u32,
             pad3: u32,
@@ -4102,6 +4111,13 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (t > 0.8) {
                     col = mix(col, cPink, clamp((t - 0.8) * 2.5, 0.0, 1.0));
                 }
+            }
+
+            // Global hue rotation (randomize button). Convert col → HSV,
+            // shift hue, convert back. Zero shift = no change.
+            if (params.colorHueShift > 0.0) {
+                let hsv = rgb2hsv(col);
+                col = hsv2rgb(vec3<f32>(fract(hsv.x + params.colorHueShift), hsv.y, hsv.z));
             }
 
             output.color = vec4<f32>(col, 0.88);
@@ -4264,9 +4280,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             vec2 filteredVel = vel;
             float filterDamping = 0.0;
             if (u_use1Euro == 1) {
-                float alpha = clamp(0.30 + speed * 15.0, 0.20, 1.0);
+                float alpha = clamp(0.12 + speed * 8.0, 0.05, 0.85);
                 filteredVel = mix(a_prevVel, vel, alpha);
-                filterDamping = (1.0 - alpha) * length(vel - a_prevVel) * 40.0;
+                filterDamping = (1.0 - alpha) * length(vel - a_prevVel) * 60.0;
             }
 
             pos = clamp(pos + filteredVel * dt, vec2(0.01), vec2(0.99));
@@ -8284,6 +8300,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             floatView[32] = flockDirectionBias;
             uintView[33] = flockIndependent ? 1 : 0;
             uintView[34] = flockColorSeed;
+            floatView[35] = colorHueShift;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
@@ -9708,16 +9725,17 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         const btnRandomizeColors = document.getElementById('btnRandomizeColors');
         if (btnRandomizeColors) {
             btnRandomizeColors.addEventListener('click', () => {
+                // Global hue rotation applies to ALL color modes (velocity
+                // heatmap, FMM dynamics, scenario clusters, 1€ filter).
+                colorHueShift = Math.random();
+                // Also randomize flock-specific colors (curve 4 seed).
                 flockColorSeed = Math.floor(Math.random() * 4294967296);
-                flockColorCurve = 4;
-                if (selFlockColorCurve) selFlockColorCurve.value = '4';
-                if (valFlockColorCurve) valFlockColorCurve.innerText = 'Randomized (hash-seeded)';
-                if (colorMode !== 2) {
-                    colorMode = 2;
-                    const btn = document.getElementById('btnColorMode');
-                    if (btn) btn.innerText = colorModeNames[colorMode];
-                    updateOverlayLegend();
+                if (scenario === 'boids' && flockColorCurve < 4) {
+                    flockColorCurve = 4;
+                    if (selFlockColorCurve) selFlockColorCurve.value = '4';
+                    if (valFlockColorCurve) valFlockColorCurve.innerText = 'Randomized (hash-seeded)';
                 }
+                updateOverlayLegend();
             });
         }
         const sliderFlockIntra = document.getElementById('sliderFlockIntra');
