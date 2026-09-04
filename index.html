@@ -1585,23 +1585,24 @@
                     // fmmField[pid] = (bary_x, bary_y, mean_vx, mean_vy) written
                     // by boid_centroid_eval over non-adjacent leaf cells.
                     let far = fmmField[origId];
-                    // Cohesion toward distant cell barycenters (unit-ish scale).
+                    // Cohesion toward distant cell barycenters, scaled by intraScale.
                     let toB = far.xy - vec2(px, py);
                     let dB = length(toB) + 1e-3;
-                    fx += (toB.x / dB) * 0.028;
-                    fy += (toB.y / dB) * 0.028;
+                    fx += (toB.x / dB) * (0.028 * params.flockIntraStrength);
+                    fy += (toB.y / dB) * (0.028 * params.flockIntraStrength);
                     // Soft alignment to distant mean velocity.
-                    fx += (far.z - vx) * 0.012;
-                    fy += (far.w - vy) * 0.012;
+                    fx += (far.z - vx) * (0.012 * params.flockIntraStrength);
+                    fy += (far.w - vy) * (0.012 * params.flockIntraStrength);
                     farMultipoleIntensity = clamp(length(toB) * 2.0, 0.0, 1.0);
                 } else {
-                    // Fixed sub-swarm attractors (legacy path; draft is now
-                    // applied above as part of the direction-bias block).
+                    // Fixed sub-swarm attractors, scaled by intraScale so the
+                    // within-flock strength slider controls all same-flock
+                    // forces (P2P + attractor). At intra=0 flocks disperse fully.
                     var subCx = 0.32; var subCy = 0.50;
                     if (grp > 1.5) { subCx = 0.50; subCy = 0.28; }
                     else if (grp > 0.5) { subCx = 0.68; subCy = 0.50; }
-                    fx += (subCx - px) * 0.035;
-                    fy += (subCy - py) * 0.035;
+                    fx += (subCx - px) * (0.035 * params.flockIntraStrength);
+                    fy += (subCy - py) * (0.035 * params.flockIntraStrength);
                     farMultipoleIntensity += 0.5;
                 }
 
