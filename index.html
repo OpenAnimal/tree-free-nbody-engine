@@ -575,7 +575,7 @@
         <div class="control-group" id="groupFarField">
             <div class="control-label">Long-Range Physics: <span id="valFarField">Particle Gravity</span></div>
             <select id="selectFarField" title="Long-range force approximation (independent of near-field hash). none=analytic only. gravity=FMM multipoles for all-pairs self-gravity (galaxy). centroids=order-0 cell barycenters/mean-vel for flocking (boids) — not gravity multipoles. biot=reserved Biot-Savart FMM for vortex.">
-                <option value="none">Local/analytic scenario physics</option>
+                <option value="none">Scenario Default</option>
                 <option value="gravity" selected>Particle gravity</option>
                 <option value="centroids">Boid centroid field</option>
                 <option value="biot" disabled>Lamb–Oseen analytic field</option>
@@ -9107,7 +9107,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         function farFieldLabel(model) {
             return ({
-                none: 'Local/analytic scenario physics',
+                none: 'Scenario Default',
                 gravity: 'Particle gravity',
                 centroids: 'Boid centroid field',
                 biot: 'Lamb–Oseen analytic velocity field',
