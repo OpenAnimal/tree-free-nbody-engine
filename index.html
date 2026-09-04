@@ -4005,6 +4005,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             // wider display scale for vortex so spatial/temporal variation is
             // visible instead of rendering almost everything gold.
             var colorMaxSpeed = select(0.14, 0.35, params.scenario == 3u);
+            if (params.scenario == 1u) { colorMaxSpeed = 0.08; }  // boids: forces are gentle, rarely reach 0.14 clamp
             if (params.scenario == 2u) { colorMaxSpeed = 0.28; }
             let t = clamp(length(vel) / colorMaxSpeed, 0.0, 1.0);
             var ptScale: f32 = 1.0;
@@ -4310,6 +4311,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             // Match WebGPU's wider vortex display scale; the physical clamp
             // remains 0.14, but a 0.28 heatmap ceiling avoids yellow saturation.
             float colorMaxSpeed = (u_scenario == 3) ? 0.35 : 0.14;
+            if (u_scenario == 1) { colorMaxSpeed = 0.08; }  // boids: rarely reach 0.14 clamp
             if (u_scenario == 2) { colorMaxSpeed = 0.28; }
             float t = clamp(length(filteredVel) / colorMaxSpeed, 0.0, 1.0);
 
@@ -7851,6 +7853,54 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             const overlay = document.getElementById('overlay-info');
             if (!overlay) return;
 
+            // Helper: apply the same hue+brightness shift the WGSL shader does,
+            // so legend colors match the on-screen colors after randomize.
+            function shiftColor(cssCol) {
+                if (colorHueShift === 0.0 && colorBrightnessShift === 0.0) return cssCol;
+                // Resolve CSS variable to rgb(r,g,b)
+                const tmp = document.createElement('div');
+                tmp.style.color = cssCol;
+                document.body.appendChild(tmp);
+                const rgbStr = getComputedStyle(tmp).color;
+                document.body.removeChild(tmp);
+                const m = rgbStr.match(/(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+                if (!m) return cssCol;
+                let r = +m[1] / 255, g = +m[2] / 255, b = +m[3] / 255;
+                // RGB → HSV
+                const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+                const d = mx - mn;
+                let h = 0;
+                if (d > 0) {
+                    if (mx === r) h = ((g - b) / d) % 6;
+                    else if (mx === g) h = (b - r) / d + 2;
+                    else h = (r - g) / d + 4;
+                    h /= 6;
+                    if (h < 0) h += 1;
+                }
+                const s = mx === 0 ? 0 : d / mx;
+                const v = mx;
+                // Shift
+                h = (h + colorHueShift) % 1;
+                const ns = Math.max(0, Math.min(1, s + colorBrightnessShift * 0.3));
+                const nv = Math.max(0.2, Math.min(1, v + colorBrightnessShift * 0.4));
+                // HSV → RGB
+                const i = Math.floor(h * 6);
+                const f = h * 6 - i;
+                const p = nv * (1 - ns);
+                const q = nv * (1 - f * ns);
+                const t = nv * (1 - (1 - f) * ns);
+                let nr, ng, nb;
+                switch (i % 6) {
+                    case 0: nr=nv; ng=t; nb=p; break;
+                    case 1: nr=q; ng=nv; nb=p; break;
+                    case 2: nr=p; ng=nv; nb=t; break;
+                    case 3: nr=p; ng=q; nb=nv; break;
+                    case 4: nr=t; ng=p; nb=nv; break;
+                    default: nr=nv; ng=p; nb=q; break;
+                }
+                return `rgb(${Math.round(nr*255)},${Math.round(ng*255)},${Math.round(nb*255)})`;
+            }
+
             const scenarioNames = {
                 galaxy: 'Dynamic Galaxy Collision',
                 boids: 'Multilevel FMM Boid Swarms',
@@ -7867,17 +7917,17 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             if (colorMode === 0) {
                 title = `${sName} — Velocity Heatmap (normalized)`;
                 items = [
-                    { color: 'var(--accent-cyan)', label: 'Low Speed (t < 0.33)' },
-                    { color: 'var(--accent-purple)', label: 'Cruising Speed (t 0.33 – 0.66)' },
-                    { color: 'var(--accent-pink)', label: 'High Speed (t 0.66 – 0.85)' },
-                    { color: 'var(--accent-orange)', label: 'Near Max Speed (t > 0.85)' }
+                    { color: shiftColor('var(--accent-cyan)'), label: 'Low Speed (t < 0.33)' },
+                    { color: shiftColor('var(--accent-purple)'), label: 'Cruising Speed (t 0.33 – 0.66)' },
+                    { color: shiftColor('var(--accent-pink)'), label: 'High Speed (t 0.66 – 0.85)' },
+                    { color: shiftColor('var(--accent-orange)'), label: 'Near Max Speed (t > 0.85)' }
                 ];
             } else if (colorMode === 1) {
                 title = activeBackend === 'WEBGPU' && scenario === 'galaxy' ? `${sName} — Cell-List FMM Dynamics` : `${sName} — Non-FMM WebGL Dynamics`;
                 items = [
-                    { color: 'var(--accent-cyan)', label: 'Near-Field: Direct P2P (Separation / Repulsion)' },
-                    { color: 'var(--accent-purple)', label: 'Far-Field: Multipole M2L (Macro Cohesion)' },
-                    { color: 'var(--accent-green)', label: '1€ Filter: Adaptive Velocity Smoothing Active' }
+                    { color: shiftColor('var(--accent-cyan)'), label: 'Near-Field: Direct P2P (Separation / Repulsion)' },
+                    { color: shiftColor('var(--accent-purple)'), label: 'Far-Field: Multipole M2L (Macro Cohesion)' },
+                    { color: shiftColor('var(--accent-green)'), label: '1€ Filter: Adaptive Velocity Smoothing Active' }
                 ];
             } else if (colorMode === 2) {
                 title = `${sName} — Scenario Clusters`;
@@ -7948,38 +7998,41 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                         }
                     ];
                     const curve = flockColorCurve < flockLegend.length ? flockColorCurve : 0;
-                    items = flockLegend[curve].items;
+                    items = flockLegend[curve].items.map(it => ({
+                        color: shiftColor(it.color),
+                        label: it.label
+                    }));
                 } else if (scenario === 'galaxy') {
                     if (galaxyIC !== 'flyby') {
                         items = [
-                            { color: 'var(--accent-cyan)', label: galaxyIC === 'plummer'
+                            { color: shiftColor('var(--accent-cyan)'), label: galaxyIC === 'plummer'
                                 ? 'Self-Gravitating Disk (Virialized Log-Disk)'
                                 : 'Self-Gravitating Disk (Cold Collapse, Q=0)' },
                         ];
                     } else items = [
-                        { color: 'var(--accent-cyan)', label: 'Galaxy A (Cyan Stellar Disk)' },
-                        { color: 'var(--accent-pink)', label: 'Galaxy B (Pink Counter-Disk)' },
-                        { color: 'var(--accent-orange)', label: 'Galactic Core Singularities' }
+                        { color: shiftColor('var(--accent-cyan)'), label: 'Galaxy A (Cyan Stellar Disk)' },
+                        { color: shiftColor('var(--accent-pink)'), label: 'Galaxy B (Pink Counter-Disk)' },
+                        { color: shiftColor('var(--accent-orange)'), label: 'Galactic Core Singularities' }
                     ];
                 } else if (scenario === 'vortex') {
                     items = [
-                        { color: 'var(--accent-cyan)', label: 'Upper Vortex Sheet (+Gamma Circulation)' },
-                        { color: 'var(--accent-pink)', label: 'Lower Vortex Sheet (-Gamma Circulation)' },
-                        { color: 'var(--accent-purple)', label: 'Kelvin-Helmholtz Roll-up Core' }
+                        { color: shiftColor('var(--accent-cyan)'), label: 'Upper Vortex Sheet (+Gamma Circulation)' },
+                        { color: shiftColor('var(--accent-pink)'), label: 'Lower Vortex Sheet (-Gamma Circulation)' },
+                        { color: shiftColor('var(--accent-purple)'), label: 'Kelvin-Helmholtz Roll-up Core' }
                     ];
                 } else {
                     items = [
-                        { color: 'var(--accent-cyan)', label: 'Hydrostatic Base Fluid' },
-                        { color: 'var(--accent-purple)', label: 'Dynamic Wave Compression Zone' },
-                        { color: 'var(--accent-pink)', label: 'Breaking Wave Splash Boundary' }
+                        { color: shiftColor('var(--accent-cyan)'), label: 'Hydrostatic Base Fluid' },
+                        { color: shiftColor('var(--accent-purple)'), label: 'Dynamic Wave Compression Zone' },
+                        { color: shiftColor('var(--accent-pink)'), label: 'Breaking Wave Splash Boundary' }
                     ];
                 }
             } else if (colorMode === 3) {
                 title = `${sName} — 1€ Adaptive Filter (Damping Activity)`;
                 items = [
-                    { color: 'var(--accent-cyan)', label: 'Cruising (low filter activity, stable velocity)' },
-                    { color: 'var(--accent-green)', label: 'Active Smoothing (1€ damping high, jitter suppressed)' },
-                    { color: 'var(--accent-pink)', label: 'High Normalized Speed (t > 0.8, rapid response)' }
+                    { color: shiftColor('var(--accent-cyan)'), label: 'Cruising (low filter activity, stable velocity)' },
+                    { color: shiftColor('var(--accent-green)'), label: 'Active Smoothing (1€ damping high, jitter suppressed)' },
+                    { color: shiftColor('var(--accent-pink)'), label: 'High Normalized Speed (t > 0.8, rapid response)' }
                 ];
             }
 
