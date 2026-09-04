@@ -9786,6 +9786,12 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         if (selFlockColorCurve) {
             selFlockColorCurve.addEventListener('change', (e) => {
                 flockColorCurve = parseInt(e.target.value, 10);
+                // Reset global hue/brightness shift when manually selecting a
+                // named curve (0-3) so its original colors are shown.
+                if (flockColorCurve < 4) {
+                    colorHueShift = 0.0;
+                    colorBrightnessShift = 0.0;
+                }
                 if (valFlockColorCurve) valFlockColorCurve.innerText = e.target.options[e.target.selectedIndex].text;
                 // Flock colors only render in colorMode 2 (Scenario Clusters).
                 // Auto-switch so the user sees the new curve immediately.
