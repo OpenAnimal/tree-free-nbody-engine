@@ -1765,12 +1765,20 @@
                                         let intraScale = params.flockIntraStrength;
                                         let interScale = select(params.flockInterStrength, 1.0, isSameFlock);
                                         let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
-                                        // Separation (short range) — applies to ALL pairs
-                                        if (r2 < sepR2) {
+                                        // Within-flock separation (short range, sepR)
+                                        if (isSameFlock && r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
-                                            let sepScale = select(interScale, intraScale, isSameFlock);
-                                            fx += diffX * inv_r * (0.08 * sepScale);
-                                            fy += diffY * inv_r * (0.08 * sepScale);
+                                            fx += diffX * inv_r * (0.08 * intraScale);
+                                            fy += diffY * inv_r * (0.08 * intraScale);
+                                            nearP2PIntensity += 0.4;
+                                        }
+                                        // Cross-flock separation — uses the FULL alignR (not
+                                        // sepR) so flocks push apart at longer range and
+                                        // actually deflect instead of passing through.
+                                        if (!isSameFlock && r2 < alignR2) {
+                                            let inv_r = inverseSqrt(r2);
+                                            fx += diffX * inv_r * (0.08 * interScale);
+                                            fy += diffY * inv_r * (0.08 * interScale);
                                             nearP2PIntensity += 0.4;
                                         }
                                         // Alignment + Cohesion (longer range) — SAME FLOCK ONLY
@@ -1829,12 +1837,18 @@
                                 let intraScale = params.flockIntraStrength;
                                 let interScale = select(params.flockInterStrength, 1.0, isSameFlock);
                                 let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
-                                // Separation — all pairs
-                                if (r2 < sepR2) {
+                                // Within-flock separation (short range)
+                                if (isSameFlock && r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
-                                    let sepScale = select(interScale, intraScale, isSameFlock);
-                                    fx += diffX * inv_r * (0.08 * sepScale);
-                                    fy += diffY * inv_r * (0.08 * sepScale);
+                                    fx += diffX * inv_r * (0.08 * intraScale);
+                                    fy += diffY * inv_r * (0.08 * intraScale);
+                                    nearP2PIntensity += 0.4;
+                                }
+                                // Cross-flock separation — full alignR range
+                                if (!isSameFlock && r2 < alignR2) {
+                                    let inv_r = inverseSqrt(r2);
+                                    fx += diffX * inv_r * (0.08 * interScale);
+                                    fy += diffY * inv_r * (0.08 * interScale);
                                     nearP2PIntensity += 0.4;
                                 }
                                 // Alignment + Cohesion — same flock only
