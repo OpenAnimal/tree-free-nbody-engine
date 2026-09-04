@@ -9266,7 +9266,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                     farFieldModel = v;
                 }
                 updateFmmControlsState();
-                resetSimulation();
+                // No resetSimulation() — the far-field model is read from
+                // the uniform buffer every frame, so switching takes effect
+                // on the next frame without re-seeding particles.
                 updateMemoryTelemetry();
                 updateFmmAxisTelemetry();
             });
