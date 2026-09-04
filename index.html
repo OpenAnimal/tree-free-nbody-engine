@@ -540,7 +540,7 @@
 
         <div class="control-group">
             <div class="control-label">Neighbor Interaction Radius: <span id="valRadius">0.0100</span></div>
-            <input type="range" id="sliderRadius" min="0" max="1000" step="1" value="763" title="Neighbor interaction radius (nonlinear scale: 0.003–0.03 range)">
+            <input type="range" id="sliderRadius" min="0" max="1000" step="1" value="587" title="Neighbor interaction radius (nonlinear scale: 0.007–0.05 range)">
         </div>
 
         <!--
@@ -9439,10 +9439,10 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         });
 
         document.getElementById('sliderRadius').addEventListener('input', (e) => {
-            // Nonlinear mapping: slider 0..1000 → radius 0.003..0.03
-            // radius = 0.003 + 0.027 * t^5, so t=1 → 0.03
+            // Nonlinear mapping: slider 0..1000 → radius 0.007..0.05
+            // radius = 0.007 + 0.043 * t^5, so t=1 → 0.05
             const t = parseFloat(e.target.value) / 1000.0;
-            p2pRadius = 0.003 + 0.027 * Math.pow(t, 5);
+            p2pRadius = 0.007 + 0.043 * Math.pow(t, 5);
             document.getElementById('valRadius').innerText = p2pRadius.toFixed(4);
         });
 
@@ -9863,8 +9863,8 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
                 const sRadius = document.getElementById('sliderRadius');
                 if (sRadius) {
-                    // Inverse of radius = 0.003 + 0.027 * t^5 → t = ((radius-0.003)/0.027)^(1/5)
-                    const t = Math.pow((p2pRadius - 0.003) / 0.027, 0.2);
+                    // Inverse of radius = 0.007 + 0.043 * t^5 → t = ((radius-0.007)/0.043)^(1/5)
+                    const t = Math.pow((p2pRadius - 0.007) / 0.043, 0.2);
                     sRadius.value = String(Math.round(t * 1000));
                     const lbl = document.getElementById('valRadius');
                     if (lbl) lbl.innerText = p2pRadius.toFixed(4);
