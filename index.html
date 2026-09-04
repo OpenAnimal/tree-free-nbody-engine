@@ -9184,6 +9184,14 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 // so switching back to galaxy restores prior mode; they are
                 // gated by farFieldModel at dispatch time.
             }
+            // Boids: auto-switch to Scenario Clusters so flock colors are
+            // visible (the flock color curve dropdown only has an effect in
+            // colorMode 2).
+            if (scenario === 'boids' && colorMode !== 2) {
+                colorMode = 2;
+                const btn = document.getElementById('btnColorMode');
+                if (btn) btn.innerText = colorModeNames[colorMode];
+            }
             updateFmmControlsState();
             resetSimulation();
         });
@@ -9610,6 +9618,14 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             selFlockColorCurve.addEventListener('change', (e) => {
                 flockColorCurve = parseInt(e.target.value, 10);
                 if (valFlockColorCurve) valFlockColorCurve.innerText = e.target.options[e.target.selectedIndex].text;
+                // Flock colors only render in colorMode 2 (Scenario Clusters).
+                // Auto-switch so the user sees the new curve immediately.
+                if (colorMode !== 2) {
+                    colorMode = 2;
+                    const btn = document.getElementById('btnColorMode');
+                    if (btn) btn.innerText = colorModeNames[colorMode];
+                    updateOverlayLegend();
+                }
             });
         }
         const sliderFlockIntra = document.getElementById('sliderFlockIntra');
