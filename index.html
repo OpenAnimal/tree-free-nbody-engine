@@ -7840,11 +7840,40 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             } else if (colorMode === 2) {
                 title = `${sName} — Scenario Clusters`;
                 if (scenario === 'boids') {
-                    items = [
-                        { color: 'var(--accent-cyan)', label: 'Alpha Swarm (Cyan Flock)' },
-                        { color: 'var(--accent-green)', label: 'Beta Swarm (Emerald Flock)' },
-                        { color: 'var(--accent-purple)', label: 'Gamma Swarm (Amethyst Flock)' }
+                    // Match the WGSL flock color curves (see render shader
+                    // colorMode==2 / scenario==1 branch).
+                    const flockLegend = [
+                        { // Curve 0: High-Contrast Neon
+                            items: [
+                                { color: 'rgb(0,242,255)', label: 'Alpha Swarm (Electric Cyan)' },
+                                { color: 'rgb(255,64,38)', label: 'Beta Swarm (Radiant Coral-Red)' },
+                                { color: 'rgb(255,217,13)', label: 'Gamma Swarm (Brilliant Amber)' }
+                            ]
+                        },
+                        { // Curve 1: Thermal / Polar
+                            items: [
+                                { color: 'rgb(51,191,255)', label: 'Alpha Swarm (Ice Blue)' },
+                                { color: 'rgb(255,26,89)', label: 'Beta Swarm (Solar Crimson)' },
+                                { color: 'rgb(179,51,255)', label: 'Gamma Swarm (Royal Violet)' }
+                            ]
+                        },
+                        { // Curve 2: Cyberpunk Synthwave
+                            items: [
+                                { color: 'rgb(255,20,153)', label: 'Alpha Swarm (Hot Magenta)' },
+                                { color: 'rgb(26,255,102)', label: 'Beta Swarm (Neon Lime)' },
+                                { color: 'rgb(0,204,230)', label: 'Gamma Swarm (Electric Cyan)' }
+                            ]
+                        },
+                        { // Curve 3: Dynamic Velocity Ramps
+                            items: [
+                                { color: 'rgb(102,217,230)', label: 'Alpha Swarm (Blue → Cyan ramp)' },
+                                { color: 'rgb(230,166,26)', label: 'Beta Swarm (Crimson → Amber ramp)' },
+                                { color: 'rgb(217,230,51)', label: 'Gamma Swarm (Forest → Lime ramp)' }
+                            ]
+                        }
                     ];
+                    const curve = flockColorCurve < flockLegend.length ? flockColorCurve : 0;
+                    items = flockLegend[curve].items;
                 } else if (scenario === 'galaxy') {
                     if (galaxyIC !== 'flyby') {
                         items = [
