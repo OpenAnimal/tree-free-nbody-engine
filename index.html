@@ -522,8 +522,8 @@
             <div class="control-label" style="margin-top:8px;">Within-Flock Strength: <span id="valFlockIntra">1.0x</span></div>
             <input type="range" id="sliderFlockIntra" min="0.0" max="6.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
 
-            <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">0.0x</span></div>
-            <input type="range" id="sliderFlockInter" min="0.0" max="6.0" step="0.1" value="0.0" title="Repulsion and collision-avoidance strength between different flocks.">
+            <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
+            <input type="range" id="sliderFlockInter" min="0.0" max="6.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction (independent), 1=full base Reynolds (flocks merge), >1=extra repulsion pushing flocks apart.">
 
             <label style="margin-top:8px; display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
                 <input type="checkbox" id="chkFlockIndependent" title="When checked, cross-flock pairs get ZERO force — flocks pass through each other without interacting. When unchecked, base Reynolds forces (separation/alignment/cohesion) apply to all pairs, and the slider above adds extra repulsion.">
@@ -659,7 +659,7 @@
         <div class="btn-grid">
             <button id="btn1Euro">1€ Filter: OFF</button>
             <button id="btnColorMode">Color: Velocity Heatmap</button>
-            <button id="btnRandomizeColors" type="button" title="Randomize color palette (hue rotation for all color modes).">🎲 Randomize Colors</button>
+            <button id="btnRandomizeColors" type="button" title="Randomize color palette (hue + brightness rotation for all color modes).">Randomize Colors</button>
             <button id="btnMouseMode">Mouse: Attract</button>
             <button id="btnReset">Reset Particles</button>
             <button id="btnFrameCap">Frame Cap: VSync</button>
@@ -834,8 +834,9 @@
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps, 4: Randomized
         let flockColorSeed = 12345;  // seed for curve 4 (randomized colors)
         let colorHueShift = 0.0;     // global hue rotation [0..1) for randomize button
+        let colorBrightnessShift = 0.0; // global brightness/saturation shift [-1..1]
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
-        let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
+        let flockInterStrength = 1.0; // cross-flock interaction (0=none, 1=base Reynolds, >1=extra repulsion)
         let flockDirectionBias = 0.0; // neighbor alignment amplification (0 = base Reynolds alignment only)
         let flockIndependent = false;   // true = cross-flock pairs get zero force (independent flocks)
 
@@ -845,7 +846,7 @@
             colorCurve: 0,
             radius: 0.01,
             intra: 1.0,
-            inter: 0.0,   // 0 = flocks merge (original behavior)
+            inter: 1.0,   // 1 = full base Reynolds on cross-flock pairs (original merge behavior)
             bias: 0.0,    // 0 = base Reynolds alignment only (no extra amplification)
             independent: false  // false = base Reynolds on all pairs (original)
         };
@@ -1250,7 +1251,7 @@
             flockIndependent: u32,     // 1 = cross-flock pairs get zero force (independent)
             flockColorSeed: u32,    // random seed for curve 4 (randomized colors)
             colorHueShift: f32,     // global hue rotation [0..1) for randomize button
-            pad1: u32,              // padding
+            colorBrightnessShift: f32, // global brightness/saturation shift [-1..1]
             pad2: u32,              // padding
             pad3: u32,              // padding
             pad4: f32,              // padding
@@ -1753,19 +1754,21 @@
                                     let diffY = py - qpos.y;
                                     let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                                    // Independent mode: cross-flock pairs get ZERO force.
-                                    // Otherwise: base Reynolds on all pairs + extra
-                                    // inter-flock repulsion (zero when inter=0 =>
-                                    // original merge behavior).
+                                    // Cross-flock interaction scaling:
+                                    // inter=0 → no cross-flock forces (independent)
+                                    // inter=1 → full base Reynolds (flocks merge)
+                                    // inter>1 → extra repulsion on top
                                     if (!isSameFlock && (params.flockIndependent == 1u)) {
-                                        // Independent: skip all forces for cross-flock pairs
+                                        // Independent checkbox: skip all forces for cross-flock pairs
                                     } else {
                                         let intraScale = params.flockIntraStrength;
+                                        let interScale = isSameFlock ? 1.0 : min(params.flockInterStrength, 1.0);
+                                        let extraRepulse = isSameFlock ? 0.0 : max(params.flockInterStrength - 1.0, 0.0);
                                         // Separation (short range)
                                         if (r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
-                                            fx += diffX * inv_r * (0.040 * intraScale);
-                                            fy += diffY * inv_r * (0.040 * intraScale);
+                                            fx += diffX * inv_r * (0.040 * intraScale * interScale);
+                                            fy += diffY * inv_r * (0.040 * intraScale * interScale);
                                             nearP2PIntensity += 0.4;
                                         }
                                         // Alignment + Cohesion (longer range)
@@ -1774,22 +1777,21 @@
                                         // so individuals steer toward their
                                         // neighbors' heading more strongly.
                                         if (r2 < alignR2) {
-                                            let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias);
+                                            let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias) * interScale;
                                             fx += (qvel.x - vx) * alignW;
                                             fy += (qvel.y - vy) * alignW;
-                                            fx -= diffX * (0.015 * intraScale);
-                                            fy -= diffY * (0.015 * intraScale);
+                                            fx -= diffX * (0.015 * intraScale * interScale);
+                                            fy -= diffY * (0.015 * intraScale * interScale);
                                             farMultipoleIntensity += 0.2;
                                         }
 
                                         // ADDITIONAL inter-flock repulsion (on top of
-                                        // the base forces above). Zero when
-                                        // flockInterStrength == 0.0 => original behavior.
-                                        if (!isSameFlock) {
+                                        // the base forces above). Active when inter > 1.0.
+                                        if (!isSameFlock && extraRepulse > 0.0) {
                                             if (r2 < alignR2) {
                                                 let inv_r = inverseSqrt(r2);
-                                                fx += diffX * inv_r * (0.12 * params.flockInterStrength);
-                                                fy += diffY * inv_r * (0.12 * params.flockInterStrength);
+                                                fx += diffX * inv_r * (0.12 * extraRepulse);
+                                                fy += diffY * inv_r * (0.12 * extraRepulse);
                                                 nearP2PIntensity += 0.5;
                                             }
                                         }
@@ -1818,32 +1820,35 @@
                             let diffY = py - other.pos.y;
                             let r2 = diffX * diffX + diffY * diffY + 1e-4;
 
-                            // Independent mode: cross-flock pairs get ZERO force.
-                            // Otherwise: base Reynolds on all pairs + extra
-                            // inter-flock repulsion (zero when inter=0).
+                            // Cross-flock interaction scaling:
+                            // inter=0 → no cross-flock forces (independent)
+                            // inter=1 → full base Reynolds (flocks merge)
+                            // inter>1 → extra repulsion on top
                             if (!isSameFlock && (params.flockIndependent == 1u)) {
-                                // Independent: skip all forces for cross-flock pairs
+                                // Independent checkbox: skip all forces
                             } else {
                                 let intraScale = params.flockIntraStrength;
+                                let interScale = isSameFlock ? 1.0 : min(params.flockInterStrength, 1.0);
+                                let extraRepulse = isSameFlock ? 0.0 : max(params.flockInterStrength - 1.0, 0.0);
                                 if (r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * (0.040 * intraScale);
-                                    fy += diffY * inv_r * (0.040 * intraScale);
+                                    fx += diffX * inv_r * (0.040 * intraScale * interScale);
+                                    fy += diffY * inv_r * (0.040 * intraScale * interScale);
                                     nearP2PIntensity += 0.4;
                                 }
                                 if (r2 < alignR2) {
-                                    let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias);
+                                    let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias) * interScale;
                                     fx += (other.vel.x - vx) * alignW;
                                     fy += (other.vel.y - vy) * alignW;
-                                    fx -= diffX * (0.015 * intraScale);
-                                    fy -= diffY * (0.015 * intraScale);
+                                    fx -= diffX * (0.015 * intraScale * interScale);
+                                    fy -= diffY * (0.015 * intraScale * interScale);
                                     farMultipoleIntensity += 0.2;
                                 }
-                                if (!isSameFlock) {
+                                if (!isSameFlock && extraRepulse > 0.0) {
                                     if (r2 < alignR2) {
                                         let inv_r = inverseSqrt(r2);
-                                        fx += diffX * inv_r * (0.12 * params.flockInterStrength);
-                                        fy += diffY * inv_r * (0.12 * params.flockInterStrength);
+                                        fx += diffX * inv_r * (0.12 * extraRepulse);
+                                        fy += diffY * inv_r * (0.12 * extraRepulse);
                                         nearP2PIntensity += 0.5;
                                     }
                                 }
@@ -3967,7 +3972,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             flockIndependent: u32,
             flockColorSeed: u32,
             colorHueShift: f32,
-            pad1: u32,
+            colorBrightnessShift: f32,
             pad2: u32,
             pad3: u32,
             pad4: f32,
@@ -4113,11 +4118,15 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
             }
 
-            // Global hue rotation (randomize button). Convert col → HSV,
-            // shift hue, convert back. Zero shift = no change.
-            if (params.colorHueShift > 0.0) {
+            // Global hue + brightness rotation (randomize button).
+            // Convert col → HSV, shift hue and brightness, convert back.
+            // Zero shift = no change.
+            if (params.colorHueShift > 0.0 || params.colorBrightnessShift != 0.0) {
                 let hsv = rgb2hsv(col);
-                col = hsv2rgb(vec3<f32>(fract(hsv.x + params.colorHueShift), hsv.y, hsv.z));
+                let newHue = fract(hsv.x + params.colorHueShift);
+                let newSat = clamp(hsv.y + params.colorBrightnessShift * 0.3, 0.0, 1.0);
+                let newVal = clamp(hsv.z + params.colorBrightnessShift * 0.4, 0.2, 1.0);
+                col = hsv2rgb(vec3<f32>(newHue, newSat, newVal));
             }
 
             output.color = vec4<f32>(col, 0.88);
@@ -8301,6 +8310,7 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
             uintView[33] = flockIndependent ? 1 : 0;
             uintView[34] = flockColorSeed;
             floatView[35] = colorHueShift;
+            floatView[36] = colorBrightnessShift;
             // The mouse attractor injects external momentum and would corrupt
             // the delta-E/E conservation readout; disabled for the standard
             // scenarios (cores are massless there, so it is the only force
@@ -9725,9 +9735,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
         const btnRandomizeColors = document.getElementById('btnRandomizeColors');
         if (btnRandomizeColors) {
             btnRandomizeColors.addEventListener('click', () => {
-                // Global hue rotation applies to ALL color modes (velocity
-                // heatmap, FMM dynamics, scenario clusters, 1€ filter).
+                // Global hue + brightness rotation applies to ALL color modes.
                 colorHueShift = Math.random();
+                colorBrightnessShift = (Math.random() - 0.5) * 1.2; // [-0.6..0.6]
                 // Also randomize flock-specific colors (curve 4 seed).
                 flockColorSeed = Math.floor(Math.random() * 4294967296);
                 if (scenario === 'boids' && flockColorCurve < 4) {
