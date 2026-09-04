@@ -523,7 +523,7 @@
             <input type="range" id="sliderFlockIntra" min="0.0" max="2.0" step="0.1" value="1.0" title="Cohesion and alignment strength within the same flock.">
 
             <div class="control-label" style="margin-top:8px;">Between-Flocks Interaction: <span id="valFlockInter">1.0x</span></div>
-            <input type="range" id="sliderFlockInter" min="0.0" max="2.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction (independent), 1=full base Reynolds (flocks merge), >1=extra repulsion pushing flocks apart.">
+            <input type="range" id="sliderFlockInter" min="0.0" max="2.0" step="0.1" value="1.0" title="Cross-flock interaction: 0=no interaction, 1=separation only (collision avoidance, no merging), >1=extra repulsion pushing flocks apart.">
 
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
             <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Amplifies neighbor alignment (velocity matching) so individuals steer toward their neighbors' heading more strongly.">
@@ -1757,34 +1757,33 @@
                                     if (!isSameFlock && (params.flockIndependent == 1u)) {
                                         // Independent checkbox: skip all forces for cross-flock pairs
                                     } else {
-                                        // Within-flock: scaled by intraScale only.
-                                        // Cross-flock: scaled by interScale only (0=none, 1=base Reynolds).
-                                        // extraRepulse adds repulsion when inter > 1.0.
-                                        let pairScale = select(params.flockInterStrength, params.flockIntraStrength, isSameFlock);
+                                        // Within-flock: full Reynolds (sep + align + cohesion) scaled by intraScale.
+                                        // Cross-flock: separation only scaled by interScale (no alignment/cohesion
+                                        // → flocks don't merge). extraRepulse adds repulsion when inter > 1.0.
+                                        let intraScale = params.flockIntraStrength;
+                                        let interScale = select(params.flockInterStrength, 1.0, isSameFlock);
                                         let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
-                                        // Separation (short range)
+                                        // Separation (short range) — applies to ALL pairs
                                         if (r2 < sepR2) {
                                             let inv_r = inverseSqrt(r2);
-                                            fx += diffX * inv_r * (0.08 * pairScale);
-                                            fy += diffY * inv_r * (0.08 * pairScale);
+                                            let sepScale = select(interScale, intraScale, isSameFlock);
+                                            fx += diffX * inv_r * (0.08 * sepScale);
+                                            fy += diffY * inv_r * (0.08 * sepScale);
                                             nearP2PIntensity += 0.4;
                                         }
-                                        // Alignment + Cohesion (longer range)
-                                        // flockDirectionBias amplifies the
-                                        // alignment (velocity matching) term
-                                        // so individuals steer toward their
-                                        // neighbors' heading more strongly.
-                                        if (r2 < alignR2) {
-                                            let alignW = 0.06 * pairScale * (1.0 + params.flockDirectionBias);
+                                        // Alignment + Cohesion (longer range) — SAME FLOCK ONLY
+                                        // (cross-flock alignment/cohesion would pull flocks together)
+                                        if (isSameFlock && r2 < alignR2) {
+                                            let alignW = 0.06 * intraScale * (1.0 + params.flockDirectionBias);
                                             fx += (qvel.x - vx) * alignW;
                                             fy += (qvel.y - vy) * alignW;
-                                            fx -= diffX * (0.03 * pairScale);
-                                            fy -= diffY * (0.03 * pairScale);
+                                            fx -= diffX * (0.03 * intraScale);
+                                            fy -= diffY * (0.03 * intraScale);
                                             farMultipoleIntensity += 0.2;
                                         }
 
                                         // ADDITIONAL inter-flock repulsion (on top of
-                                        // the base forces above). Active when inter > 1.0.
+                                        // the base separation above). Active when inter > 1.0.
                                         if (!isSameFlock && extraRepulse > 0.0) {
                                             if (r2 < alignR2) {
                                                 let inv_r = inverseSqrt(r2);
@@ -1825,20 +1824,24 @@
                             if (!isSameFlock && (params.flockIndependent == 1u)) {
                                 // Independent checkbox: skip all forces
                             } else {
-                                let pairScale = select(params.flockInterStrength, params.flockIntraStrength, isSameFlock);
+                                let intraScale = params.flockIntraStrength;
+                                let interScale = select(params.flockInterStrength, 1.0, isSameFlock);
                                 let extraRepulse = select(max(params.flockInterStrength - 1.0, 0.0), 0.0, isSameFlock);
+                                // Separation — all pairs
                                 if (r2 < sepR2) {
                                     let inv_r = inverseSqrt(r2);
-                                    fx += diffX * inv_r * (0.08 * pairScale);
-                                    fy += diffY * inv_r * (0.08 * pairScale);
+                                    let sepScale = select(interScale, intraScale, isSameFlock);
+                                    fx += diffX * inv_r * (0.08 * sepScale);
+                                    fy += diffY * inv_r * (0.08 * sepScale);
                                     nearP2PIntensity += 0.4;
                                 }
-                                if (r2 < alignR2) {
-                                    let alignW = 0.06 * pairScale * (1.0 + params.flockDirectionBias);
+                                // Alignment + Cohesion — same flock only
+                                if (isSameFlock && r2 < alignR2) {
+                                    let alignW = 0.06 * intraScale * (1.0 + params.flockDirectionBias);
                                     fx += (other.vel.x - vx) * alignW;
                                     fy += (other.vel.y - vy) * alignW;
-                                    fx -= diffX * (0.03 * pairScale);
-                                    fy -= diffY * (0.03 * pairScale);
+                                    fx -= diffX * (0.03 * intraScale);
+                                    fy -= diffY * (0.03 * intraScale);
                                     farMultipoleIntensity += 0.2;
                                 }
                                 if (!isSameFlock && extraRepulse > 0.0) {
