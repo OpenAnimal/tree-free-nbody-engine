@@ -530,7 +530,7 @@
             </label>
 
             <div class="control-label" style="margin-top:8px;">Flock Direction Bias: <span id="valFlockBias">0.0x</span></div>
-            <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Forward cruise and migratory stream bias along flock heading.">
+            <input type="range" id="sliderFlockBias" min="0.0" max="3.0" step="0.1" value="0.0" title="Amplifies neighbor alignment (velocity matching) so individuals steer toward their neighbors' heading more strongly.">
 
             <button id="btnFlockResetDefaults" type="button" style="margin-top:12px; width:100%; padding:6px 10px; font-size:0.75rem; background:rgba(0,240,255,0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); border-radius:4px; cursor:pointer;">Reset Flock Defaults</button>
         </div>
@@ -832,7 +832,7 @@
         let flockColorCurve = 0;     // 0: Neon, 1: Thermal, 2: Cyberpunk, 3: Velocity Ramps
         let flockIntraStrength = 1.0; // within-flock cohesion/alignment multiplier
         let flockInterStrength = 0.0; // between-flock repulsion (0 = original merge behavior)
-        let flockDirectionBias = 0.0; // forward migratory cruise drive (0 = original behavior)
+        let flockDirectionBias = 0.0; // neighbor alignment amplification (0 = base Reynolds alignment only)
         let flockIndependent = false;   // true = cross-flock pairs get zero force (independent flocks)
 
         // Default values for the Reset Flock Defaults button
@@ -842,7 +842,7 @@
             radius: 0.035,
             intra: 1.0,
             inter: 0.0,   // 0 = flocks merge (original behavior)
-            bias: 0.0,    // 0 = no migratory drive (original behavior)
+            bias: 0.0,    // 0 = base Reynolds alignment only (no extra amplification)
             independent: false  // false = base Reynolds on all pairs (original)
         };
 
@@ -1242,7 +1242,7 @@
             flockIntraStrength: f32, // within-flock alignment & cohesion multiplier
             flockInterStrength: f32, // between-flock avoidance & repulsion multiplier
             flockColorCurve: u32,    // flock color curve index (0-3)
-            flockDirectionBias: f32, // forward migratory cruise drive multiplier
+            flockDirectionBias: f32, // neighbor alignment amplification multiplier
             flockIndependent: u32,     // 1 = cross-flock pairs get zero force (independent)
             pad0: u32,               // padding to 144-byte struct (uniform 16-byte align)
             pad1: f32,               // padding
@@ -1569,27 +1569,12 @@
                 // model-selected (NOT gravity multipoles):
                 //   centroids (2) — cell order-0 barycenters + mean velocity
                 //                   (matches apps/app4_fmm_boids_1euro.py)
-                //   none (0)      — cheap analytic draft + sub-swarm attractors
+                //   none (0)      — cheap analytic sub-swarm attractors
                 // Gravity FMM (1) is intentionally ignored here: log-potential
                 // multipoles are the wrong kernel for Reynolds flocking.
-
-                // Directional Migratory Drive / Forward Cruise: each flock has
-                // a baseline heading; the bias slider scales the relaxation
-                // toward that heading so flocks stream like migrating birds.
-                var biasVx: f32 = 0.038;
-                var biasVy: f32 = 0.0;
-                if (grp > 0.5 && grp < 1.5) {
-                    biasVx = -0.038; biasVy = 0.0;
-                } else if (grp >= 1.5) {
-                    biasVx = 0.0; biasVy = 0.038;
-                }
-                fx += (biasVx - vx) * (0.018 * params.flockDirectionBias);
-                fy += (biasVy - vy) * (0.018 * params.flockDirectionBias);
-                // Circular murmuration draft (prevents stagnation at walls)
-                let draftX = (0.5 - py) * 0.035;
-                let draftY = (px - 0.5) * 0.035;
-                fx += draftX * params.flockDirectionBias;
-                fy += draftY * params.flockDirectionBias;
+                // flockDirectionBias amplifies the neighbor alignment force
+                // (match your neighbors' heading) in the P2P loop below — it
+                // does NOT add a fixed heading or circular draft.
 
                 if (params.farFieldModel == 2u && params.cellListsReady == 1u) {
                     // fmmField[pid] = (bary_x, bary_y, mean_vx, mean_vy) written
@@ -1776,9 +1761,14 @@
                                             nearP2PIntensity += 0.4;
                                         }
                                         // Alignment + Cohesion (longer range)
+                                        // flockDirectionBias amplifies the
+                                        // alignment (velocity matching) term
+                                        // so individuals steer toward their
+                                        // neighbors' heading more strongly.
                                         if (r2 < alignR2) {
-                                            fx += (qvel.x - vx) * (0.030 * intraScale);
-                                            fy += (qvel.y - vy) * (0.030 * intraScale);
+                                            let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias);
+                                            fx += (qvel.x - vx) * alignW;
+                                            fy += (qvel.y - vy) * alignW;
                                             fx -= diffX * (0.015 * intraScale);
                                             fy -= diffY * (0.015 * intraScale);
                                             farMultipoleIntensity += 0.2;
@@ -1835,8 +1825,9 @@
                                     nearP2PIntensity += 0.4;
                                 }
                                 if (r2 < alignR2) {
-                                    fx += (other.vel.x - vx) * (0.030 * intraScale);
-                                    fy += (other.vel.y - vy) * (0.030 * intraScale);
+                                    let alignW = 0.030 * intraScale * (1.0 + params.flockDirectionBias);
+                                    fx += (other.vel.x - vx) * alignW;
+                                    fy += (other.vel.y - vy) * alignW;
                                     fx -= diffX * (0.015 * intraScale);
                                     fy -= diffY * (0.015 * intraScale);
                                     farMultipoleIntensity += 0.2;
@@ -4148,14 +4139,9 @@ fn direct(@builtin(global_invocation_id) id: vec3<u32>) {
                 farM2L = 0.6;
                 nearP2P = max(0.0, 1.0 - sqrt(min(r1_sq, r2_sq)) * 10.0);
             } else if (u_scenario == 1) {
-                // Boids flocking: direction bias + sub-swarm attractors
-                float biasVx = (a_group > 0.5 && a_group < 1.5) ? -0.038
-                    : ((a_group >= 1.5) ? 0.0 : 0.038);
-                float biasVy = (a_group >= 1.5) ? 0.038 : 0.0;
-                fx += vec2(biasVx - vel.x, biasVy - vel.y)
-                    * (0.018 * u_flockDirectionBias);
-                fx += vec2(0.5 - pos.y, pos.x - 0.5)
-                    * (0.035 * u_flockDirectionBias);
+                // Boids flocking: sub-swarm attractors (WebGL2 fallback has
+                // no P2P neighbor loop, so flockDirectionBias — which amplifies
+                // neighbor alignment in the WebGPU path — has no effect here).
                 vec2 subC = (a_group > 1.5) ? vec2(0.50, 0.28) : ((a_group > 0.5) ? vec2(0.68, 0.50) : vec2(0.32, 0.50));
                 fx += (subC - pos) * 0.035;
                 farM2L = 0.8;
